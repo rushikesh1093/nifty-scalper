@@ -95,13 +95,14 @@ class ModeManager:
                 capital = 100_000.0
                 logger.warning("capital was ₹%.0f (too low) — reset to ₹1,00,000.", cfg.capital)
 
-            # trade_amount: should be ~20% of capital as a sane fallback
-            # If it's > 40% of capital it will block after 2 positions — fix it
-            if (cfg.trade_amount or 0) > capital * 0.40 or (cfg.trade_amount or 0) < 500:
+            # Preserve an explicit user setting. Only repair missing or invalid
+            # values; a single-trade budget may intentionally be larger than 40%
+            # of capital.
+            if (cfg.trade_amount or 0) < 500:
                 new_ta = round(capital * 0.20 / 500) * 500
                 patches["trade_amount"] = new_ta
                 logger.warning(
-                    "trade_amount was ₹%.0f (out of range for capital ₹%.0f) — "
+                    "trade_amount was ₹%.0f (invalid) — "
                     "reset to ₹%.0f (20%% of capital).",
                     cfg.trade_amount or 0, capital, new_ta,
                 )
@@ -118,8 +119,8 @@ class ModeManager:
             # max_open_positions: should allow 60% deployment max
             # At ₹15k cap with ₹3k/trade: 3 positions = ₹9k = 60% → correct
             # At ₹15k cap with ₹10k/trade (wrong): 6 positions = ₹60k → wrong
-            ideal_pos = max(2, int(capital / trade_amount * 0.6))
-            if (cfg.max_open_positions or 0) < 2 or (cfg.max_open_positions or 0) * trade_amount > capital:
+            ideal_pos = max(1, int(capital / trade_amount * 0.6))
+            if (cfg.max_open_positions or 0) < 1 or (cfg.max_open_positions or 0) * trade_amount > capital:
                 patches["max_open_positions"] = ideal_pos
                 logger.warning(
                     "max_open_positions was %d — reset to %d to fit within capital ₹%.0f.",
