@@ -366,8 +366,10 @@ class ModeManager:
                 "[Kelly] Error computing trade amount for %s: %s — using fallback",
                 strategy_name, exc,
             )
-            fallback = min(cfg.trade_amount, kelly_max_amount)
-            return max(fallback, kelly_min_amount)
+            # If performance data is unavailable (for example before the
+            # strategy_perf migration has run), preserve the user's configured
+            # amount instead of silently replacing it with a Kelly cap.
+            return float(cfg.trade_amount)
 
     async def update_strategy_perf(
         self, strategy_name: str, won: bool, achieved_rr: Optional[float]
