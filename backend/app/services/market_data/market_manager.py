@@ -1,0 +1,493 @@
+"""
+MarketManager — orchestrates the full market data pipeline:
+  1. AngelOne WebSocket feed  →  TickData
+  2. TickData  →  Redis cache (LTP, full tick, pub/sub)
+  3. TickData  →  TickWriter queue  →  PostgreSQL (ticks + 1m OHLC)
+  4. On startup: instrument sync, historical OHLC seed, subscribe watchlist
+
+Call market_manager.startup() from FastAPI lifespan.
+"""
+import asyncio
+import logging
+from datetime import date, timedelta
+from typing import Optional
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.db.base import AsyncSessionLocal
+from app.db.models.instrument import Instrument, InstrumentType
+from app.services.broker.angel_client import angel_client
+from app.services.broker.instrument_sync import sync_instruments, get_active_expiries, get_option_tokens
+from app.services.cache.redis_client import redis_cache
+from app.services.market_data.feed import market_feed, TickData
+from app.services.market_data.tick_writer import tick_writer
+
+logger = logging.getLogger(__name__)
+
+# How many strikes around ATM to subscribe (each side)
+ATM_STRIKE_RADIUS = 10
+# How many historical 1m candles to seed on startup
+HISTORICAL_CANDLE_LIMIT = 390  # full trading day
+
+
+class MarketManager:
+
+    async def startup(self):
+        """Full startup sequence. Called from FastAPI lifespan."""
+        logger.info("=== MarketManager startup ===")
+
+        # 0. Pre-flight: verify credentials are configured
+        if not settings.angel_credentials_configured:
+            raise RuntimeError(
+                "AngelOne credentials are not configured. "
+                "Set ANGEL_API_KEY, ANGEL_CLIENT_ID, ANGEL_PASSWORD, "
+                "ANGEL_TOTP_SECRET in your .env file."
+            )
+
+        # 1. Login to AngelOne
+        await angel_client.login()
+        logger.info("AngelOne login OK")
+
+        # 2. Cache session tokens in Redis
+        from app.services.broker.angel_client import _session
+        await redis_cache.set_angel_session(
+            _session.jwt_token, _session.refresh_token, _session.feed_token
+        )
+
+        # 3. Sync instrument master
+        async with AsyncSessionLocal() as db:
+            count = await sync_instruments(db)
+            logger.info("Synced %d instruments", count)
+
+        # 4. Build watchlist (ATM ± radius for nearest expiry)
+        watchlist = await self._build_watchlist()
+        logger.info("Watchlist: %d tokens", len(watchlist))
+
+        # 5. Seed historical OHLC for watchlist tokens
+        await self._seed_historical_ohlc(watchlist)
+
+        # 5b. Seed historical OHLC for SPOT underlyings (NIFTY / BANKNIFTY).
+        # The strategy_runner reads spot candles from Redis
+        # (`get_candles(spot_token, "ONE_MINUTE")`), but the watchlist
+        # only contains NFO option tokens.  Without this, the spot candle
+        # keys stay empty and no strategies can run.
+        spot_tokens = [
+            (settings.NIFTY_TOKEN,    "NIFTY",     "NSE"),
+            (settings.BANKNIFTY_TOKEN,"BANKNIFTY", "NSE"),
+        ]
+        for s_token, s_name, s_exchange in spot_tokens:
+            tick_writer.register_symbol(s_token, s_name)
+            try:
+                await self._seed_one_token_exchange(s_token, s_name, s_exchange)
+            except Exception as exc:
+                logger.warning("Spot OHLC seed error for %s: %s", s_name, exc)
+
+        # 6. Register tick handler
+        market_feed.add_async_handler(self._on_tick)
+
+        # 7. Subscribe to watchlist
+        nfo_tokens = [t for t, _ in watchlist]
+        # Core NSE underlyings — VIX is subscribed separately below
+        nse_tokens = [settings.NIFTY_TOKEN, settings.BANKNIFTY_TOKEN]
+        market_feed.subscribe("NFO", nfo_tokens)
+        market_feed.subscribe("NSE", nse_tokens)
+
+        # 8. Start TickWriter
+        await tick_writer.start()
+
+        # Register symbol names
+        for token, symbol in watchlist:
+            tick_writer.register_symbol(token, symbol)
+
+        # 8b. Also subscribe India VIX so the VIX gate in strategy_runner works.
+        # Use settings.VIX_TOKEN — single source of truth.
+        market_feed.subscribe("NSE", [settings.VIX_TOKEN])
+        tick_writer.register_symbol(settings.VIX_TOKEN, "INDIA VIX")
+        logger.info("Subscribed India VIX token %s", settings.VIX_TOKEN)
+
+        # 9. Start WebSocket feed
+        await market_feed.start()
+
+        logger.info("=== MarketManager startup complete ===")
+
+    async def shutdown(self):
+        await market_feed.stop()
+        await tick_writer.stop()
+        await angel_client.logout()
+        logger.info("MarketManager shutdown complete.")
+
+    # ── Tick handler ──────────────────────────────────────────────────────────
+
+    async def _on_tick(self, tick: TickData):
+        """Central tick dispatcher — runs for every WebSocket tick."""
+        tick_dict = {
+            "token":        tick.token,
+            "exchange":     tick.exchange,
+            "ltp":          tick.ltp,
+            "open":         tick.open,
+            "high":         tick.high,
+            "low":          tick.low,
+            "close":        tick.close,
+            "volume":       tick.volume,
+            "oi":           tick.oi,
+            "best_bid":     tick.best_bid,
+            "best_ask":     tick.best_ask,
+            "best_bid_qty": tick.best_bid_qty,
+            "best_ask_qty": tick.best_ask_qty,
+            "exchange_ts":  tick.exchange_ts,
+            "ts":           tick.received_at.isoformat(),
+        }
+
+        try:
+            # Cache LTP and full tick
+            await redis_cache.set_ltp(tick.token, tick.ltp)
+            await redis_cache.set_tick(tick.token, tick_dict)
+            # Pub/sub for WebSocket broadcast to frontend
+            await redis_cache.publish_tick(tick.token, tick_dict)
+        except Exception as exc:
+            logger.warning("Redis write failed for tick token=%s: %s", tick.token, exc)
+            # Continue to DB queue even if Redis is temporarily unavailable
+
+        # Queue for DB write — do this outside the Redis try/except so DB
+        # writes are not affected by Redis blips.
+        await tick_writer.push(tick)
+
+    # ── Watchlist builder ─────────────────────────────────────────────────────
+
+    async def _build_watchlist(self) -> list[tuple[str, str]]:
+        """
+        Returns list of (token, symbol) for:
+          - Nifty CE/PE, nearest expiry, ATM ± ATM_STRIKE_RADIUS strikes
+          - BankNifty CE/PE, nearest expiry, ATM ± ATM_STRIKE_RADIUS strikes
+        """
+        result = []
+        async with AsyncSessionLocal() as db:
+            for underlying in ["NIFTY", "BANKNIFTY"]:
+                expiries = await get_active_expiries(db, underlying)
+                if not expiries:
+                    logger.warning("No expiries found for %s", underlying)
+                    continue
+
+                nearest_expiry = expiries[0]
+
+                # Get approximate ATM from spot LTP via REST
+                spot_ltp = await self._get_spot_ltp(underlying)
+                if spot_ltp:
+                    step = 50 if underlying == "NIFTY" else 100
+                    atm = round(spot_ltp / step) * step
+                    low  = atm - ATM_STRIKE_RADIUS * step
+                    high = atm + ATM_STRIKE_RADIUS * step
+                    strike_range = (low, high)
+                else:
+                    # Could not get spot LTP — cap to 2× ATM_STRIKE_RADIUS so we
+                    # don't flood AngelOne with 200+ token subscriptions.
+                    # Use a wide but bounded fallback range around a typical ATM.
+                    step = 50 if underlying == "NIFTY" else 100
+                    default_atm = 23000 if underlying == "NIFTY" else 50000
+                    low  = default_atm - ATM_STRIKE_RADIUS * step
+                    high = default_atm + ATM_STRIKE_RADIUS * step
+                    strike_range = (low, high)
+                    logger.warning(
+                        "[%s] Spot LTP unavailable — using fallback strike range "
+                        "%.0f–%.0f for initial watchlist. Will resubscribe on first tick.",
+                        underlying, low, high,
+                    )
+
+                instruments = await get_option_tokens(
+                    db, underlying, nearest_expiry, strike_range
+                )
+                for inst in instruments:
+                    result.append((inst.token, inst.symbol))
+                    tick_writer.register_symbol(inst.token, inst.symbol)
+
+        return result
+
+    async def _get_spot_ltp(self, underlying: str) -> Optional[float]:
+        token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
+        # Try Redis first (already populated on restart), then REST
+        try:
+            cached = await redis_cache.get_ltp(token)
+            if cached:
+                return cached
+        except Exception:
+            pass
+        try:
+            quote = await angel_client.get_ltp("NSE", token, underlying)
+            return float(quote.get("ltp", 0)) or None
+        except Exception as exc:
+            logger.warning("Could not fetch spot LTP for %s: %s", underlying, exc)
+            return None
+
+    # ── Historical OHLC seed ──────────────────────────────────────────────────
+
+    async def _seed_historical_ohlc(self, watchlist: list[tuple[str, str]]):
+        """
+        Fetch today's 1m historical OHLC from AngelOne for all watchlist tokens
+        and load them into Redis so strategies have a full day of candles immediately.
+        Uses a semaphore to cap concurrent API requests at 10.
+        """
+        from datetime import datetime
+        today = date.today()
+        from_dt = f"{today} 09:15"
+        to_dt   = f"{today} 15:30"
+
+        logger.info("Seeding historical OHLC for %d tokens...", len(watchlist))
+        sem = asyncio.Semaphore(10)   # max 10 concurrent requests to AngelOne
+
+        async def _bounded(token, symbol):
+            async with sem:
+                await self._seed_one_token(token, symbol, from_dt, to_dt)
+
+        results = await asyncio.gather(
+            *[_bounded(token, symbol) for token, symbol in watchlist],
+            return_exceptions=True,
+        )
+        errors = sum(1 for r in results if isinstance(r, Exception))
+        logger.info(
+            "Historical OHLC seed complete. %d OK, %d errors.",
+            len(watchlist) - errors, errors
+        )
+
+    async def _seed_one_token(self, token: str, symbol: str, from_dt: str, to_dt: str):
+        """
+        Seed 1m candles for an NFO option token into Redis.
+        Falls back to today's OHLC table if AngelOne 403s.
+        """
+        candle_dicts: list[dict] = []
+
+        # Attempt 1: AngelOne REST
+        try:
+            candles = await angel_client.get_candle_data(
+                exchange="NFO",
+                symbol_token=token,
+                interval="ONE_MINUTE",
+                from_date=from_dt,
+                to_date=to_dt,
+            )
+            if candles:
+                candle_dicts = [
+                    {
+                        "token":     token,
+                        "symbol":    symbol,
+                        "interval":  "ONE_MINUTE",
+                        "timestamp": row[0],
+                        "open":      row[1],
+                        "high":      row[2],
+                        "low":       row[3],
+                        "close":     row[4],
+                        "volume":    row[5] if len(row) > 5 else 0,
+                    }
+                    for row in candles
+                ]
+        except Exception as exc:
+            logger.debug("AngelOne seed error for token %s: %s — trying DB", token, exc)
+
+        # Attempt 2: DB fallback
+        if not candle_dicts:
+            try:
+                from app.db.models.ohlc import OHLC
+                from sqlalchemy import select
+                import datetime as _dt_mod
+                from datetime import timezone as _tz, timedelta as _td
+                _IST = _tz(_td(hours=5, minutes=30))
+                session_open_utc = _dt_mod.datetime.combine(
+                    date.today(), _dt_mod.time(3, 45), tzinfo=_tz.utc
+                )
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(
+                        select(OHLC)
+                        .where(
+                            OHLC.token    == token,
+                            OHLC.interval == "ONE_MINUTE",
+                            OHLC.timestamp >= session_open_utc,
+                        )
+                        .order_by(OHLC.timestamp.asc())
+                        .limit(500)
+                    )
+                    rows = result.scalars().all()
+
+                if rows:
+                    candle_dicts = [
+                        {
+                            "token":     token,
+                            "symbol":    symbol,
+                            "interval":  "ONE_MINUTE",
+                            "timestamp": row.timestamp.replace(tzinfo=_tz.utc)
+                                            .astimezone(_IST).isoformat(),
+                            "open":      float(row.open),
+                            "high":      float(row.high),
+                            "low":       float(row.low),
+                            "close":     float(row.close),
+                            "volume":    int(row.volume or 0),
+                        }
+                        for row in rows
+                    ]
+            except Exception as exc2:
+                logger.debug("DB fallback seed error for token %s: %s", token, exc2)
+
+        if candle_dicts:
+            await redis_cache.set_candles(token, "ONE_MINUTE", candle_dicts)
+        else:
+            raise RuntimeError(f"No candle data (REST or DB) for token {token}")
+
+    async def _seed_one_token_exchange(self, token: str, symbol: str, exchange: str = "NFO"):
+        """
+        Seed historical 1m OHLC for a single token into Redis (supports any exchange).
+
+        Strategy:
+          1. Try AngelOne REST historical API.
+          2. On failure (403, empty response, or any exception), fall back to
+             today's candles already written to the local OHLC table by tick_writer.
+             This handles the common case where the container restarts mid-session
+             and AngelOne refuses the historical call — the DB already has candles
+             from earlier in the same day.
+        """
+        today = date.today()
+        from_dt = f"{today} 09:15"
+        to_dt   = f"{today} 15:30"
+
+        candle_dicts: list[dict] = []
+
+        # ── Attempt 1: AngelOne historical REST ────────────────────────────────
+        try:
+            candles = await angel_client.get_candle_data(
+                exchange=exchange,
+                symbol_token=token,
+                interval="ONE_MINUTE",
+                from_date=from_dt,
+                to_date=to_dt,
+            )
+            if candles:
+                from datetime import timezone as _tz, timedelta as _td
+                _IST = _tz(_td(hours=5, minutes=30))
+                candle_dicts = [
+                    {
+                        "token":     token,
+                        "symbol":    symbol,
+                        "interval":  "ONE_MINUTE",
+                        "timestamp": row[0],
+                        "open":      row[1],
+                        "high":      row[2],
+                        "low":       row[3],
+                        "close":     row[4],
+                        "volume":    row[5] if len(row) > 5 else 0,
+                    }
+                    for row in candles
+                ]
+                logger.info(
+                    "Seeded %d candles for %s (%s/%s) from AngelOne REST",
+                    len(candle_dicts), symbol, exchange, token,
+                )
+            else:
+                logger.info(
+                    "No historical candles from AngelOne for %s — will try DB fallback",
+                    symbol,
+                )
+        except Exception as exc:
+            logger.warning(
+                "AngelOne historical seed failed for %s (%s/%s): %s — trying DB fallback",
+                symbol, exchange, token, exc,
+            )
+
+        # ── Attempt 2: DB fallback — today's OHLC already written by tick_writer ─
+        if not candle_dicts:
+            try:
+                from app.db.models.ohlc import OHLC
+                from sqlalchemy import select
+                from datetime import timezone as _tz, timedelta as _td
+
+                _IST = _tz(_td(hours=5, minutes=30))
+                # 09:15 IST = 03:45 UTC
+                session_open_utc = date.today()  # placeholder; built below
+                import datetime as _dt_mod
+                session_open_utc = _dt_mod.datetime.combine(
+                    today, _dt_mod.time(3, 45), tzinfo=_tz.utc  # 09:15 IST
+                )
+
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(
+                        select(OHLC)
+                        .where(
+                            OHLC.token    == token,
+                            OHLC.interval == "ONE_MINUTE",
+                            OHLC.timestamp >= session_open_utc,
+                        )
+                        .order_by(OHLC.timestamp.asc())
+                        .limit(500)
+                    )
+                    rows = result.scalars().all()
+
+                if rows:
+                    candle_dicts = [
+                        {
+                            "token":     token,
+                            "symbol":    symbol,
+                            "interval":  "ONE_MINUTE",
+                            # Store as IST ISO string to match tick_writer format
+                            "timestamp": row.timestamp.replace(tzinfo=_tz.utc)
+                                            .astimezone(_IST).isoformat(),
+                            "open":      float(row.open),
+                            "high":      float(row.high),
+                            "low":       float(row.low),
+                            "close":     float(row.close),
+                            "volume":    int(row.volume or 0),
+                        }
+                        for row in rows
+                    ]
+                    logger.info(
+                        "DB fallback: seeded %d candles for %s from OHLC table "
+                        "(earliest %s)",
+                        len(candle_dicts), symbol,
+                        candle_dicts[0]["timestamp"],
+                    )
+                else:
+                    logger.info(
+                        "DB fallback: no today candles in OHLC table for %s — "
+                        "strategies will wait for live candles to accumulate",
+                        symbol,
+                    )
+            except Exception as exc2:
+                logger.warning("DB fallback seed error for %s: %s", symbol, exc2)
+
+        if candle_dicts:
+            await redis_cache.set_candles(token, "ONE_MINUTE", candle_dicts)
+
+    # ── Dynamic subscription management ──────────────────────────────────────
+
+    async def subscribe_tokens(self, exchange: str, tokens: list[str]):
+        """Add tokens to live feed at runtime (e.g. when user focuses a strike)."""
+        await market_feed.send_subscribe(exchange, tokens)
+
+    async def unsubscribe_tokens(self, exchange: str, tokens: list[str]):
+        await market_feed.send_unsubscribe(exchange, tokens)
+
+    # ── On-demand re-seed ─────────────────────────────────────────────────────
+
+    async def reseed_spot_candles(self) -> dict:
+        """
+        Re-seed spot (NIFTY / BANKNIFTY) candles into Redis from DB.
+        Called from the API when the strategy runner is candle-starved after
+        a mid-session container restart where the AngelOne historical API 403s.
+        Returns a summary of how many candles were loaded for each underlying.
+        """
+        spot_tokens = [
+            (settings.NIFTY_TOKEN,     "NIFTY",     "NSE"),
+            (settings.BANKNIFTY_TOKEN, "BANKNIFTY", "NSE"),
+        ]
+        result = {}
+        for s_token, s_name, s_exchange in spot_tokens:
+            tick_writer.register_symbol(s_token, s_name)
+            try:
+                await self._seed_one_token_exchange(s_token, s_name, s_exchange)
+                candles = await redis_cache.get_candles(s_token, "ONE_MINUTE", 500)
+                result[s_name] = len(candles)
+                logger.info("Re-seeded %s: %d candles in Redis", s_name, len(candles))
+            except Exception as exc:
+                result[s_name] = 0
+                logger.warning("Re-seed failed for %s: %s", s_name, exc)
+        return result
+
+
+# App-level singleton
+market_manager = MarketManager()
