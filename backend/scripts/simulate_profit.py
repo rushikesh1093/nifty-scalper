@@ -61,10 +61,12 @@ def sep(title=""):
 
 def calc_lots(trade_amount: float, ltp: float, lot_size: int,
               max_lots: int = 5) -> tuple[int, float]:
-    if ltp <= 0 or lot_size <= 0:
-        return 1, ltp * lot_size
+    if trade_amount <= 0 or ltp <= 0 or lot_size <= 0:
+        return 0, 0.0
     cost_per_lot = ltp * lot_size
-    lots = max(1, math.floor(trade_amount / cost_per_lot))
+    lots = math.floor(trade_amount / cost_per_lot)
+    if lots < 1:
+        return 0, 0.0
     lots = min(lots, max_lots)
     capital_used = round(lots * ltp * lot_size, 2)
     return lots, capital_used
@@ -143,9 +145,7 @@ def scenario_target_hit():
     check("R:R ≥ 2.0", e['rr'] >= 2.0, f"rr={e['rr']}")
     check("SL < entry", e['sl'] < e['actual_entry'],
           f"sl={e['sl']} entry={e['actual_entry']}")
-    # Note: capital_used can exceed trade_amount when 1 lot costs more than
-    # trade_amount (1-lot minimum rule). This is by design — you can't trade 0 lots.
-    check("Capital within 115% of trade_amount (1-lot min rule)",
+    check("Capital does not exceed trade_amount",
           capital <= trade_amt * 1.15,
           f"Rs.{capital} vs Rs.{trade_amt}")
 
