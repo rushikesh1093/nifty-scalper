@@ -172,26 +172,28 @@ class PaperEngine:
         lot_size = selected.lot_size
 
         # ── Option momentum confirmation ──────────────────────────────────────
-        # Require the option's LTP to be moving in our favour before entering.
-        # If the option is falling at entry we're buying into weakness — that is
-        # the single biggest cause of immediate SL hits after entry.
-        # Skip this check if tick history is unavailable (don't block the trade).
+        # Compare against recent ticks, not tick.open. AngelOne's `open` field
+        # is the session open, so comparing it with the current LTP would reject
+        # a contract that fell earlier but is now recovering in our direction.
+        # Skip this check if recent history is unavailable.
         try:
-            tick_now = await redis_cache.get_tick(selected.token)
-            if tick_now:
-                opt_open  = float(tick_now.get("open", 0) or 0)
-                opt_close = float(tick_now.get("ltp",  0) or 0)
-                if opt_open > 0 and opt_close > 0:
-                    falling_pct = (opt_open - opt_close) / opt_open * 100
-                    if falling_pct > 2.0:
-                        reason = (
-                            f"Option momentum check FAILED — LTP falling {falling_pct:.1f}% "
-                            f"this candle (open={opt_open:.2f} now={opt_close:.2f}). "
-                            f"Skipping to avoid buying into weakness."
-                        )
-                        await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
-                        logger.info("[PaperEngine] SKIPPED %s: %s", signal.strategy_name, reason)
-                        return False
+            raw_history = await redis_cache._r().lrange(
+                f"ltp_hist:{selected.token}", -6, -1
+            )
+            history = [float(value) for value in raw_history if float(value) > 0]
+            if len(history) >= 3:
+                recent_avg = sum(history[:-1]) / len(history[:-1])
+                current_ltp = history[-1]
+                falling_pct = (recent_avg - current_ltp) / recent_avg * 100
+                if falling_pct > 2.0:
+                    reason = (
+                        f"Option momentum check FAILED — recent LTP falling {falling_pct:.1f}% "
+                        f"(recent_avg={recent_avg:.2f} now={current_ltp:.2f}). "
+                        f"Skipping to avoid buying into weakness."
+                    )
+                    await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
+                    logger.info("[PaperEngine] SKIPPED %s: %s", signal.strategy_name, reason)
+                    return False
         except Exception as _e:
             logger.debug("Option momentum check error (non-fatal): %s", _e)
 
