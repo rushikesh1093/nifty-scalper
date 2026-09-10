@@ -5,7 +5,7 @@ import { useState } from "react";
 import toast from "react-hot-toast";
 import type { CapitalSummary } from "@/types/trading";
 
-const PRESETS = [10000, 15000, 20000, 25000, 50000, 75000];
+const PRESETS = [3000, 5000, 10000, 15000, 25000, 50000];
 const fmt = (n: number) => "₹" + n.toLocaleString("en-IN", { maximumFractionDigits: 0 });
 
 function ProgressBar({ pct, color }: { pct: number; color: string }) {

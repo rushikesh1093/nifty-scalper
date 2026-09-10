@@ -95,19 +95,23 @@ class ModeManager:
                 capital = 100_000.0
                 logger.warning("capital was ₹%.0f (too low) — reset to ₹1,00,000.", cfg.capital)
 
-            # Preserve an explicit user setting. Only repair missing or invalid
-            # values; a single-trade budget may intentionally be larger than 40%
-            # of capital.
+            # Preserve the user's explicit trade_amount setting — only repair
+            # truly invalid values (< ₹500 means something went badly wrong).
+            # We intentionally do NOT reset to 20% of capital on startup:
+            # if the user set ₹3,000, that must survive restarts.
             if (cfg.trade_amount or 0) < 500:
-                new_ta = round(capital * 0.20 / 500) * 500
+                new_ta = round(capital * 0.10 / 500) * 500   # 10% default, not 20%
                 patches["trade_amount"] = new_ta
                 logger.warning(
                     "trade_amount was ₹%.0f (invalid) — "
-                    "reset to ₹%.0f (20%% of capital).",
-                    cfg.trade_amount or 0, capital, new_ta,
+                    "reset to ₹%.0f (10%% of capital).",
+                    cfg.trade_amount or 0, new_ta,
                 )
 
-            trade_amount = patches.get("trade_amount", cfg.trade_amount) or capital * 0.20
+            # Use the user's stored trade_amount (not patched) for the
+            # max_open_positions calculation so a large capital doesn't silently
+            # inflate trade_amount and break the position-count cap.
+            stored_trade_amount = cfg.trade_amount or capital * 0.10
 
             if cfg.max_lots_per_trade < 1:
                 patches["max_lots_per_trade"] = max(1, min(5, int(capital / 10_000)))
@@ -116,19 +120,22 @@ class ModeManager:
                     cfg.max_lots_per_trade, patches["max_lots_per_trade"],
                 )
 
-            # max_open_positions: should allow 60% deployment max
-            # At ₹15k cap with ₹3k/trade: 3 positions = ₹9k = 60% → correct
-            # At ₹15k cap with ₹10k/trade (wrong): 6 positions = ₹60k → wrong
-            ideal_pos = max(1, int(capital / trade_amount * 0.6))
-            if (cfg.max_open_positions or 0) < 1 or (cfg.max_open_positions or 0) * trade_amount > capital:
+            # max_open_positions: must allow 60% deployment at the user's
+            # actual trade_amount.  Only recalculate if the current value is
+            # clearly invalid (< 1 or would exceed full capital).
+            ideal_pos = max(1, int(capital / stored_trade_amount * 0.6))
+            if (cfg.max_open_positions or 0) < 1 or (cfg.max_open_positions or 0) * stored_trade_amount > capital * 1.1:
                 patches["max_open_positions"] = ideal_pos
                 logger.warning(
                     "max_open_positions was %d — reset to %d to fit within capital ₹%.0f.",
                     cfg.max_open_positions or 0, ideal_pos, capital,
                 )
 
-            # max_daily_loss: should be ~5% of capital
-            if (cfg.max_daily_loss or 0) > capital * 0.20 or (cfg.max_daily_loss or 0) < 100:
+            # max_daily_loss: guard only against truly invalid values.
+            # The upper bound is 50% of capital (not 20%) so a user who sets a
+            # generous loss limit on a small capital account doesn't get it
+            # silently reset on every restart.  The lower bound stays at ₹100.
+            if (cfg.max_daily_loss or 0) > capital * 0.50 or (cfg.max_daily_loss or 0) < 100:
                 new_loss = round(capital * 0.05 / 100) * 100
                 patches["max_daily_loss"]     = new_loss
                 patches["max_daily_loss_pct"] = 5.0
@@ -159,6 +166,19 @@ class ModeManager:
 
         kwargs["mode"] = TradingMode.PAPER
         kwargs["live_mode_confirmed"] = False
+
+        # When trade_amount or capital changes, recalculate max_open_positions
+        # so it always reflects the current budget constraints.
+        if "trade_amount" in kwargs or "capital" in kwargs:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(TradingConfig).where(TradingConfig.id == 1))
+                cur = result.scalar_one_or_none()
+            if cur:
+                capital      = kwargs.get("capital", cur.capital) or 100_000.0
+                trade_amount = kwargs.get("trade_amount", cur.trade_amount) or 5_000.0
+                if trade_amount > 0:
+                    kwargs["max_open_positions"] = max(1, int(capital / trade_amount * 0.6))
+
         async with AsyncSessionLocal() as db:
             await db.execute(
                 update(TradingConfig).where(TradingConfig.id == 1).values(**kwargs)
@@ -511,12 +531,19 @@ class ModeManager:
                 f"Daily trade limit ({cfg.max_trades_per_day}) reached."
             )
 
-        # 4. Sufficient capital for at least 1 lot
+        # 4. Sufficient capital for at least 1 lot.
+        # Use the minimum realistic lot cost (cheapest option × smallest lot size)
+        # rather than cfg.trade_amount * 0.5 — that gate incorrectly blocks every
+        # trade when the user has a large trade_amount but modest capital, because
+        # Kelly will actually size down to a single affordable lot anyway.
+        # Cheapest real scenario: ₹30 LTP × 15 lot-size (BankNifty) = ₹450.
+        # Use ₹500 as the absolute floor so we never open a position on fumes.
+        MIN_LOT_COST = 500.0
         available = cfg.capital - (cfg.used_capital or 0.0)
-        if available < cfg.trade_amount * 0.5:
+        if available < MIN_LOT_COST:
             return False, (
                 f"Available capital ₹{available:.0f} is too low "
-                f"(trade amount ₹{cfg.trade_amount:.0f})."
+                f"(need at least ₹{MIN_LOT_COST:.0f} for 1 lot)."
             )
 
         return True, ""
