@@ -82,7 +82,7 @@ async def main():
     in_session = 9*60+15 <= ist_mins <= 15*60+25
     print(f"  In market session: {in_session}")
     print(f"  Minutes since open: {max(0, ist_mins - (9*60+15))}")
-    print(f"  Need 25 candles, have {len(n_today)} today-candles")
+    print(f"  Need 20 candles, have {len(n_today)} today-candles")
     print(f"  Minutes until strategy can run: {max(0, 25 - len(n_today))} more candles needed")
 
     # ── Avg volume state ───────────────────────────────────────────────────

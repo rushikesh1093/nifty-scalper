@@ -223,10 +223,10 @@ async def main():
         mins_since_open = ist_mins - (9 * 60 + 15)
         ok(f"In market session — {mins_since_open} min since open",
            f"current IST = {ist_now.strftime('%H:%M')}")
-        if mins_since_open < 25:
-            warn("Less than 25 minutes since open",
+        if mins_since_open < 20:
+            warn("Less than 20 minutes since open",
                  f"only {mins_since_open} candles could exist — "
-                 "strategy runner needs 25 today-candles before any strategy runs")
+                 "strategy runner needs 20 today-candles before any strategy runs")
 
     # ═════════════════════════════════════════════════════════════════════
     # GATE 6 — Candle data in Redis
@@ -256,8 +256,8 @@ async def main():
             fail(f"{label}: 0 candles total",
                  "market feed is not writing to Redis. "
                  "Check: GET /health — is feed_connected=true?")
-        elif len(today_c) < 25:
-            fail(f"{label}: only {len(today_c)} today-candles (need ≥ 25)",
+        elif len(today_c) < 20:
+            fail(f"{label}: only {len(today_c)} today-candles (need ≥ 20)",
                  f"total in Redis = {len(all_c)}. "
                  "Strategy runner exits early — no strategy runs. "
                  "Fix: wait for market to open, or POST /api/v1/market/reseed")

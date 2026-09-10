@@ -64,9 +64,34 @@ class PaperEngine:
 
     async def start(self):
         self._running = True
+        await self._reconcile_expired_positions()
         self._monitor_task = asyncio.create_task(self._monitor_loop())
         self._monitor_task.add_done_callback(self._on_monitor_done)
         logger.info("PaperEngine started.")
+
+    async def _reconcile_expired_positions(self):
+        """Close positions left open after their option contract expired."""
+        ist = timezone(timedelta(hours=5, minutes=30))
+        today = datetime.now(ist).date()
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(PaperPosition).where(
+                    PaperPosition.is_open == True,
+                    PaperPosition.expiry.is_not(None),
+                    PaperPosition.expiry < today,
+                )
+            )
+            expired = result.scalars().all()
+
+        for position in expired:
+            logger.warning(
+                "[PaperEngine] Reconciling expired open position %d (%s, expiry=%s)",
+                position.id, position.symbol, position.expiry,
+            )
+            # An expired option without a live quote is settled at zero in the
+            # paper ledger; the important part is releasing its reserved capital.
+            await self._close_position(position.id, 0.0, "EXPIRY")
 
     def _on_monitor_done(self, fut: asyncio.Future):
         """Auto-restart the monitor loop if it dies unexpectedly."""
@@ -656,17 +681,22 @@ class PaperEngine:
         # Update daily P&L
         await self._update_daily_pnl(pos, total_net)
 
-        # Cleanup Redis
-        await redis_cache.delete(f"pos:{pos_id}")
-
-        # Notify frontend
-        await redis_cache.publish_signal("paper_trade", {
-            "event":   "POSITION_CLOSED",
-            "pos_id":  pos_id,
-            "reason":  reason,
-            "net_pnl": total_net,
-            "exit":    exit_price,
-        })
+        # Redis is only a cache/notification layer; the DB close above is the
+        # source of truth and must remain successful if Redis is unavailable.
+        try:
+            await redis_cache.delete(f"pos:{pos_id}")
+            await redis_cache.publish_signal("paper_trade", {
+                "event":   "POSITION_CLOSED",
+                "pos_id":  pos_id,
+                "reason":  reason,
+                "net_pnl": total_net,
+                "exit":    exit_price,
+            })
+        except Exception as exc:
+            logger.warning(
+                "[PaperEngine] Redis cleanup/notification failed for closed pos %d: %s",
+                pos_id, exc,
+            )
 
     # ── Daily P&L aggregation ─────────────────────────────────────────────────
 

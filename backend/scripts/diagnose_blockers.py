@@ -51,8 +51,8 @@ async def main():
         today_candles = [c for c in candles if str(c.get("timestamp", "")).startswith(today_str)]
         print(f"  - {u} (token {token}): Total={len(candles)} | Today-only={len(today_candles)}")
 
-        if len(today_candles) < 25:
-            print(f"    [!] HARD BLOCKER: len(today_candles) = {len(today_candles)} < 25.")
+        if len(today_candles) < 20:
+            print(f"    [!] HARD BLOCKER: len(today_candles) = {len(today_candles)} < 20.")
             print(f"        Line 189 in strategy_runner.py aborts before running ANY strategy because it requires >= 25 today-candles!")
         else:
             ind = compute_all(today_candles)

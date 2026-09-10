@@ -155,10 +155,10 @@ async def main():
             all_candles = await redis_cache.get_candles(token, "ONE_MINUTE", 500)
             today_str   = str(datetime.now(timezone(timedelta(hours=5, minutes=30))).date())
             today_c     = [c for c in all_candles if str(c.get("timestamp","")).startswith(today_str)]
-            icon = "✅" if len(today_c) >= 25 else "❌"
-            print(f"  {underlying:10s} candles : total={len(all_candles):3d}  today={len(today_c):3d}  {icon} {'(< 25 required — all strategies skipped)' if len(today_c) < 25 else ''}")
+            icon = "✅" if len(today_c) >= 20 else "❌"
+            print(f"  {underlying:10s} candles : total={len(all_candles):3d}  today={len(today_c):3d}  {icon} {'(< 20 required — all strategies skipped)' if len(today_c) < 20 else ''}")
 
-            if len(today_c) >= 25:
+            if len(today_c) >= 20:
                 from app.strategies.indicators import compute_all
                 ind  = compute_all(today_c)
                 atr_v = ind.get("atr") or 0

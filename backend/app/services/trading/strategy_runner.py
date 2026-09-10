@@ -323,12 +323,12 @@ class StrategyRunner:
                 pass  # If we can't parse, keep the candle (safe default)
             candles.append(c)
 
-        if len(candles) < 25:
+        if len(candles) < 20:
             # Not enough today-only candles yet — market just opened or no data.
             # Do NOT fall back to multi-day candles: that would corrupt ORB high/low
             # (computed from today's first 15 candles) and the intraday VWAP reset.
             logger.debug(
-                "[%s] Only %d today-candles available (need 25) — skipping this cycle",
+                "[%s] Only %d today-candles available (need 20) — skipping this cycle",
                 underlying, len(candles),
             )
             return

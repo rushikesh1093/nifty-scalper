@@ -139,7 +139,7 @@ async def main():
         if today_c:
             print(f"  earliest: {today_c[0]['timestamp'][:16]}")
             print(f"  latest:   {today_c[-1]['timestamp'][:16]}")
-            print(f"  need 25 to start strategies: {'YES' if len(today_c) >= 25 else f'NO — wait {25-len(today_c)} more minutes'}")
+            print(f"  need 20 to start strategies: {'YES' if len(today_c) >= 20 else f'NO — wait {20-len(today_c)} more minutes'}")
 
     await redis_cache.disconnect()
 

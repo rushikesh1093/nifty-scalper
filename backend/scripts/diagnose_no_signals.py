@@ -208,9 +208,12 @@ async def check_candles(underlying: str) -> dict:
         else:
             _warn("Zero today-candles — market is closed, normal")
         result["sufficient"] = False
-    elif len(today_candles) < 25:
-        _warn(f"Only {len(today_candles)} candles — strategies need ≥25 (first 25 min after open)")
+    elif len(today_candles) < 20:
+        _warn(f"Only {len(today_candles)} candles — earliest strategies need ≥20 (first 20 min after open)")
         result["sufficient"] = False
+    elif len(today_candles) < 25:
+        _warn(f"{len(today_candles)} candles — early strategies can run; some need 25 candles")
+        result["sufficient"] = True
     else:
         _ok(f"{len(today_candles)} today-candles — sufficient for all strategies")
         result["sufficient"] = True
@@ -642,8 +645,8 @@ def print_verdict(infra, feed, candle, gates, strats, config, options):
     if not candle.get("sufficient"):
         if market_open() and candle.get("total", 0) == 0:
             system.append("Zero candles in Redis — TickWriter not writing or feed not ticking")
-        elif market_open() and candle.get("today", 0) < 25:
-            market.append(f"Only {candle.get('today',0)} today-candles — first 25 min after open (normal)")
+        elif market_open() and candle.get("today", 0) < 20:
+            market.append(f"Only {candle.get('today',0)} today-candles — first 20 min after open (normal)")
         elif not market_open():
             market.append("Market closed — no today-candles (expected)")
 
