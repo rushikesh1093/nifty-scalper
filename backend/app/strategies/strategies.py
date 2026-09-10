@@ -804,6 +804,94 @@ class GapVWAPFillStrategy(BaseStrategy):
         return None
 
 
+# ─── 13. Low-volatility range + VWAP rejection ───────────────────────────────
+
+class RangeVWAPReversionStrategy(BaseStrategy):
+    """Trade confirmed rejection at a quiet intraday range boundary.
+
+    This is deliberately separate from trend strategies: it only operates in
+    a low-ATR regime, requires a flat VWAP, and needs a rejection candle plus
+    a confirming close before buying the corresponding option.
+    """
+    name = "RANGE_VWAP_REVERSION"
+    sl_pct = 0.10
+    target_pct = 0.20
+    min_rr = 2.0
+    size_multiplier = 0.5
+    regime = "LOW_VOL_RANGE"
+    _cooldown_minutes = 20
+
+    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
+        if len(candles) < 25:
+            return None
+        if not _is_between(_market_time(candles), dtime(10,0), dtime(14,30)):
+            return None
+
+        close = _c(candles, "close")
+        open_ = _c(candles, "open")
+        high = _c(candles, "high")
+        low = _c(candles, "low")
+        vwap_v = indicators.get("vwap")
+        atr_v = indicators.get("atr") or 0.0
+        if None in (close, open_, high, low, vwap_v) or atr_v <= 0:
+            return None
+
+        # Low-vol regime is relative to the normal strategy threshold, not a
+        # blanket permission to trade every quiet candle.
+        normal_atr = 25.0 if self.underlying == "BANKNIFTY" else 7.5
+        if not (normal_atr * 0.70 <= atr_v < normal_atr):
+            return None
+
+        window = candles[-21:-1]
+        closes = [_c([c], "close") for c in window]
+        if any(value is None for value in closes):
+            return None
+
+        range_high = max(float(c["high"]) for c in window)
+        range_low = min(float(c["low"]) for c in window)
+        range_width = range_high - range_low
+        if range_width <= 0 or range_width > atr_v * 4.0:
+            return None
+
+        # Approximate VWAP slope from the close series. With index volume=0,
+        # this remains meaningful and avoids treating a flat VWAP as a trend.
+        slope = abs(closes[-1] - closes[0])
+        if slope > atr_v * 0.75:
+            return None
+        if abs(close - vwap_v) > atr_v * 1.5:
+            return None
+
+        previous_close = _c(candles, "close", -2)
+        previous_high = _c(candles, "high", -2)
+        previous_low = _c(candles, "low", -2)
+        if None in (previous_close, previous_high, previous_low):
+            return None
+
+        body = abs(close - open_)
+        lower_wick = min(open_, close) - low
+        upper_wick = high - max(open_, close)
+        lower_boundary = range_low + range_width * 0.25
+        upper_boundary = range_high - range_width * 0.25
+
+        # Boundary touch + rejection candle + next-close confirmation.
+        if (low <= lower_boundary and close > open_ and close > previous_close
+                and lower_wick >= body and close < range_high):
+            return self._make_signal(
+                Direction.BUY, close, indicators,
+                f"Low-vol range low rejection {range_low:.1f} → VWAP {vwap_v:.1f}; "
+                f"ATR={atr_v:.1f} size=50%",
+            )
+
+        if (high >= upper_boundary and close < open_ and close < previous_close
+                and upper_wick >= body and close > range_low):
+            return self._make_signal(
+                Direction.SELL, close, indicators,
+                f"Low-vol range high rejection {range_high:.1f} → VWAP {vwap_v:.1f}; "
+                f"ATR={atr_v:.1f} size=50%",
+            )
+        return None
+
+
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
 def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
@@ -821,6 +909,8 @@ def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
         IVCrushStrategy(underlying),
         CPRVWAPStrategy(underlying),
         GapVWAPFillStrategy(underlying),
+        RangeVWAPReversionStrategy(underlying),
+        RangeVWAPReversionStrategy,
     ]
 
 

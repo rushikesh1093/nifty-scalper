@@ -37,6 +37,8 @@ class SignalEvent:
     sl_pct:          float = 0.10   # SL as 10% of option LTP
     target_pct:      float = 0.20   # Target as 20% of option LTP → R:R = 2.0
     min_rr:          float = 2.0    # Min R:R required (enforced in PaperEngine)
+    size_multiplier: float = 1.0    # Optional regime-specific sizing adjustment
+    regime:          str = "NORMAL"
     # Suggested entry params (filled by option selector later)
     suggested_strike: Optional[float] = None
     entry_price_ref:  Optional[float] = None
@@ -188,6 +190,8 @@ class BaseStrategy(ABC):
     sl_pct:      float = 0.10   # SL as 10% of option LTP
     target_pct:  float = 0.20   # Target as 20% of option LTP → R:R = 2.0
     min_rr:      float = 2.0    # Hard minimum R:R — trade skipped if below this
+    size_multiplier: float = 1.0
+    regime:          str = "NORMAL"
 
     def __init__(self, underlying: str = "NIFTY"):
         self.underlying = underlying
@@ -241,5 +245,7 @@ class BaseStrategy(ABC):
             sl_pct=self.sl_pct,
             target_pct=self.target_pct,
             min_rr=self.min_rr,
+            size_multiplier=self.size_multiplier,
+            regime=self.regime,
             notes=notes,
         )

@@ -203,6 +203,7 @@ class PaperEngine:
         trade_amount = await mode_manager.kelly_trade_amount(
             signal.strategy_name, cfg
         )
+        trade_amount = round(trade_amount * signal.size_multiplier, 2)
 
         # ── Lot sizing — MUST happen before reserve_capital ──────────────────
         lots, capital_used = _calc_lots(trade_amount, ltp, lot_size)
@@ -253,7 +254,14 @@ class PaperEngine:
                         approx_delta = 0.35
                     spot_move_needed = sl_distance_pts / approx_delta
                     min_atr_needed   = spot_move_needed / 2.0
-                    if signal.underlying == "BANKNIFTY":
+                    if signal.regime == "LOW_VOL_RANGE":
+                        # Range trades use tighter option risk and half size;
+                        # allow the low-volatility regime to use its own floor.
+                        min_atr_needed = min(
+                            min_atr_needed,
+                            15.0 if signal.underlying == "BANKNIFTY" else 5.0,
+                        )
+                    elif signal.underlying == "BANKNIFTY":
                         min_atr_needed = min(min_atr_needed, 25.0)
                     else:
                         min_atr_needed = min(min_atr_needed, 7.5)

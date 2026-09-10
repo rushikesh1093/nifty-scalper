@@ -12,7 +12,7 @@ export function StrategyPanel() {
   });
 
   const flags       = cfg?.strategy_flags || {};
-  const activeCount = Object.values(flags).filter(Boolean).length;
+  const activeCount = STRATEGY_META.filter(s => flags[s.key] !== false).length;
 
   return (
     <div className="space-y-3">
