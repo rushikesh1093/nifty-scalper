@@ -162,8 +162,8 @@ def rsi(close: np.ndarray, period: int = 14) -> np.ndarray:
     delta[0] = np.nan
     delta[1:] = np.diff(c)
 
-    gain = np.where(delta > 0,  delta, 0.0)
-    loss = np.where(delta < 0, -delta, 0.0)
+    gain = np.where(np.isnan(delta), np.nan, np.where(delta > 0,  delta, 0.0))
+    loss = np.where(np.isnan(delta), np.nan, np.where(delta < 0, -delta, 0.0))
 
     avg_gain = rma(gain, period)
     avg_loss = rma(loss, period)
@@ -245,9 +245,12 @@ def supertrend(high, low, close, period: int = 10, multiplier: float = 3.0) -> S
     if first_valid >= n:
         return SupertrendResult(supertrend=st, direction=dir_)
 
-    # Seed first valid bar as bullish
-    st[first_valid]   = final_lower[first_valid]
-    dir_[first_valid] = 1
+    # Seed from the first valid candle instead of assuming a bullish trend.
+    dir_[first_valid] = 1 if c[first_valid] >= hl2[first_valid] else -1
+    st[first_valid]   = (
+        final_lower[first_valid] if dir_[first_valid] == 1
+        else final_upper[first_valid]
+    )
 
     for i in range(first_valid + 1, n):
         # Bands only tighten (ratchet) unless price crossed them last bar

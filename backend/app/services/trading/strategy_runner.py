@@ -142,6 +142,10 @@ class StrategyRunner:
                         )
 
                 for strat in self._strategies.get(underlying, []):
+                    if isinstance(strat, OISpikeStrategy):
+                        strat.reset_daily()
+                    if isinstance(strat, IVCrushStrategy):
+                        strat.reset_daily()
                     if isinstance(strat, PDHPDLStrategy):
                         if prev:
                             strat.set_levels(pdh=prev.high, pdl=prev.low)

@@ -510,6 +510,13 @@ class OISpikeStrategy(BaseStrategy):
         self.ce_oi = ce_oi;           self.pe_oi = pe_oi
         self._update_count += 1
 
+    def reset_daily(self):
+        self.ce_oi_prev = 0
+        self.pe_oi_prev = 0
+        self.ce_oi = 0
+        self.pe_oi = 0
+        self._update_count = 0
+
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
         # Block entirely on expiry day — OI rolls, unwinding, and re-hedging
         # create massive fake spike signals all afternoon.
@@ -605,6 +612,11 @@ class IVCrushStrategy(BaseStrategy):
         self.prev_atm_iv    = self.atm_iv
         self.atm_iv         = atm_iv
         self._iv_updated_at = datetime.now(timezone.utc)
+
+    def reset_daily(self):
+        self.atm_iv = 0
+        self.prev_atm_iv = 0
+        self._iv_updated_at = None
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
         if not self.atm_iv or not self.prev_atm_iv: return None

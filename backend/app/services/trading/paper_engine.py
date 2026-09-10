@@ -43,14 +43,16 @@ def _calc_lots(trade_amount: float, ltp: float, lot_size: int) -> tuple[int, flo
 
     Returns:
         (lots, capital_used)
-        lots       — at least 1, capped so capital_used ≤ trade_amount
+        lots       — zero when one lot does not fit the configured budget
         capital_used — lots × ltp × lot_size  (premium cost)
     """
-    if ltp <= 0 or lot_size <= 0:
-        return 1, ltp * lot_size
+    if trade_amount <= 0 or ltp <= 0 or lot_size <= 0:
+        return 0, 0.0
 
     cost_per_lot = ltp * lot_size
-    lots = max(1, math.floor(trade_amount / cost_per_lot))
+    lots = math.floor(trade_amount / cost_per_lot)
+    if lots < 1:
+        return 0, 0.0
     capital_used = round(lots * cost_per_lot, 2)
     return lots, capital_used
 
@@ -206,6 +208,15 @@ class PaperEngine:
         # Hard cap from config
         lots = min(lots, cfg.max_lots_per_trade)
         capital_used = round(lots * ltp * lot_size, 2)
+
+        if lots < 1 or capital_used <= 0:
+            reason = (
+                f"One lot costs ₹{ltp * lot_size:,.2f}, above trade amount "
+                f"₹{trade_amount:,.2f}"
+            )
+            await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
+            logger.info("[PaperEngine] SKIPPED %s: %s", signal.strategy_name, reason)
+            return False
 
         # ── Atomic capital reservation (serialises concurrent signals) ────────
         # reserve_capital atomically increments used_capital + daily_trades_count
@@ -447,14 +458,14 @@ class PaperEngine:
             #          so rounding never puts SL above entry causing instant exit)
             # Tier 2: up 20% → lock 15% profit (SL → entry × 1.15)
             # Tier 3: up 35% → lock 25% profit (SL → entry × 1.25)
-            # Partial exit at +40% — closes 50% of lots, remainder runs to target
+            # Partial exit at +20% — closes 50% of lots, remainder runs to target
             # with SL moved to breakeven.
             # All tiers only advance — SL never goes backwards.
             if live_entry:
                 gain_pct = (ltp - live_entry) / live_entry * 100
 
-                # ── Partial exit at +40% — fires once per position ────────────
-                if gain_pct >= 40.0 and not pos.partial_closed:
+                # ── Partial exit at +20% — fires once before the +30% target ─
+                if gain_pct >= 20.0 and not pos.partial_closed:
                     await self._partial_close(pos, ltp)
                     return
 

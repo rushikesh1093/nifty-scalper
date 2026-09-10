@@ -9,7 +9,7 @@ Traces a full winning trade end-to-end through the CURRENT code path:
 
 Also simulates:
   - SL hit (verifies loss is correctly bounded)
-  - Partial close at +40% (verifies capital/P&L split)
+    - Partial close at +20% (verifies capital/P&L split)
   - TIMEOUT exit (verifies capital released)
   - Breakeven trailing-SL fix (verifies entry=37.93 no longer instant-exits)
 
@@ -294,10 +294,10 @@ def scenario_breakeven_fix():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SCENARIO 4 — Partial close at +40%
+# SCENARIO 4 — Partial close at +20%
 # ══════════════════════════════════════════════════════════════════════════════
 def scenario_partial_close():
-    sep("Scenario 4 — Partial close at +40% then remainder hits TARGET")
+    sep("Scenario 4 — Partial close at +20% then remainder hits TARGET")
 
     entry    = 100.0
     lot_size = 50
@@ -306,8 +306,8 @@ def scenario_partial_close():
     tgt      = round(entry * 1.30, 1)
     brok_entry = BROKERAGE_PER_LOT * lots
 
-    # Partial close: 50% of lots at +40%
-    partial_price  = round(entry * 1.40, 1)
+    # Partial close: 50% of lots at +20%, before the +30% target
+    partial_price  = round(entry * 1.20, 1)
     partial_lots   = max(1, lots // 2)   # 1 lot
     partial_qty    = partial_lots * lot_size
     remain_qty     = qty - partial_qty
@@ -321,7 +321,7 @@ def scenario_partial_close():
     remain_sl     = math.floor(entry * 10) / 10
 
     print(f"  Entry={entry}  qty={qty}  lots={lots}  tgt={tgt}")
-    print(f"\n  Partial close at +40% (Rs.{partial_price}):")
+    print(f"\n  Partial close at +20% (Rs.{partial_price}):")
     print(f"    Closed  : {partial_lots} lot / {partial_qty} qty")
     print(f"    P&L     : Rs.{partial_net:+.2f}")
     print(f"    Remaining: {remain_lots} lot  |  new SL → Rs.{remain_sl} (breakeven)")
