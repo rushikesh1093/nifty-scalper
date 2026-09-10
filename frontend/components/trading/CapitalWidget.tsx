@@ -2,7 +2,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getCapital, setTradeAmount, setCapital } from "@/lib/tradingApi";
 import { useState } from "react";
-import { cn } from "@/lib/utils";
 import toast from "react-hot-toast";
 import type { CapitalSummary } from "@/types/trading";
 
@@ -51,7 +50,8 @@ export function CapitalWidget() {
   if (!cap) return <div className="rounded-xl h-40 shimmer" />;
 
   const usedPct = cap.utilisation_pct ?? 0;
-  const lossPct = cap.capital > 0 ? Math.abs(cap.realised_pnl) / cap.capital * 100 : 0;
+  const lossAmount = Math.max(0, -cap.realised_pnl);
+  const lossPct = cap.max_daily_loss > 0 ? lossAmount / cap.max_daily_loss * 100 : 0;
   const pnlPositive = cap.realised_pnl >= 0;
 
   return (
@@ -69,34 +69,36 @@ export function CapitalWidget() {
 
       {/* Capital header */}
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Capital</span>
+        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Capital & Risk</span>
         <span className="font-mono text-[11px] font-semibold" style={{ color: pnlPositive ? "var(--green)" : "var(--red)" }}>
           {pnlPositive ? "+" : ""}₹{cap.realised_pnl.toLocaleString("en-IN", { maximumFractionDigits: 0 })} today
         </span>
       </div>
 
-      {/* Three capital cards */}
+      {/* Capital breakdown */}
       <div className="grid grid-cols-3 gap-2">
         {[
-          { label: "Total",     val: fmt(cap.capital),            color: "var(--text-1)",  action: () => setEditing("capital") },
-          { label: "In Use",    val: fmt(cap.used_capital),       color: "var(--yellow)",  action: null },
-          { label: "Available", val: fmt(cap.available_capital),  color: cap.available_capital < cap.trade_amount ? "var(--red)" : "var(--green)", action: null },
-        ].map(({ label, val, color, action }) => (
+          { label: "Total capital", val: fmt(cap.capital),           color: "var(--text-1)" },
+          { label: "Reserved",      val: fmt(cap.used_capital),      color: "var(--yellow)" },
+          { label: "Free to use",   val: fmt(cap.available_capital), color: cap.available_capital < cap.trade_amount ? "var(--red)" : "var(--green)" },
+        ].map(({ label, val, color }) => (
           <div
             key={label}
-            onClick={() => action?.()}
             className="rounded-lg px-2 py-2.5 text-center"
             style={{
               background: "var(--surface-2)",
               border: "1px solid var(--border)",
-              cursor: action ? "pointer" : "default",
             }}
           >
             <div className="text-[9px] font-semibold uppercase tracking-wider mb-1" style={{ color: "var(--text-3)" }}>{label}</div>
             <div className="font-mono font-bold" style={{ fontSize: 13, color }}>{val}</div>
-            {action && <div className="text-[9px] mt-0.5" style={{ color: "var(--text-4)" }}>tap to edit</div>}
           </div>
         ))}
+      </div>
+
+      <div className="flex items-center justify-between text-[10px]" style={{ color: "var(--text-3)" }}>
+        <span>Reserved = capital locked in open trades</span>
+        <button onClick={() => setEditing("capital")} style={{ color: "var(--accent)" }}>Edit total</button>
       </div>
 
       {/* Capital edit */}
@@ -120,7 +122,7 @@ export function CapitalWidget() {
       {/* Utilisation */}
       <div className="space-y-1.5">
         <div className="flex justify-between" style={{ fontSize: 10, color: "var(--text-3)" }}>
-          <span>Capital utilisation</span><span>{usedPct.toFixed(1)}%</span>
+          <span>Capital currently reserved</span><span>{usedPct.toFixed(1)}%</span>
         </div>
         <ProgressBar pct={usedPct} color={usedPct > 80 ? "var(--red)" : usedPct > 50 ? "var(--yellow)" : "var(--accent)"} />
       </div>
@@ -128,16 +130,17 @@ export function CapitalWidget() {
       {/* Daily loss */}
       <div className="space-y-1.5">
         <div className="flex justify-between" style={{ fontSize: 10, color: "var(--text-3)" }}>
-          <span>Daily loss limit ({cap.max_daily_loss_pct}%)</span><span>{lossPct.toFixed(1)}% used</span>
+          <span>Daily loss limit: {fmt(cap.max_daily_loss)} ({cap.max_daily_loss_pct}%)</span>
+          <span>{fmt(lossAmount)} used</span>
         </div>
-        <ProgressBar pct={cap.max_daily_loss_pct > 0 ? lossPct / cap.max_daily_loss_pct * 100 : 0}
-          color={lossPct >= cap.max_daily_loss_pct ? "var(--red)" : lossPct > cap.max_daily_loss_pct * 0.7 ? "var(--yellow)" : "var(--green)"} />
+        <ProgressBar pct={lossPct}
+          color={lossPct >= 100 ? "var(--red)" : lossPct > 70 ? "var(--yellow)" : "var(--green)"} />
       </div>
 
       {/* Per-trade amount */}
       <div className="pt-3" style={{ borderTop: "1px solid var(--border)" }}>
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Per-trade amount</span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Budget per new trade</span>
           <button onClick={() => setEditing(editing === "trade" ? null : "trade")}
             className="text-[10px] font-medium transition-colors"
             style={{ color: "var(--accent)" }}>
@@ -161,7 +164,12 @@ export function CapitalWidget() {
               ))}
             </div>
             <div className="text-right font-mono font-bold" style={{ fontSize: 13, color: "var(--accent)" }}>
-              {fmt(cap.trade_amount)} <span className="text-[9px] font-normal" style={{ color: "var(--text-3)" }}>current</span>
+              {fmt(cap.trade_amount)} <span className="text-[9px] font-normal" style={{ color: "var(--text-3)" }}>per entry</span>
+            </div>
+            <div className="text-[10px]" style={{ color: cap.trade_amount > cap.available_capital ? "var(--red)" : "var(--text-3)" }}>
+              {cap.trade_amount > cap.available_capital
+                ? "Budget is above free capital; new trades may be blocked."
+                : "This is a sizing limit, not money currently invested."}
             </div>
           </div>
         ) : (
