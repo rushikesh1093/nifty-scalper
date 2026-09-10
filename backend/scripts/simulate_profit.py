@@ -124,7 +124,7 @@ def scenario_target_hit():
 
     ltp        = 103.0
     lot_size   = 50
-    trade_amt  = 5_000
+    trade_amt  = 6_000
     slippage   = 0.05    # 0.05% slippage
 
     e = entry_calc(ltp, sl_pct=0.15, tgt_pct=0.30, slippage_pct=slippage)
@@ -217,7 +217,7 @@ def scenario_sl_hit():
 
     ltp      = 103.0
     lot_size = 50
-    trade_amt = 5_000
+    trade_amt = 6_000
 
     e = entry_calc(ltp, 0.15, 0.30, 0.05)
     lots, capital = calc_lots(trade_amt, ltp, lot_size)
@@ -360,7 +360,7 @@ def scenario_full_day():
     sep("Scenario 5 — Full day simulation (8 trades, 50% win rate)")
 
     capital      = 15_000.0
-    trade_amt    = 5_000.0
+    trade_amt    = 6_000.0
     lot_size     = 50
     slippage_pct = 0.05
 
