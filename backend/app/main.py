@@ -117,10 +117,15 @@ _LOCALHOST_ORIGINS = [
 ] + [
     f"http://127.0.0.1:{p}" for p in range(3000, 3011)
 ]
+_CONFIGURED_ORIGINS = [
+    origin.strip()
+    for origin in settings.CORS_ORIGINS.split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_LOCALHOST_ORIGINS,
+    allow_origins=_LOCALHOST_ORIGINS + _CONFIGURED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

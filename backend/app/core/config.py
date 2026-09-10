@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "Nifty Scalper"
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
+    CORS_ORIGINS: str = ""
 
     # PostgreSQL (local)
     POSTGRES_HOST: str = "localhost"
