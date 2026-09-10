@@ -39,7 +39,8 @@ class CandleBuilder:
         Process a tick. Returns a completed candle dict if the minute flipped,
         otherwise None.
         """
-        now = tick.received_at.replace(second=0, microsecond=0, tzinfo=timezone.utc)        token = tick.token
+        now = tick.received_at.replace(second=0, microsecond=0, tzinfo=timezone.utc)
+        token = tick.token
         completed = None
 
         if token in self._candles:
