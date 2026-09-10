@@ -305,8 +305,8 @@ class ModeManager:
             return 10_000.0  # hardcoded fallback if no config at all
 
         capital = cfg.capital or 100_000.0
-        kelly_min_amount = KELLY_MIN_FRACTION * capital   # e.g. ₹1,500 at ₹15k cap
-        kelly_max_amount = KELLY_MAX_FRACTION * capital   # e.g. ₹4,500 at ₹15k cap
+        kelly_min_amount = KELLY_MIN_FRACTION * capital
+        kelly_max_amount = KELLY_MAX_FRACTION * capital
 
         try:
             async with AsyncSessionLocal() as db:
@@ -324,10 +324,14 @@ class ModeManager:
                 or not perf.avg_rr
                 or perf.avg_rr <= 0
             ):
-                # Not enough history — use configured fixed sizing, clamped to capital
-                fallback = min(cfg.trade_amount, kelly_max_amount)
-                fallback = max(fallback, kelly_min_amount)
-                return round(fallback / 500) * 500
+                # Not enough history — use the configured amount exactly. The
+                # capital reservation and lot-sizing checks enforce affordability.
+                logger.debug(
+                    "[Kelly] %s: %d or fewer completed trades — using configured "
+                    "trade amount ₹%.0f",
+                    strategy_name, perf.total_trades if perf else 0, cfg.trade_amount,
+                )
+                return float(cfg.trade_amount)
 
             p = perf.win_rate / 100.0
             q = 1.0 - p
