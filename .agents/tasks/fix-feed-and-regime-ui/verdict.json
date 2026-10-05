@@ -1,0 +1,11 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "iteration": 1,
+  "summary": "Feed fix correct. Regime backend has Redis field mismatch (reads 'since' but stores 'timestamp'). Frontend has router path mismatch (calls /api/v1/regime/* but router is at /api/regime). Frontend changes not committed.",
+  "findings": [
+    "RegimePerformance API path mismatch: Component creates axios instance with baseURL 'http://localhost:8000/api/v1', then calls api.get('/regime/performance'). This produces /api/v1/regime/performance, but the regime router is registered at app.include_router(regime_router, prefix='/api/regime'), making the real path /api/regime/performance. Change the router registration in main.py to prefix='/api/v1/regime' to match other routers.",
+    "Redis field name mismatch in /api/regime/current: Endpoint reads data.get('since') but RegimeState stores 'timestamp', not 'since'. Change line 100 in regime.py from since_dt = datetime.fromisoformat(data.get('since', '')) to since_dt = datetime.fromisoformat(data.get('timestamp', '')), and line 109 from 'since': data.get('since') to 'since': data.get('timestamp'). Without this fix, the endpoint returns since: null for every request and the live counter in RegimeStatus resets to 0 every 5 seconds.",
+    "Frontend API functions path mismatch: getCurrentRegime and getRegimeHistory in lib/api.ts use the shared api instance with baseURL 'http://localhost:8000/api/v1', producing paths /api/v1/regime/current and /api/v1/regime/history. The router is at /api/regime, not /api/v1/regime. These calls will 404. Fixed by changing router registration as noted above.",
+    "Frontend changes not committed: FEAT-002 marked complete but the entire try12/frontend/ directory is untracked. Run git add try12/frontend/ and commit with message 'feat: add regime UI with current status, performance stats, and timeline' as specified in FEAT-002 step 12."
+  ]
+}

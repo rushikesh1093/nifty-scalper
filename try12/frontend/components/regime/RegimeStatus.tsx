@@ -4,13 +4,24 @@ import { getCurrentRegime } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 const REGIME_COLORS: Record<string, string> = {
-  TRENDING_UP:        "var(--green)",
-  TRENDING_DOWN:      "var(--green)",
-  SIDEWAYS_CHOP:      "#f59e0b", // yellow
-  VWAP_MAGNET:        "#f59e0b",
-  EXPIRY_DAY:         "var(--red)",
-  REGIME_TRANSITION:  "var(--red)",
-  UNKNOWN:            "var(--text-3)",
+  // Bullish regimes (green)
+  BULL_TREND_NORMAL_VOL:      "var(--green)",
+  BREAKOUT_EVENT_BULLISH:     "var(--green)",
+  
+  // Bearish regimes (red)
+  BEAR_TREND_NORMAL_VOL:      "var(--red)",
+  BREAKOUT_EVENT_BEARISH:     "var(--red)",
+  HIGH_VOL_CHOP:              "var(--red)",
+  
+  // Neutral/mixed regimes (yellow/orange)
+  TREND_HIGH_VOL:             "#f59e0b",
+  LOW_VOL_COMPRESSION:        "#f59e0b",
+  RANGE_NORMAL_VOL:           "#f59e0b",
+  REGIME_TRANSITION:          "#f59e0b",
+  
+  // Special (gray)
+  EXPIRY_DAY:                 "var(--text-3)",
+  UNKNOWN:                    "var(--text-4)",
 };
 
 function formatDuration(seconds: number): string {

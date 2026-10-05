@@ -1,0 +1,318 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Create Alembic migration for `regime_states`, `regime_performance`, and `regime_config` tables": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026832076
+      },
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026842666
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027460374
+      }
+    ],
+    "1.2 Create SQLAlchemy ORM models in `app/db/models/regime.py`": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026832396
+      },
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026848191
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027392109
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027467964
+      }
+    ],
+    "2.1 Create `app/services/trading/regime_config.py` with `RegimeConfig` dataclass and loader": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026832688
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027475690
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027905416
+      }
+    ],
+    "3.1 Create `app/services/trading/regime_indicators.py` with `RegimeIndicators` dataclass and indicator functions": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026832832
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027480827
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027911878
+      }
+    ],
+    "4.1 Create `app/services/trading/regime_rules.py` with `RegimeRule`, `REGIME_RULES`, and `classify_regime()`": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026832950
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027916689
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028376624
+      }
+    ],
+    "5.1 Create `app/services/trading/regime_detector.py` with `RegimeState` dataclass and `RegimeDetector` class": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026833066
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028413263
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028687490
+      }
+    ],
+    "6.1 Create `app/services/trading/regime_persistence.py` with `RegimePersistence` class": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026833205
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027925178
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028380456
+      }
+    ],
+    "7.1 Create `app/services/trading/strategy_orchestrator.py` with `StrategyOrchestrator` class": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026833323
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028418145
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028691509
+      }
+    ],
+    "8. Checkpoint — Core components complete": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026833448
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028726821
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028759313
+      }
+    ],
+    "9.1 Modify `app/services/trading/strategy_runner.py` to call regime detection before the strategy loop": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026833583
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028782495
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029253202
+      }
+    ],
+    "10.1 Modify `app/services/trading/paper_engine.py` to apply regime signal filtering and position size multiplier": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026833759
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029264217
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029413348
+      }
+    ],
+    "10.2 Modify `PaperEngine._close_position` to record regime performance": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026833879
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029417417
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029437411
+      }
+    ],
+    "11.1 Create `app/api/routes/regime.py` with a GET endpoint for regime performance statistics": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026833998
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028786475
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029258206
+      }
+    ],
+    "12. Final checkpoint — Full integration complete": [
+      {
+        "executionId": "a3145913-bee9-4883-ba37-6f49f027e0b2",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791026834117
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029450391
+      },
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029474496
+      }
+    ],
+    "1. Create database schema and SQLAlchemy models for regime persistence": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027468086
+      }
+    ],
+    "2. Implement `RegimeConfig` dataclass and configuration loading": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027905519
+      }
+    ],
+    "3. Implement regime indicator computation functions": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791027912011
+      }
+    ],
+    "4. Implement regime classification logic": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028376696
+      }
+    ],
+    "6. Implement `RegimePersistence`": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028380524
+      }
+    ],
+    "5. Implement `RegimeDetector`": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028687566
+      }
+    ],
+    "7. Implement `StrategyOrchestrator`": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791028691582
+      }
+    ],
+    "9. Integrate `RegimeDetector` and `StrategyOrchestrator` into `StrategyRunner`": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029253305
+      }
+    ],
+    "11. Add regime performance API endpoint": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029258279
+      }
+    ],
+    "10. Integrate regime signal filtering and position sizing into `PaperEngine`": [
+      {
+        "executionId": "79a612d1-e4f4-49e6-81fc-568b063204b8",
+        "chatSessionId": "sess_1f641afb-5a3a-4772-92b8-336edefa61fa",
+        "timestamp": 1791029437500
+      }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "task_id": "task-fix-feed-and-regime-ui",
+  "task_description": "Fix WebSocket feed _WsState bug and build complete regime UI with backend endpoints and frontend components",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}

@@ -1,0 +1,28 @@
+{
+  "project_type": "FastAPI backend + Next.js 14 App Router frontend, Python 3.11 + TypeScript",
+  "language": "Python (backend), TypeScript (frontend)",
+  "build_system": "uvicorn for backend server, npm/next for frontend, no build step required for Python",
+  "test_framework": "None found in project — verification uses health endpoints and manual testing",
+  "build_command": "Backend: cd try12/backend && uvicorn app.main:app --reload (port 8000); Frontend: cd try12/frontend && npm run dev (port 3000)",
+  "test_command": "No automated tests found. Verify via: curl http://localhost:8000/health (backend) and browser at http://localhost:3000 (frontend)",
+  "verification_instructions": "Start backend server, check /health endpoint for feed_connected=true. Start frontend, check StatusBar shows 'Live' indicator. Navigate to new /regime page and verify data loads.",
+  "snapshot_or_generated_files": "None — no generated files to commit",
+  "environment_constraints": "Windows PowerShell environment. Backend must run on port 8000, frontend on port 3000. Redis must be running on localhost:6379. PostgreSQL must be available at DATABASE_URL from .env. Do not restart servers during development — hot reload is active.",
+  "contribution_requirements": "No CONTRIBUTING.md or AGENTS.md found. Follow existing code patterns. Backend uses FastAPI with async/await. Frontend uses Next.js 14 App Router, Tanstack Query for data fetching, Zustand for global state. Components use inline styles with CSS custom properties (var(--green), var(--red), var(--text-2), var(--surface-2), var(--border), var(--accent), var(--text-3)). Use cn() utility from @/lib/utils for className merging.",
+  "key_patterns": "Backend routes return JSON, use Depends(get_db) for DB access, use redis_cache singleton for Redis. Frontend components are client components ('use client'), use useQuery for GET requests with 5-30s refetchInterval, use inline styles with CSS vars, follow existing StatusBar and NavBar patterns for styling. API calls go through @/lib/api.ts wrapper. Types defined in @/types/market.ts.",
+  "relevant_files": [
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\backend\\app\\services\\market_data\\feed.py",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\backend\\app\\main.py",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\backend\\app\\api\\routes\\regime.py",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\backend\\app\\db\\models\\regime.py",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\backend\\app\\services\\cache\\redis_client.py",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\backend\\app\\services\\trading\\regime_persistence.py",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\frontend\\components\\market\\StatusBar.tsx",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\frontend\\components\\market\\NavBar.tsx",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\frontend\\lib\\api.ts",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\frontend\\lib\\store.ts",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\frontend\\lib\\utils.ts",
+    "c:\\Users\\rushi\\Downloads\\try12fin\\try12\\frontend\\app\\layout.tsx"
+  ],
+  "directory_structure": "Root: c:\\Users\\rushi\\Downloads\\try12fin. Backend: try12/backend/app with services/, api/routes/, db/models/. Frontend: try12/frontend with app/ (Next.js App Router pages), components/ (React components), lib/ (utilities and API client). Redis keys: ltp:{token}, tick:{token}, regime:{underlying}:current, regime:{underlying}:history. DB tables: regime_states (history), regime_performance (stats), regime_config (thresholds)."
+}

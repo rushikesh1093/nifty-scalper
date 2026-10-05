@@ -4,13 +4,24 @@ import { getRegimeHistory } from "@/lib/api";
 import { useState } from "react";
 
 const REGIME_COLORS: Record<string, string> = {
-  TRENDING_UP:        "#10b981", // green
-  TRENDING_DOWN:      "#10b981",
-  SIDEWAYS_CHOP:      "#f59e0b", // yellow
-  VWAP_MAGNET:        "#f59e0b",
-  EXPIRY_DAY:         "#ef4444", // red
-  REGIME_TRANSITION:  "#ef4444",
-  UNKNOWN:            "#6b7280", // gray
+  // Bullish regimes (green)
+  BULL_TREND_NORMAL_VOL:      "#10b981",
+  BREAKOUT_EVENT_BULLISH:     "#10b981",
+  
+  // Bearish regimes (red)
+  BEAR_TREND_NORMAL_VOL:      "#ef4444",
+  BREAKOUT_EVENT_BEARISH:     "#ef4444",
+  HIGH_VOL_CHOP:              "#ef4444",
+  
+  // Neutral/mixed regimes (yellow/orange)
+  TREND_HIGH_VOL:             "#f59e0b",
+  LOW_VOL_COMPRESSION:        "#f59e0b",
+  RANGE_NORMAL_VOL:           "#f59e0b",
+  REGIME_TRANSITION:          "#f59e0b",
+  
+  // Special (gray)
+  EXPIRY_DAY:                 "#6b7280",
+  UNKNOWN:                    "#6b7280",
 };
 
 export function RegimeTimeline() {
