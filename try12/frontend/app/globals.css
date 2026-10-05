@@ -1,0 +1,142 @@
+/* ── Google Fonts — must precede all @tailwind directives ─────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Surface palette */
+  --bg:          #080b11;
+  --surface:     #0e1118;
+  --surface-2:   #141720;
+  --surface-3:   #1b1f2e;
+  --border:      #232635;
+  --border-2:    #2d3148;
+
+  /* Accent */
+  --accent:      #6366f1;
+  --accent-dim:  #6366f120;
+  --accent-glow: #6366f140;
+
+  /* Semantic */
+  --green:       #22d3a0;
+  --green-dim:   #22d3a015;
+  --red:         #f43f5e;
+  --red-dim:     #f43f5e15;
+  --yellow:      #f59e0b;
+  --yellow-dim:  #f59e0b15;
+  --blue:        #38bdf8;
+  --blue-dim:    #38bdf815;
+
+  /* Text */
+  --text-1:  #f0f2f8;
+  --text-2:  #9aa3b8;
+  --text-3:  #5c6478;
+  --text-4:  #363b4d;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text-1);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Mono — prices / numbers */
+.font-mono, code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* Selection */
+::selection { background: var(--accent-glow); color: var(--text-1); }
+
+/* Focus ring */
+:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Utility classes ─────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.card-2 {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.03em;
+}
+
+/* Subtle animated gradient for live pulse */
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+.animate-pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+
+/* Glow dot */
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 4px 1px var(--green); }
+  50%       { box-shadow: 0 0 8px 3px var(--green); }
+}
+.dot-live { animation: glow 2.5s ease-in-out infinite; }
+
+/* Number shimmer for loading */
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position:  200% 0; }
+}
+.shimmer {
+  background: linear-gradient(90deg, var(--surface-3) 25%, var(--border) 50%, var(--surface-3) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 4px;
+}
+
+/* ── NavBar link ─────────────────────────────────────────────────────────── */
+.nav-link {
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  height: 40px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s;
+  white-space: nowrap;
+}
+.nav-link:hover { color: var(--text-1); }
+.nav-link[data-active="true"] {
+  color: var(--text-1);
+  border-bottom-color: var(--accent);
+}
