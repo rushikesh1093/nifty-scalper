@@ -98,8 +98,8 @@ async def get_regime_current(
             }
         
         data = json.loads(raw)
-        # Calculate seconds_in_regime from 'since' timestamp
-        since_dt = datetime.fromisoformat(data.get("since", "")) if data.get("since") else None
+        # Calculate seconds_in_regime from 'timestamp' field (stored by RegimeState)
+        since_dt = datetime.fromisoformat(data.get("timestamp", "")) if data.get("timestamp") else None
         seconds_in_regime = 0
         if since_dt:
             now = datetime.now(timezone.utc)
@@ -107,7 +107,7 @@ async def get_regime_current(
         
         return {
             "regime": data.get("regime", "UNKNOWN"),
-            "since": data.get("since"),
+            "since": data.get("timestamp"),
             "seconds_in_regime": seconds_in_regime,
         }
     
