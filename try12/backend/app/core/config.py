@@ -1,5 +1,7 @@
+from datetime import time
+from typing import ClassVar, Optional
+
 from pydantic_settings import BaseSettings
-from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -69,6 +71,13 @@ class Settings(BaseSettings):
 
     # Candle intervals supported
     SUPPORTED_INTERVALS: list = ["ONE_MINUTE", "THREE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE"]
+
+    # Signal-generation window (IST). These bound signal generation, not the
+    # exchange session (which closes at 15:30). ClassVar so they cannot be
+    # overridden per environment — the frontend mirrors them only as a
+    # pre-fetch fallback and renders the diagnostics payload's session_window.
+    SESSION_START_IST: ClassVar[time] = time(9, 15)
+    SESSION_END_IST:   ClassVar[time] = time(15, 25)
 
     class Config:
         env_file = ".env"

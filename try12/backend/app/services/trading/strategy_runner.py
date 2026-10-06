@@ -35,6 +35,7 @@ VIX_MAX           = 25.0   # above → extreme fear/erratic, hard SLs get blown
                             #  on normal volatile days, 20 was blocking good sessions)
 ATR_MIN_NIFTY     = 1.5    # Nifty 1-min ATR below this = dead chop (was 2.5 — blocked ORB window)
 ATR_MIN_BANKNIFTY = 5.0    # BankNifty moves ~3× Nifty (was 8.0)
+MIN_TODAY_CANDLES = 25     # today-only 1m candles required before strategies run
 EXPIRY_MIN_SL_PCT = 0.15   # on expiry day skip ALL strategies with sl_pct < 15%
                             # Raised from 0.08 — a 10% SL on a cheap OTM option
                             # (e.g. ₹23 LTP → SL at ₹20.70) is blown by a single
@@ -70,6 +71,10 @@ class StrategyRunner:
         self._eod_task  = asyncio.create_task(self._eod_monitor())
         logger.info("StrategyRunner started with %d strategies per underlying",
                     len(self._strategies.get("NIFTY", [])))
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
 
     async def stop(self):
         self._running = False
@@ -168,8 +173,9 @@ class StrategyRunner:
                 ist      = self._ist_now()
                 ist_mins = ist.hour * 60 + ist.minute
 
-                # Only run during market hours 9:15 – 15:25
-                if not (9 * 60 + 15 <= ist_mins <= 15 * 60 + 25):
+                # Only run during the signal window (settings.SESSION_*_IST, 9:15 – 15:25)
+                start_t, end_t = settings.SESSION_START_IST, settings.SESSION_END_IST
+                if not (start_t.hour * 60 + start_t.minute <= ist_mins <= end_t.hour * 60 + end_t.minute):
                     continue
 
                 flags = await self._get_enabled_flags()
@@ -215,19 +221,20 @@ class StrategyRunner:
                 # Support both "YYYY-MM-DD HH:MM:SS" and "YYYY-MM-DDTHH:MM:SS..."
                 time_part = ts_str[11:16].replace("T", "")  # "HH:MM"
                 h, m = int(time_part[:2]), int(time_part[3:5])
+                # per-candle today filter, not the session gate — deliberately not tied to SESSION_START_IST
                 if h * 60 + m < 9 * 60 + 15:   # before 09:15 → skip
                     continue
             except Exception:
                 pass  # If we can't parse, keep the candle (safe default)
             candles.append(c)
 
-        if len(candles) < 25:
+        if len(candles) < MIN_TODAY_CANDLES:
             # Not enough today-only candles yet — market just opened or no data.
             # Do NOT fall back to multi-day candles: that would corrupt ORB high/low
             # (computed from today's first 15 candles) and the intraday VWAP reset.
             logger.debug(
-                "[%s] Only %d today-candles available (need 25) — skipping this cycle",
-                underlying, len(candles),
+                "[%s] Only %d today-candles available (need %d) — skipping this cycle",
+                underlying, len(candles), MIN_TODAY_CANDLES,
             )
             return
 
@@ -328,6 +335,10 @@ class StrategyRunner:
             final_flags = flags
             regime_state = None
 
+        # ── Observability only — isolated; cannot influence final_flags ───────
+        if regime_state is not None:
+            await self._persist_regime_state(underlying, regime_state)
+
         # ── Run strategies ────────────────────────────────────────────────────
         for strat in self._strategies.get(underlying, []):
             if not final_flags.get(strat.name, True):
@@ -345,6 +356,22 @@ class StrategyRunner:
                 await strat.on_candle(candles, indicators)
             except Exception as e:
                 logger.error("[%s] Strategy error: %s", strat.name, e, exc_info=True)
+
+    async def _persist_regime_state(self, underlying: str, regime_state) -> None:
+        """
+        Persist one regime detection to Postgres so /regime/history accumulates.
+        Runs after final_flags is computed and outside the regime-gating try, so a
+        DB outage (session acquisition or commit failure) can never reset the
+        gating to raw user flags. Never raises.
+        """
+        try:
+            from app.db.base import AsyncSessionLocal                    # file convention: function-local
+            from app.services.trading.regime_persistence import regime_persistence
+            async with AsyncSessionLocal() as db:
+                await regime_persistence.persist_to_db(regime_state, db)
+                await db.commit()
+        except Exception as exc:
+            logger.warning("[%s] regime persist failed (non-fatal): %s", underlying, exc)
 
     async def _inject_oi_iv(self, underlying: str, indicators: dict, is_expiry_day: bool = False):
         """Update OI/IV context in OISpikeStrategy and IVCrushStrategy."""
