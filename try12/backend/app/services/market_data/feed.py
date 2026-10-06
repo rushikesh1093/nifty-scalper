@@ -50,10 +50,15 @@ import struct
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import websockets
 from websockets.exceptions import ConnectionClosed
+
+try:  # websockets >= 10 exposes the connection state enum here (17.1 installed)
+    from websockets.protocol import State as _WsState
+except Exception:  # pragma: no cover — very old websockets
+    _WsState = None
 
 from app.core.config import settings
 from app.services.broker.angel_client import _session, angel_client
@@ -105,6 +110,30 @@ class TickData:
     best_ask_qty: int   = 0
     exchange_ts:  int   = 0
     received_at:  datetime = field(default_factory=datetime.utcnow)
+
+
+def _ws_is_open(ws: Any) -> bool:
+    """
+    True only when *ws* is an open WebSocket connection.
+
+    websockets >= 14 (asyncio ClientConnection) has no ``.closed`` attribute;
+    it exposes ``.state`` (CONNECTING/OPEN/CLOSING/CLOSED) instead. Legacy
+    clients (<= 13) expose a boolean ``.closed``. Anything else, or any error
+    while inspecting the object, is reported as not open — status endpoints
+    must never raise because of this check.
+    """
+    if ws is None:
+        return False
+    try:
+        state = getattr(ws, "state", None)
+        if state is not None and _WsState is not None:
+            return state is _WsState.OPEN
+        closed = getattr(ws, "closed", None)
+        if isinstance(closed, bool):
+            return not closed
+        return False
+    except Exception:
+        return False
 
 
 def _unpack(data: bytes, start: int, end: int, fmt: str):
@@ -168,7 +197,7 @@ class MarketFeed:
     """
 
     def __init__(self):
-        self._ws:               Optional[websockets.WebSocketClientProtocol] = None
+        self._ws:               Optional[Any] = None   # websockets ClientConnection
         self._subscriptions:    dict[int, list[str]] = {}  # exchange_code → [token,...]
         self._mode:             int = 3   # SNAP_QUOTE by default
         self._async_handlers:   list[Callable] = []
@@ -211,7 +240,7 @@ class MarketFeed:
 
     @property
     def is_connected(self) -> bool:
-        return self._ws is not None and not self._ws.closed
+        return _ws_is_open(self._ws)
 
     @property
     def subscription_count(self) -> int:
@@ -300,14 +329,24 @@ class MarketFeed:
                 self._ws = None
 
     async def _heartbeat_loop(self):
-        """Send ping every 10 seconds (official requirement)."""
+        """
+        Send ping every 10 seconds (official requirement).
+
+        Exception-safe: only cancellation or a closed connection ends the loop.
+        Any other error (including a failing state check) is logged and the
+        next ping is attempted on schedule.
+        """
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
-            if self._ws and not self._ws.closed:
-                try:
+            try:
+                if _ws_is_open(self._ws):
                     await self._ws.send("ping")
-                except Exception:
-                    break
+            except asyncio.CancelledError:
+                raise
+            except ConnectionClosed:
+                break
+            except Exception as exc:
+                logger.warning("Heartbeat ping failed (will retry): %s", exc)
 
     # ── Subscription ──────────────────────────────────────────────────────────
 
@@ -357,7 +396,7 @@ class MarketFeed:
 
     async def send_subscribe(self, exchange: str, tokens: list[str]):
         self.subscribe(exchange, tokens)
-        if not self._ws or self._ws.closed:
+        if not _ws_is_open(self._ws):
             return
         code = EXCHANGE_STR_MAP.get(exchange.upper(), NSE_FO)
         msg = {
@@ -372,7 +411,7 @@ class MarketFeed:
 
     async def send_unsubscribe(self, exchange: str, tokens: list[str]):
         self.unsubscribe(exchange, tokens)
-        if not self._ws or self._ws.closed:
+        if not _ws_is_open(self._ws):
             return
         code = EXCHANGE_STR_MAP.get(exchange.upper(), NSE_FO)
         msg = {

@@ -6,7 +6,7 @@ from sqlalchemy import (
     Column, BigInteger, Integer, String, Float, Boolean,
     DateTime, Date, Index, Enum as SAEnum, JSON,
 )
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, false
 import enum
 from app.db.base import Base
 
@@ -120,13 +120,18 @@ class PaperPosition(Base):
     exit_reason      = Column(String(20), nullable=True)   # SL/TARGET/MANUAL/EXPIRY/EOD
 
     # Risk management
-    stop_loss        = Column(Float,  nullable=True)
+    stop_loss        = Column(Float,  nullable=True)   # current SL (trailing updates overwrite it)
     target           = Column(Float,  nullable=True)
     trailing_sl      = Column(Float,  nullable=True)
     max_loss_per_lot = Column(Float,  nullable=True)
+    # SL at entry, never modified — achieved R:R / Kelly use this (migration 0010)
+    initial_stop_loss = Column(Float, nullable=True)
+    # STT + exchange txn + SEBI + stamp + GST booked on closed quantity (migration 0010)
+    statutory_charges = Column(Float, nullable=True, default=0.0, server_default="0")
 
     # Partial exit tracking
-    # When position is up 35%, 50% of lots are closed at market.
+    # When progress to target reaches 75% (PARTIAL_CLOSE_PROGRESS), 50% of lots
+    # are closed at market.
     # The remaining lots run to the full target with SL moved to breakeven.
     partial_closed        = Column(Boolean, nullable=False, default=False)  # has partial exit fired?
     partial_exit_price    = Column(Float,   nullable=True)   # price at partial close
@@ -228,6 +233,14 @@ class TradingConfig(Base):
     # study_phase: always False — paper trading is active immediately.
     # Kept in schema for API compatibility; cannot be set to True via normal config updates.
     study_phase           = Column(Boolean,  nullable=False, default=False)
+
+    # Kill switch (migration 0010): persisted so a halt survives restarts.
+    # ensure_config()/update_config() never touch it implicitly.
+    trading_halted        = Column(Boolean,  nullable=False, default=False, server_default=false())
+    halted_reason         = Column(String(200), nullable=True)
+    halted_at             = Column(DateTime(timezone=True), nullable=True)
+    # IST trading date that daily_trades_count belongs to (migration 0010)
+    daily_trades_date     = Column(Date, nullable=True)
 
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 

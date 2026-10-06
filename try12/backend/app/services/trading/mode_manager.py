@@ -28,6 +28,11 @@ KELLY_MAX_FRACTION  = 0.30   # cap:   never bet more than 30% of capital on one 
 
 class ModeManager:
 
+    def __init__(self) -> None:
+        # In-memory kill-switch flag: blocks entries immediately, even before
+        # (or if) the persisted trading_config.trading_halted write lands.
+        self._halted: bool = False
+
     # ── Config ────────────────────────────────────────────────────────────────
 
     async def get_config(self) -> Optional[TradingConfig]:
@@ -179,6 +184,49 @@ class ModeManager:
         return {
             "mode": "PAPER",
             "error": "Live trading is disabled. This application currently supports paper trading only.",
+        }
+
+    # ── Kill switch ───────────────────────────────────────────────────────────
+
+    def is_halted(self) -> bool:
+        """In-memory kill-switch flag (the persisted flag is checked in pre_trade_check)."""
+        return self._halted
+
+    async def set_trading_halted(self, halted: bool, reason: Optional[str] = None) -> bool:
+        """
+        Engage / release the kill switch. The in-memory flag is set FIRST so
+        new entries stop immediately; the DB flag makes a halt survive restarts.
+        Returns True when the DB write succeeded.
+        """
+        self._halted = halted
+        try:
+            await self.update_config(
+                trading_halted=halted,
+                halted_reason=(reason or "manual halt")[:200] if halted else None,
+                halted_at=datetime.now(timezone.utc) if halted else None,
+            )
+            logger.warning(
+                "KILL SWITCH %s%s", "ENGAGED" if halted else "RELEASED",
+                f" — {reason}" if halted and reason else "",
+            )
+            return True
+        except Exception as exc:
+            logger.error("Kill switch DB write failed (in-memory flag=%s): %s", halted, exc)
+            return False
+
+    async def get_halt_status(self) -> dict:
+        cfg = await self.get_config()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(func.count(PaperPosition.id)).where(PaperPosition.is_open == True)
+            )
+            open_positions = result.scalar() or 0
+        db_halted = bool(cfg.trading_halted) if cfg else False
+        return {
+            "halted":         self._halted or db_halted,
+            "reason":         cfg.halted_reason if cfg else None,
+            "halted_at":      cfg.halted_at.isoformat() if cfg and cfg.halted_at else None,
+            "open_positions": open_positions,
         }
 
     async def reserve_capital(self, capital_used: float) -> bool:
@@ -441,9 +489,46 @@ class ModeManager:
             )
 
     async def reset_daily_counter(self):
-        """Call at midnight to reset daily_trades_count."""
-        await self.update_config(daily_trades_count=0)
+        """Manual reset of daily_trades_count (stamps today's IST date)."""
+        await self.update_config(
+            daily_trades_count=0, daily_trades_date=datetime.now(IST).date(),
+        )
         logger.info("Daily trades counter reset.")
+
+    async def reset_daily_counter_if_new_day(self) -> bool:
+        """
+        Reset daily_trades_count only when the IST trading date has changed
+        since it was last stamped. A mid-day restart (or uvicorn --reload)
+        keeps today's count. On reset the count is set to the number of
+        positions actually entered today (normally 0).
+        Returns True when a reset happened.
+        """
+        cfg = await self.get_config()
+        if not cfg:
+            return False
+        today = datetime.now(IST).date()
+        if cfg.daily_trades_date == today:
+            logger.debug(
+                "Daily trades counter kept (%d) — already stamped for %s",
+                cfg.daily_trades_count, today,
+            )
+            return False
+
+        day_start_utc = datetime.combine(today, datetime.min.time(), tzinfo=IST) \
+            .astimezone(timezone.utc)
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(func.count(PaperPosition.id))
+                .where(PaperPosition.entry_time >= day_start_utc)
+            )
+            entered_today = result.scalar() or 0
+
+        await self.update_config(daily_trades_count=entered_today, daily_trades_date=today)
+        logger.info(
+            "Daily trades counter reset for %s (was %d for %s) → %d",
+            today, cfg.daily_trades_count, cfg.daily_trades_date, entered_today,
+        )
+        return True
 
     async def reconcile_used_capital(self):
         """
@@ -470,7 +555,8 @@ class ModeManager:
         """
         Returns (True, "") if trade allowed, else (False, reason).
         Checks (in order):
-          1. Daily loss circuit breaker
+          0. Kill switch (in-memory or persisted)
+          1. Daily loss circuit breaker (realised + unrealised)
           2. Max open positions
           3. Max trades per day
           4. Capital availability (basic — detailed check in PaperEngine)
@@ -478,6 +564,10 @@ class ModeManager:
         cfg = await self.get_config()
         if not cfg:
             return False, "No trading config found"
+
+        # 0. Kill switch
+        if self._halted or getattr(cfg, "trading_halted", False):
+            return False, f"Kill switch active: {cfg.halted_reason or 'manual halt'}"
 
         # 1. Daily loss limit
         breached, reason = await self._check_daily_loss(cfg)
@@ -530,12 +620,38 @@ class ModeManager:
                     DailyPnLSummary.mode == TradingMode(cfg.mode),
                 )
             )
-            total_pnl = result.scalar() or 0.0
+            realised = result.scalar() or 0.0
+
+        # Unrealised P&L of open positions at current LTP, plus partial-close
+        # P&L already booked on them (not yet in daily_pnl_summary).
+        unrealised = 0.0
+        try:
+            from app.services.cache.redis_client import redis_cache
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(PaperPosition).where(
+                        PaperPosition.is_open == True,
+                        PaperPosition.mode == TradingMode(cfg.mode),
+                    )
+                )
+                open_positions = result.scalars().all()
+            for pos in open_positions:
+                ltp = await redis_cache.get_ltp(pos.token)
+                if ltp:
+                    unrealised += (ltp - (pos.actual_entry or 0.0)) * (pos.quantity or 0)
+                if pos.partial_closed:
+                    unrealised += pos.net_pnl or 0.0
+        except Exception as exc:
+            logger.debug("Unrealised P&L unavailable (%s) — using realised only", exc)
+            unrealised = 0.0
+
+        total_pnl = realised + unrealised
+        detail = f"realised ₹{realised:.0f} + unrealised ₹{unrealised:.0f}"
 
         if total_pnl <= -abs(cfg.max_daily_loss):
             return True, (
                 f"Daily loss limit ₹{cfg.max_daily_loss:.0f} breached "
-                f"(today: ₹{total_pnl:.0f})"
+                f"(today: ₹{total_pnl:.0f} = {detail})"
             )
 
         # Only check loss % when actually in a loss — positive P&L must never
@@ -545,7 +661,7 @@ class ModeManager:
             if loss_pct >= cfg.max_daily_loss_pct:
                 return True, (
                     f"Daily loss % limit {cfg.max_daily_loss_pct}% breached "
-                    f"({loss_pct:.2f}%)"
+                    f"({loss_pct:.2f}% = {detail})"
                 )
 
         return False, ""
