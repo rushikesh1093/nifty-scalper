@@ -20,15 +20,19 @@ export function ErrorState({ error, onRetry, title, compact, retrying, className
   // Network failures carry the raw axios message as detail ("Network Error") — not useful to show.
   const showDetail = detail && !(error instanceof ApiError && error.kind === "network");
 
+  // Never disabled: React Query's background retries keep a failing query "fetching" for seconds of
+  // every poll, and refetch() simply restarts them.
   const retry = onRetry && (
-    <button
-      type="button"
-      onClick={onRetry}
-      disabled={retrying}
-      className="rounded-md border border-red/40 bg-red/10 px-2.5 py-1 text-table font-semibold text-red hover:bg-red/20 disabled:opacity-50"
-    >
-      {retrying ? "Retrying…" : "Retry"}
-    </button>
+    <span className="inline-flex items-center gap-2">
+      <button
+        type="button"
+        onClick={onRetry}
+        className="rounded-md border border-red/40 bg-red/10 px-2.5 py-1 text-table font-semibold text-red hover:bg-red/20"
+      >
+        Retry
+      </button>
+      {retrying && <span className="text-micro text-text-3">retrying…</span>}
+    </span>
   );
 
   if (compact) {

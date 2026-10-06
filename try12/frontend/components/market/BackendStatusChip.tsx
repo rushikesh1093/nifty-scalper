@@ -43,7 +43,7 @@ export function BackendStatusChip() {
   } else if (isPending || !data) {
     chip = <Badge caps={false} intent="neutral" status="pending">API …</Badge>;
   } else {
-    const redisDown = data.redis === "down";
+    const redisDown = data.redis === "down" || data.redis === false;
     const title = `status ${data.status} · ${Object.entries(data)
       .filter(([k]) => k !== "status")
       .map(([k, v]) => `${k}=${String(v)}`)

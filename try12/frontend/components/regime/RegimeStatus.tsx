@@ -63,15 +63,16 @@ export function RegimeStatus() {
           <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-red" />
           Regime: unavailable
         </span>
+        {/* Never disabled: background retries run for seconds of every poll; refetch() restarts them. */}
         <button
           type="button"
           onClick={() => { void refetch(); }}
-          disabled={isFetching}
           aria-label="Retry loading the current regime"
-          className="rounded border border-red/40 bg-red/10 px-1.5 py-px text-micro font-semibold text-red hover:bg-red/20 disabled:opacity-50"
+          className="rounded border border-red/40 bg-red/10 px-1.5 py-px text-micro font-semibold text-red hover:bg-red/20"
         >
-          {isFetching ? "Retrying…" : "Retry"}
+          Retry
         </button>
+        {isFetching && <span className="text-micro text-text-3">retrying…</span>}
       </div>
     );
   }
