@@ -144,7 +144,7 @@ export function PnLChart() {
               d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
           </svg>
           <span className="text-[11px]">P&L chart will populate after the first trading day.</span>
-          <span className="text-[10px]" style={{ color: "var(--text-4)" }}>Strategies are active and collecting signals.</span>
+          <span className="text-[10px]" style={{ color: "var(--text-3)" }}>Strategies are active and collecting signals.</span>
         </div>
       )}
     </div>

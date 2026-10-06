@@ -94,7 +94,7 @@ export function CapitalWidget() {
           >
             <div className="text-[9px] font-semibold uppercase tracking-wider mb-1" style={{ color: "var(--text-3)" }}>{label}</div>
             <div className="font-mono font-bold" style={{ fontSize: 13, color }}>{val}</div>
-            {action && <div className="text-[9px] mt-0.5" style={{ color: "var(--text-4)" }}>tap to edit</div>}
+            {action && <div className="text-[9px] mt-0.5" style={{ color: "var(--text-3)" }}>tap to edit</div>}
           </div>
         ))}
       </div>

@@ -21,7 +21,7 @@ const REGIME_COLORS: Record<string, string> = {
   
   // Special (gray)
   EXPIRY_DAY:                 "var(--text-3)",
-  UNKNOWN:                    "var(--text-4)",
+  UNKNOWN:                    "var(--text-3)",
 };
 
 function formatDuration(seconds: number): string {

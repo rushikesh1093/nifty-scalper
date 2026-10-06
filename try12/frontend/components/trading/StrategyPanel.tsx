@@ -39,10 +39,10 @@ export function StrategyPanel() {
               }}
             >
               <div className="flex items-center gap-2.5 min-w-0">
-                <span className="font-mono text-[9px] w-4 shrink-0 text-right" style={{ color: "var(--text-4)" }}>{i + 1}</span>
+                <span className="font-mono text-[9px] w-4 shrink-0 text-right" style={{ color: "var(--text-3)" }}>{i + 1}</span>
                 <div className="min-w-0">
                   <div className="text-[11px] font-medium truncate" style={{ color: "var(--text-1)" }}>{s.label}</div>
-                  <div className="text-[9px] truncate" style={{ color: "var(--text-4)" }}>{s.edge}</div>
+                  <div className="text-[9px] truncate" style={{ color: "var(--text-3)" }}>{s.edge}</div>
                 </div>
               </div>
               {/* Toggle */}

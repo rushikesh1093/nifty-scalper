@@ -25,7 +25,7 @@ function InfoPanel() {
   if (!tick && !inst) {
     return (
       <Card>
-        <div className="flex items-center justify-center h-28 text-[11px]" style={{ color: "var(--text-4)" }}>
+        <div className="flex items-center justify-center h-28 text-[11px]" style={{ color: "var(--text-3)" }}>
           Select a strike from the option chain
         </div>
       </Card>

@@ -99,7 +99,7 @@ export function PositionsTable({ showClosed = false }: { showClosed?: boolean })
 
 
       {display.length === 0 ? (
-        <div className="flex items-center justify-center py-8 text-[11px]" style={{ color: "var(--text-4)" }}>
+        <div className="flex items-center justify-center py-8 text-[11px]" style={{ color: "var(--text-3)" }}>
           {showClosed ? "No closed trades today" : "No open positions"}
         </div>
       ) : (
@@ -130,7 +130,7 @@ export function PositionsTable({ showClosed = false }: { showClosed?: boolean })
                     </td>
                     <td className={TD}>
                       <div className="font-mono" style={{ color: "var(--text-2)", fontSize: 10 }}>{p.symbol}</div>
-                      {p.capital_used && <div className="font-mono" style={{ color: "var(--text-4)", fontSize: 9 }}>₹{Math.round(p.capital_used).toLocaleString()}</div>}
+                      {p.capital_used && <div className="font-mono" style={{ color: "var(--text-3)", fontSize: 9 }}>₹{Math.round(p.capital_used).toLocaleString()}</div>}
                     </td>
                     <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--text-1)" }}>{formatPrice(p.entry)}</td>
                     <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--red)" }}>{formatPrice(p.sl)}</td>
@@ -144,7 +144,7 @@ export function PositionsTable({ showClosed = false }: { showClosed?: boolean })
                     <td className={TD}><PnLCell pos={p} /></td>
                     <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--text-3)" }}>{p.lots}</td>
                     <td className={TD}>
-                      <span className="font-mono" style={{ color: "var(--text-4)", fontSize: 10 }}>
+                      <span className="font-mono" style={{ color: "var(--text-3)", fontSize: 10 }}>
                         {p.entry_time ? new Date(p.entry_time).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" }) : "—"}
                       </span>
                     </td>

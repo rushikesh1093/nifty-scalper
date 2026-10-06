@@ -12,7 +12,7 @@ const STATUS_COLOR: Record<string, { fg: string; bg: string }> = {
   SL_HIT:     { fg: "var(--red)",    bg: "var(--red-dim)"    },
   TARGET_HIT: { fg: "var(--green)",  bg: "var(--green-dim)"  },
   EXPIRED:    { fg: "var(--text-3)", bg: "transparent"       },
-  SKIPPED:    { fg: "var(--text-4)", bg: "transparent"       },
+  SKIPPED:    { fg: "var(--text-3)", bg: "transparent"       },
 };
 
 const DIR_COLOR: Record<string, { fg: string; bg: string; border: string }> = {
@@ -88,7 +88,7 @@ export function SignalsTable() {
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
           </svg>
           <span className="text-[11px]" style={{ color: "var(--text-3)" }}>No signals yet</span>
-          <span className="text-[10px]" style={{ color: "var(--text-4)" }}>Strategies evaluate every minute during market hours</span>
+          <span className="text-[10px]" style={{ color: "var(--text-3)" }}>Strategies evaluate every minute during market hours</span>
         </div>
       ) : (
         <div className="overflow-auto" style={{ maxHeight: 320 }}>
@@ -128,7 +128,7 @@ export function SignalsTable() {
                       </td>
                       <td className={TD}>
                         <div style={{ color: "var(--text-1)", fontWeight: 500 }}>{s.strategy.replace(/_/g, " ")}</div>
-                        <div style={{ color: "var(--text-4)", fontSize: 10 }}>{s.underlying}</div>
+                        <div style={{ color: "var(--text-3)", fontSize: 10 }}>{s.underlying}</div>
                       </td>
                       <td className={cn(TD, "text-center")}>
                         <span className="tag font-bold" style={{ color: dc.fg, background: dc.bg, border: `1px solid ${dc.border}` }}>
@@ -160,7 +160,7 @@ export function SignalsTable() {
                         <td colSpan={9} style={{ paddingTop: 2, paddingBottom: 6, paddingLeft: 12 }}>
                           <span
                             className="font-mono"
-                            style={{ fontSize: 9, color: "var(--text-4)", display: "block", cursor: "help" }}
+                            style={{ fontSize: 9, color: "var(--text-3)", display: "block", cursor: "help" }}
                             title={s.skip_reason}
                           >
                             ↳ {truncateReason(s.skip_reason)}

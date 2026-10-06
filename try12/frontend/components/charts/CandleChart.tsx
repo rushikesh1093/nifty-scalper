@@ -101,7 +101,7 @@ export function CandleChart({ token, symbol }: { token?: string | null; symbol?:
   if (!activeToken) {
     return (
       <div className="rounded-xl flex items-center justify-center h-[380px] text-[11px]"
-        style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-4)" }}>
+        style={{ background: "var(--surface)", border: "1px solid var(--border)", color: "var(--text-3)" }}>
         Click a strike to view its chart
       </div>
     );
@@ -130,7 +130,7 @@ export function CandleChart({ token, symbol }: { token?: string | null; symbol?:
       </div>
 
       {isLoading ? (
-        <div className="flex items-center justify-center h-[340px] text-[11px]" style={{ color: "var(--text-4)" }}>
+        <div className="flex items-center justify-center h-[340px] text-[11px]" style={{ color: "var(--text-3)" }}>
           Loading chart…
         </div>
       ) : (

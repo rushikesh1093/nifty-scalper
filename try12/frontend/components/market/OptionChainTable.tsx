@@ -127,7 +127,7 @@ export function OptionChainTable() {
           </div>
         )}
 
-        <div className="ml-auto font-mono text-[10px]" style={{ color: "var(--text-4)" }}>
+        <div className="ml-auto font-mono text-[10px]" style={{ color: "var(--text-3)" }}>
           {chain?.expiry ?? "—"}
         </div>
       </div>
