@@ -1,80 +1,114 @@
 "use client";
-import { useMarketStore } from "@/lib/store";
-import { useTickFeed } from "@/hooks/useTickFeed";
-import { formatPrice, priceDiff, cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+import { getTick } from "@/lib/api";
+import { queryKeys } from "@/lib/queryKeys";
+import { useMarketStore, selectTick } from "@/lib/store";
+import { formatIst } from "@/lib/time";
+import { cn } from "@/lib/utils";
+import { useTickFeed, type TickSocketStatus } from "@/hooks/useTickFeed";
+import { useHydrated } from "@/hooks/useHydrated";
+import { useStickyQueryError } from "@/hooks/useStickyQueryError";
+import { PriceText, DeltaText } from "@/components/ui/PriceText";
+import { ErrorState } from "@/components/ui/ErrorState";
+import { ConnectionChip, type ConnectionStatus } from "@/components/ui/ConnectionChip";
+import type { FeedStatusKind } from "@/types/market";
 
-const NIFTY_TOKEN     = "26000";
-const BANKNIFTY_TOKEN = "26009";
+const SPOTS = [
+  { token: "26000", label: "NIFTY 50" },
+  { token: "26009", label: "BANK NIFTY" },
+] as const;
+
+const SOCKET_TEXT: Record<TickSocketStatus, string> = {
+  idle: "", connecting: "connecting…", live: "live", reconnecting: "feed disconnected — reconnecting", down: "feed disconnected",
+};
+
+/** Tick `ts` is the backend's naive-UTC received_at; mark it UTC so the browser zone never applies. */
+function utcIso(ts: string): string {
+  return /([zZ]|[+-]\d{2}:?\d{2})$/.test(ts) ? ts : `${ts}Z`;
+}
 
 function SpotCard({ token, label }: { token: string; label: string }) {
-  useTickFeed(token);
-  const tick = useMarketStore((s) => s.ticks[token]);
+  const hydrated = useHydrated();
+  const socket = useTickFeed(token);
+  const live = useMarketStore(selectTick(token));
+  // Last cached tick from Redis (GET /market/tick) until the socket delivers one — so the card shows
+  // the real last value outside market hours instead of a permanent skeleton.
+  const snap = useQuery({
+    queryKey: queryKeys.tick(token),
+    queryFn: () => getTick(token),
+    refetchInterval: live ? false : 15_000,
+  });
+  const snapErr = useStickyQueryError(snap);
+  const tick = live ?? snap.data;
+  const dimmed = socket === "reconnecting" || socket === "down";
 
-  const change = tick ? priceDiff(tick.ltp, tick.close ?? tick.ltp) : 0;
-  const isUp   = change >= 0;
-  const color  = isUp ? "var(--green)" : "var(--red)";
+  const ltp = typeof tick?.ltp === "number" ? tick.ltp : null;
+  // Index ticks in LTP mode carry high/low = 0: show "—", not a zero price.
+  const high = typeof tick?.high === "number" && tick.high > 0 ? tick.high : null;
+  const low  = typeof tick?.low === "number" && tick.low > 0 ? tick.low : null;
+  const prevClose = typeof tick?.close === "number" && tick.close > 0 ? tick.close : null;
+  const change = ltp !== null && prevClose !== null ? ltp - prevClose : null;
+  const pct = change !== null && prevClose ? (change / prevClose) * 100 : null;
 
   return (
-    <div
-      className="flex items-center gap-5 px-5 py-3 rounded-xl"
-      style={{
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        minWidth: 220,
-      }}
+    <section
+      aria-label={`${label} spot`}
+      data-testid={`spot-${token}`}
+      data-socket={socket}
+      className={cn("panel flex min-w-[260px] flex-1 items-center gap-5 px-4 py-3 sm:flex-none", dimmed && "opacity-60")}
     >
-      <div>
-        <div
-          className="text-[10px] font-semibold uppercase tracking-widest mb-1"
-          style={{ color: "var(--text-3)" }}
-        >
-          {label}
-        </div>
-        <div
-          className="text-2xl font-bold font-mono leading-none"
-          style={{ color }}
-        >
-          {tick ? formatPrice(tick.ltp) : <span className="shimmer inline-block w-28 h-7" />}
+      <div className="min-w-0">
+        <div className="text-micro font-semibold uppercase tracking-wider text-text-3">{label}</div>
+        <div aria-live="polite" aria-atomic="true" className="mt-0.5">
+          {!hydrated || (ltp === null && !snapErr.isError) ? (
+            <div role="status" className="shimmer h-7 w-32"><span className="sr-only">Loading {label}…</span></div>
+          ) : ltp === null ? (
+            <ErrorState compact error={snapErr.error} onRetry={() => void snap.refetch()} />
+          ) : (
+            <PriceText value={ltp} className={cn("text-hero-lg font-bold leading-none", change !== null && change < 0 ? "text-down" : change !== null && change > 0 ? "text-up" : "text-text-1")} />
+          )}
         </div>
       </div>
 
-      <div className="text-right">
-        <div className="text-sm font-semibold font-mono" style={{ color }}>
-          {change >= 0 ? "▲" : "▼"} {Math.abs(change).toFixed(2)}%
+      {hydrated && ltp !== null && (
+        <div className="ml-auto text-right">
+          <div className="flex items-center justify-end gap-2 text-body font-semibold">
+            <DeltaText value={change} />
+            <DeltaText value={pct} suffix="%" noGlyph />
+          </div>
+          <div className="mt-0.5 font-mono text-micro text-text-3">
+            H <PriceText value={high} className="text-text-2" /> · L <PriceText value={low} className="text-text-2" />
+          </div>
+          <div className="mt-0.5 text-micro text-text-3">
+            {live || dimmed ? SOCKET_TEXT[socket] : `last snapshot${tick?.ts ? ` ${formatIst(utcIso(tick.ts))}` : ""}`}
+          </div>
         </div>
-        <div className="text-[10px] mt-1 font-mono" style={{ color: "var(--text-3)" }}>
-          H {formatPrice(tick?.high)} · L {formatPrice(tick?.low)}
-        </div>
-      </div>
-    </div>
+      )}
+    </section>
   );
 }
 
+const FEED_CHIP: Record<FeedStatusKind, { status: ConnectionStatus; label: string }> = {
+  unknown:      { status: "polling",      label: "ticks —" },
+  connecting:   { status: "reconnecting", label: "ticks connecting" },
+  live:         { status: "live",         label: "ticks live" },
+  reconnecting: { status: "reconnecting", label: "ticks reconnecting" },
+  down:         { status: "error",        label: "feed disconnected" },
+};
+
 export function SpotTicker() {
-  const feedConnected = useMarketStore((s) => s.feedConnected);
-  const session       = useMarketStore((s) => s.session);
-
+  const feedStatus = useMarketStore((s) => s.feedStatus);
+  const hydrated = useHydrated();
+  const chip = FEED_CHIP[hydrated ? feedStatus : "unknown"];
   return (
-    <div className="flex items-center gap-3 flex-wrap">
-      <SpotCard token={NIFTY_TOKEN}     label="Nifty 50" />
-      <SpotCard token={BANKNIFTY_TOKEN} label="Bank Nifty" />
-
-      <div className="flex items-center gap-2 ml-auto">
-        <span
-          className={cn("w-2 h-2 rounded-full shrink-0", feedConnected && "dot-live")}
-          style={{ background: feedConnected ? "var(--green)" : "var(--red)" }}
+    <div className="flex flex-wrap items-center gap-3">
+      {SPOTS.map((s) => <SpotCard key={s.token} token={s.token} label={s.label} />)}
+      <div className="ml-auto" data-testid="tick-feed-chip" data-feed-status={hydrated ? feedStatus : "unknown"}>
+        <ConnectionChip
+          status={chip.status}
+          label={chip.label}
+          title="Browser tick sockets to the backend (/market/ws). Prices dim when disconnected."
         />
-        <span className="text-[11px]" style={{ color: "var(--text-3)" }}>
-          {feedConnected ? "Live" : "Disconnected"}
-        </span>
-        {session?.client_code && (
-          <span
-            className="text-[11px] font-medium pl-2"
-            style={{ color: "var(--text-3)", borderLeft: "1px solid var(--border)" }}
-          >
-            {session.client_code}
-          </span>
-        )}
       </div>
     </div>
   );
