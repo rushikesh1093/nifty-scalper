@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 BROKERAGE_PER_LOT = 20.0   # ₹20 per lot round-trip (Zerodha/flat-fee broker)
 
+# Strong references to detached observability tasks (SIGNAL_RECORDED publishes) so
+# a pending task cannot be garbage-collected mid-await.
+_bg_tasks: set[asyncio.Task] = set()
+
 
 def _calc_lots(trade_amount: float, ltp: float, lot_size: int) -> tuple[int, float]:
     """
@@ -817,10 +821,30 @@ class PaperEngine:
             skip_reason      = reason[:300] if reason else None,
         )
 
+        async def _publish_recorded(channel: str, payload: dict) -> None:
+            try:
+                await redis_cache.publish_signal(channel, payload)
+            except Exception as exc:        # observability must never break persistence
+                logger.debug("Signal publish failed (non-fatal): %s", exc)
+
         async def _persist(session: AsyncSession) -> int:
             session.add(sig)
             await session.commit()
             await session.refresh(sig)
+            payload = {                     # built before scheduling — never touches an expired instance
+                "event":       "SIGNAL_RECORDED",
+                "signal_id":   sig.id,
+                "strategy":    sig.strategy_name,
+                "underlying":  sig.underlying,
+                "direction":   sig.direction.value,
+                "status":      sig.status.value,
+                "time":        sig.signal_time.isoformat() if sig.signal_time else None,
+                "skip_reason": sig.skip_reason,
+            }
+            channel = "live_trade" if mode == TradingMode.LIVE else "paper_trade"
+            task = asyncio.create_task(_publish_recorded(channel, payload))   # fire-and-forget, never awaited
+            _bg_tasks.add(task)
+            task.add_done_callback(_bg_tasks.discard)
             return sig.id
 
         if db:
