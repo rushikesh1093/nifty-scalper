@@ -33,6 +33,7 @@ export const queryKeys = {
   // Market
   optionChain:  (underlying: string, expiry: string | null) => ["option-chain", underlying, expiry] as const,
   expiries:     (underlying: string) => ["expiries", underlying] as const,
+  tick:         (token: string) => ["tick", token] as const,
   candlesAll:   ["candles"] as const,
   candles:      (token: string, interval: CandleInterval, count: number) => ["candles", token, interval, count] as const,
   levelsAll:    ["levels"] as const,

@@ -39,7 +39,6 @@ function Clock() {
 
 export function StatusBar() {
   const setSession    = useMarketStore((s) => s.setSession);
-  const setFeedStatus = useMarketStore((s) => s.setFeedStatus);
   const qc = useQueryClient();
 
   const session = useQuery({ queryKey: queryKeys.session, queryFn: getSessionStatus, refetchInterval: 10_000 });
@@ -48,14 +47,11 @@ export function StatusBar() {
   const sessionErr = useStickyQueryError(session);
   const feedErr    = useStickyQueryError(feed);
 
-  // Sync store slices from the queries. An errored feed query is "unknown", not "down".
+  // Sync the session slice from its query. store.feedStatus is owned by hooks/useTickFeed (the
+  // browser's tick sockets); this chip renders the broker feed from its own query below.
   useEffect(() => {
     if (session.data) setSession(session.data);
   }, [session.data, setSession]);
-  useEffect(() => {
-    if (feedErr.isError) setFeedStatus("unknown");
-    else if (feed.data) setFeedStatus(feed.data.connected ? "live" : "down");
-  }, [feed.data, feedErr.isError, setFeedStatus]);
 
   const relogin = useMutation({
     mutationFn: reloginBroker,
