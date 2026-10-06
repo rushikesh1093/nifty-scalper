@@ -22,13 +22,5 @@ export function priceDiff(current: number, prev: number): number {
   return prev === 0 ? 0 : ((current - prev) / prev) * 100;
 }
 
-export function isMarketOpen(): boolean {
-  const now = new Date();
-  const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
-  const h = ist.getHours();
-  const m = ist.getMinutes();
-  const mins = h * 60 + m;
-  const day = ist.getDay(); // 0=Sun, 6=Sat
-  if (day === 0 || day === 6) return false;
-  return mins >= 9 * 60 + 15 && mins < 15 * 60 + 30;
-}
+// Time helpers live in lib/time.ts: isExchangeOpenIst (09:15–15:30) and isSignalWindowOpenIst
+// (09:15–15:25). The ambiguous isMarketOpen was retired (finding 5) — no re-export.

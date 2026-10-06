@@ -78,12 +78,46 @@ export interface FeedStatus {
   subscriptions: number;
 }
 
+/** Tick-feed connection state (store.feedStatus) — an enum, not a boolean. */
+export type FeedStatusKind = "unknown" | "connecting" | "live" | "reconnecting" | "down";
+
+/** Candle intervals accepted by /market/candles and /market/levels (backend Literal). */
+export type CandleInterval = "ONE_MINUTE" | "THREE_MINUTE" | "FIVE_MINUTE" | "FIFTEEN_MINUTE";
+
+/** GET /regime/current. A Redis failure is a 503 (ApiError), never "UNKNOWN". */
 export interface RegimeStatus {
   regime:             string;
   since:              string | null;
   seconds_in_regime:  number;
+  /** "absent" = key genuinely missing (no regime detected yet). */
+  source:             "redis" | "absent";
 }
 
+/** GET /regime/history?collapse=true (default) — ascending collapsed spans. */
+export interface RegimeSpan {
+  regime:          string;
+  from:            string;
+  to:              string;
+  duration_secs:   number;
+  adx:             number | null;
+  atr:             number | null;
+  previous_regime: string | null;
+  samples:         number;
+  source:          "db" | "redis";
+}
+
+/** GET /regime/performance row. */
+export interface RegimePerformanceRow {
+  regime:        string;
+  underlying:    string;
+  strategy_name: string;
+  total_trades:  number;
+  win_rate:      number;
+  total_pnl:     number;
+  avg_pnl:       number | null;
+}
+
+/** GET /regime/history?collapse=false row shape (descending). Kept until its last consumer is removed. */
 export interface RegimeHistoryEntry {
   regime:            string;
   timestamp:         string;

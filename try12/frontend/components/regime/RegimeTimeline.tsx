@@ -50,23 +50,24 @@ export function RegimeTimeline() {
   }
 
   // Sort by timestamp ascending (oldest first) for timeline display
+  // Collapsed spans (RegimeSpan) arrive ascending; sort defensively by span start.
   const sorted = [...data].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    (a, b) => new Date(a.from).getTime() - new Date(b.from).getTime()
   );
 
   // Calculate durations between transitions
   const blocks = sorted.map((entry, idx) => {
-    const startTime = new Date(entry.timestamp).getTime();
+    const startTime = new Date(entry.from).getTime();
     const endTime =
       idx < sorted.length - 1
-        ? new Date(sorted[idx + 1].timestamp).getTime()
+        ? new Date(sorted[idx + 1].from).getTime()
         : Date.now();
     const durationMs = endTime - startTime;
     const durationMins = Math.floor(durationMs / 60000);
 
     return {
       regime: entry.regime,
-      timestamp: entry.timestamp,
+      timestamp: entry.from,
       color: REGIME_COLORS[entry.regime] || REGIME_COLORS.UNKNOWN,
       durationMins,
       adx: entry.adx,

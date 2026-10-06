@@ -1,30 +1,13 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
-import axios from "axios";
-import { formatNumber, formatPrice } from "@/lib/utils";
-
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
-const api = axios.create({ baseURL: BASE, timeout: 10000 });
-
-interface RegimePerformanceData {
-  regime:        string;
-  underlying:    string;
-  strategy_name: string;
-  total_trades:  number;
-  win_rate:      number;
-  total_pnl:     number;
-  avg_pnl:       number | null;
-}
-
-async function getRegimePerformance(): Promise<RegimePerformanceData[]> {
-  const res = await api.get<RegimePerformanceData[]>("/regime/performance");
-  return res.data;
-}
+import { formatPrice } from "@/lib/utils";
+import { getRegimePerformance } from "@/lib/api";
+import { queryKeys } from "@/lib/queryKeys";
 
 export function RegimePerformance() {
   const { data, isLoading } = useQuery({
-    queryKey: ["regime-performance"],
-    queryFn: getRegimePerformance,
+    queryKey: queryKeys.regimePerformance(),
+    queryFn: () => getRegimePerformance(),
     refetchInterval: 30000, // 30s
   });
 

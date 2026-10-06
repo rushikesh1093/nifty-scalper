@@ -8,6 +8,8 @@ export interface Signal {
   vwap?:        number;
   strike?:      number;
   symbol?:      string;
+  /** Option token the signal suggested (null for SKIPPED rows). */
+  suggested_token?: string | null;
   entry_ref?:   number;
   sl_ref?:      number;
   target_ref?:  number;
@@ -21,6 +23,8 @@ export interface Signal {
 export interface Position {
   id:           number;
   strategy:     string;
+  /** Instrument token of the traded contract (chart overlay / live P&L). */
+  token:        string;
   symbol:       string;
   underlying:   string;
   strike?:      number;
@@ -41,6 +45,11 @@ export interface Position {
   capital_used?: number;
   is_open:      boolean;
   mode:         string;
+  partial_closed?:     boolean | null;
+  partial_exit_price?: number | null;
+  partial_exit_qty?:   number | null;
+  partial_pnl?:        number | null;
+  remaining_qty?:      number | null;
   entry_time:   string;
   exit_time?:   string;
 }
@@ -54,6 +63,9 @@ export interface DailyStats {
   open_positions:  number;
   loss_limit:      number;
   capital:         number;
+  trade_amount:    number;
+  used_capital:    number;
+  available:       number;
   loss_pct:        number;
   circuit_breaker_triggered: boolean;
   circuit_reason:  string;
@@ -109,6 +121,7 @@ export interface TradingConfig {
   square_off_time:     string;
   strategy_flags:      Record<string, boolean>;
   live_mode_confirmed: boolean;
+  study_phase:         boolean;
   max_trades_per_day:  number;
   daily_trades_count:  number;
 }

@@ -4,7 +4,8 @@ import toast from "react-hot-toast";
 import { getSessionStatus, getFeedStatus } from "@/lib/api";
 import { useMarketStore } from "@/lib/store";
 import { useEffect, useState } from "react";
-import { isMarketOpen, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { isExchangeOpenIst } from "@/lib/time";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { RegimeStatus } from "@/components/regime/RegimeStatus";
 
@@ -57,7 +58,7 @@ export function StatusBar() {
     },
   });
 
-  const marketOpen = isMarketOpen();
+  const marketOpen = isExchangeOpenIst();
   const loggedIn   = session?.is_logged_in;
   const feedOk     = feedStatus?.connected;
   const subs       = feedStatus?.subscriptions ?? 0;
