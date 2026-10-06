@@ -1,15 +1,15 @@
-import { cn } from "@/lib/utils";
+"use client";
+// Compatibility wrapper (plan D11): existing <Card title=…> call sites render the shared Panel chrome.
+import { Panel } from "@/components/ui/Panel";
+
 interface CardProps { children: React.ReactNode; title?: string; className?: string; }
+
 export function Card({ children, title, className }: CardProps) {
   return (
-    <div className={cn("rounded-xl overflow-hidden", className)}
-      style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-      {title && (
-        <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-2)" }}>{title}</h3>
-        </div>
-      )}
-      <div className="p-4">{children}</div>
-    </div>
+    <Panel title={title} className={className} as="h3">
+      {children}
+    </Panel>
   );
 }
+
+export { Panel };
