@@ -81,8 +81,8 @@ def _atr_ok(indicators: dict, underlying: str) -> bool:
     """
     atr = indicators.get("atr") or 0.0
     if underlying == "BANKNIFTY":
-        return atr >= 10.0
-    return atr >= 3.0
+        return atr >= 5.0
+    return atr >= 1.5
 
 
 # ─── 1. ORB + VWAP + Volume ──────────────────────────────────────────────────

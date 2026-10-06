@@ -30,7 +30,7 @@ Scoring factors (weights sum to 1.0):
   ──────────────────────────────────────────────────────────────────
   Liquidity         0.20    OI + Volume — clean entry/exit
   Spread            0.18    Bid-ask % — execution cost
-  Delta             0.18    0.35–0.50 ideal for scalping
+  Delta             0.18    0.50–0.65 ideal for scalping (ATM/1 OTM)
   Moneyness         0.15    1–2 strikes OTM preferred
   OI change         0.12    Rising OI = fresh positioning = conviction
   Volume trend      0.08    vs recent average
@@ -308,26 +308,28 @@ def _score_spread(bid: float, ask: float, ltp: float) -> float:
 def _score_delta(spot: float, strike: float, option_type: str,
                  dte: int, iv: float) -> tuple[float, float]:
     """
-    Ideal delta for scalping: 0.35–0.50
-      - Too low (<0.25): deeply OTM — slow price action, lottery ticket
-      - Too high (>0.65): deep ITM — expensive, low leverage
+    Ideal delta for scalping: 0.50–0.65
+      - Too low (<0.35): deeply OTM — slow price action, lottery ticket
+      - Too high (>0.75): deep ITM — expensive, low leverage
+      - 0.50–0.65: ATM/1 OTM — good gamma (delta acceleration) and theta profit
     Returns (score, delta_value).
     """
     delta = abs(_estimate_delta(spot, strike, option_type, dte, iv))
-    if 0.35 <= delta <= 0.50:
+    if 0.50 <= delta <= 0.65:
+        # Perfect score for ATM/1 OTM sweet spot
         score = 100.0
-    elif 0.25 <= delta < 0.35:
-        # Linear interpolation 0→100 as delta approaches 0.35
-        score = ((delta - 0.25) / 0.10) * 100.0
-    elif 0.50 < delta <= 0.65:
-        # Linear decay 100→60 from 0.50 to 0.65
-        score = 100.0 - ((delta - 0.50) / 0.15) * 40.0
-    elif delta > 0.65:
+    elif 0.35 <= delta < 0.50:
+        # Linear interpolation 0→100 as delta approaches 0.50 from below
+        score = ((delta - 0.35) / 0.15) * 100.0
+    elif 0.65 < delta <= 0.75:
+        # Linear decay 100→60 from 0.65 to 0.75 (slightly ITM)
+        score = 100.0 - ((delta - 0.65) / 0.10) * 40.0
+    elif delta > 0.75:
         # Further decay for deep ITM
-        score = max(0.0, 60.0 - ((delta - 0.65) / 0.35) * 60.0)
+        score = max(0.0, 60.0 - ((delta - 0.75) / 0.25) * 60.0)
     else:
-        # delta < 0.25: steep penalty
-        score = max(0.0, (delta / 0.25) * 50.0)
+        # delta < 0.35: steep penalty for deeply OTM
+        score = max(0.0, (delta / 0.35) * 50.0)
     return round(score, 2), round(delta, 4)
 
 

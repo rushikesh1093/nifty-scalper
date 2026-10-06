@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getSignals } from "@/lib/tradingApi";
 import { formatPrice, cn } from "@/lib/utils";
 import { useEffect, useRef } from "react";
+import React from "react";
 import type { Signal } from "@/types/trading";
 
 const STATUS_COLOR: Record<string, { fg: string; bg: string }> = {
@@ -114,8 +115,8 @@ export function SignalsTable() {
                 const skipped = s.status === "SKIPPED";
                 const rowBg   = i % 2 ? "var(--surface-2)" : "transparent";
                 return (
-                  <>
-                    <tr key={s.id} style={{ borderBottom: skipped && s.skip_reason ? "none" : "1px solid var(--border)", background: rowBg }}>
+                  <React.Fragment key={s.id}>
+                    <tr style={{ borderBottom: skipped && s.skip_reason ? "none" : "1px solid var(--border)", background: rowBg }}>
                       <td className={TD}>
                         <span className="font-mono" style={{ color: "var(--text-3)", fontSize: 10 }}>
                           {s.time
@@ -168,7 +169,7 @@ export function SignalsTable() {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </React.Fragment>
                 );
               })}
             </tbody>

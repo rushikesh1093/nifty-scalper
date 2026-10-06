@@ -47,3 +47,17 @@ export const getCurrentRegime = (underlying = "NIFTY") =>
 
 export const getRegimeHistory = (underlying = "NIFTY", hours = 24) =>
   api.get<RegimeHistoryEntry[]>(`/regime/history`, { params: { underlying, hours } }).then(r => r.data);
+
+// ── Regime Performance ────────────────────────────────────────────────────────
+interface RegimePerformanceData {
+  regime:        string;
+  underlying:    string;
+  strategy_name: string;
+  total_trades:  number;
+  win_rate:      number;
+  total_pnl:     number;
+  avg_pnl:       number | null;
+}
+
+export const getRegimePerformance = () =>
+  api.get<RegimePerformanceData[]>("/regime/performance").then(r => r.data);

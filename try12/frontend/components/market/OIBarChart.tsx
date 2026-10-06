@@ -1,6 +1,5 @@
 "use client";
 import { useMemo, useRef } from "react";
-import { useStore } from "zustand";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { useMarketStore } from "@/lib/store";
 import { formatNumber } from "@/lib/utils";

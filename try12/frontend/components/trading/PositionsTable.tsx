@@ -111,6 +111,7 @@ export function PositionsTable({ showClosed = false }: { showClosed?: boolean })
                 <th className={TH}>Symbol</th>
                 <th className={cn(TH, "text-right")}>Entry</th>
                 <th className={cn(TH, "text-right")}>SL</th>
+                <th className={cn(TH, "text-right")}>Trail SL</th>
                 <th className={cn(TH, "text-right")}>Target</th>
                 {showClosed && <th className={cn(TH, "text-right")}>Exit</th>}
                 {showClosed && <th className={cn(TH, "text-center")}>Reason</th>}
@@ -134,6 +135,9 @@ export function PositionsTable({ showClosed = false }: { showClosed?: boolean })
                     </td>
                     <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--text-1)" }}>{formatPrice(p.entry)}</td>
                     <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--red)" }}>{formatPrice(p.sl)}</td>
+                    <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--yellow)" }}>
+                      {p.trailing_sl ? formatPrice(p.trailing_sl) : <span style={{ color: "var(--text-4)" }}>—</span>}
+                    </td>
                     <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--green)" }}>{formatPrice(p.target)}</td>
                     {showClosed && <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--text-2)" }}>{formatPrice(p.exit)}</td>}
                     {showClosed && (

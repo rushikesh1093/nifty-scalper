@@ -34,6 +34,11 @@ export interface Position {
   sl?:          number;
   target?:      number;
   trailing_sl?: number;
+  partial_closed?: boolean;
+  partial_exit_price?: number;
+  partial_exit_qty?: number;
+  partial_pnl?: number;
+  remaining_qty?: number;
   exit?:        number;
   exit_reason?: string;
   gross_pnl?:   number;
