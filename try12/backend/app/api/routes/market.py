@@ -3,7 +3,8 @@ Market data endpoints:
   GET  /market/ltp/{token}               — single LTP from Redis
   POST /market/ltp/bulk                  — multiple LTPs
   GET  /market/tick/{token}              — full tick snapshot
-  GET  /market/candles/{token}           — OHLC candles (Redis or DB)
+  GET  /market/candles/{token}           — OHLC candles (Redis or DB; 3m/5m/15m resampled from 1m)
+  GET  /market/levels/{underlying}       — support / resistance levels (NIFTY | BANKNIFTY)
   GET  /market/option-chain/{underlying} — full option chain with Greeks
   GET  /market/feed/status               — WebSocket feed status
   POST /market/feed/subscribe            — add tokens to live feed
@@ -12,22 +13,30 @@ Market data endpoints:
 import asyncio
 import json
 import logging
+from dataclasses import asdict
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from app.db.base import get_db
+from app.db.base import AsyncSessionLocal, get_db
 from app.db.models.ohlc import OHLC
+from app.db.models.market_study import MarketDailySnapshot
 from app.db.models.option_chain import OptionChainSnapshot
 from app.db.models.instrument import Instrument, InstrumentType
 from app.schemas.market import (
     TickResponse, CandleResponse, OptionChainResponse, OptionStrikeResponse,
     LTPBulkRequest, LTPBulkResponse,
 )
+from app.schemas.levels import LevelsResponse
 from app.services.cache.redis_client import redis_cache
+from app.services.market_data.levels import (
+    IST, compute_levels, resample_candles,
+    merge_dedup_by_timestamp as _merge_dedup_by_timestamp,
+)
 from app.services.market_data.feed import market_feed
 from app.services.market_data.market_manager import market_manager
 from app.services.broker.angel_client import angel_client
@@ -77,44 +86,184 @@ async def get_tick(token: str):
 
 # ── OHLC Candles ──────────────────────────────────────────────────────────────
 
+IntervalName = Literal["ONE_MINUTE", "THREE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE"]
+INTERVAL_MINUTES = {"ONE_MINUTE": 1, "THREE_MINUTE": 3, "FIVE_MINUTE": 5, "FIFTEEN_MINUTE": 15}
+LEVELS_FETCH_HARD_CAP   = 4000    # ~10 sessions of 1m bars; bounds the DB read (NFR-4)
+LEVELS_MIN_SPAN_CANDLES = 500     # ~1.3 sessions of 1m bars — floors the fetch so span_days > 1
+                                  # whenever the ohlc table actually holds a prior session
+RESAMPLE_SOURCE_CAP     = 1000    # max one-minute rows read to build resampled /candles bars
+
+
+def _row_to_dict(r: OHLC) -> dict:
+    """Normalise an ohlc row to the candle contract: same key names as the Redis
+    candles; timestamps normalised to IST offset so the merge compares instants,
+    not strings (ohlc stores UTC, Redis stores IST-offset ISO strings)."""
+    return {
+        "token": r.token, "symbol": r.symbol, "interval": r.interval,
+        "timestamp": r.timestamp.astimezone(IST).isoformat(),
+        "open": r.open, "high": r.high, "low": r.low, "close": r.close,
+        "volume": r.volume, "oi": r.oi,
+    }
+
+
+async def _load_db_candles(session: AsyncSession, token: str, interval: str, count: int) -> list[dict]:
+    rows = await session.execute(
+        select(OHLC).where(OHLC.token == token, OHLC.interval == interval)
+                    .order_by(desc(OHLC.timestamp)).limit(count)
+    )
+    return [_row_to_dict(r) for r in reversed(rows.scalars().all())]
+
+
+async def _load_candles(session: AsyncSession, token: str, interval: str, count: int) -> tuple[list[dict], str]:
+    """Cache-first loader for the /candles resample fallback. Takes a session rather than owning one."""
+    cached = await redis_cache.get_candles(token, interval, count)
+    if len(cached) >= count:
+        return cached, "redis"
+    db_candles = await _load_db_candles(session, token, interval, count)
+    if not db_candles:
+        return cached, "redis"
+    if not cached:
+        return db_candles, "db"
+    merged = _merge_dedup_by_timestamp(db_candles, cached)   # union, ascending, cached wins on tie
+    return merged[-count:], "merged"
+
+
+async def _load_candles_for_levels(session: AsyncSession, token: str, count: int) -> tuple[list[dict], str]:
+    """Levels-only loader: the ohlc table is ALWAYS queried, so levels can never
+    silently degrade to a today-only view."""
+    want    = max(count, LEVELS_MIN_SPAN_CANDLES)
+    cached  = await redis_cache.get_candles(token, "ONE_MINUTE", want)
+    db_rows = await _load_db_candles(session, token, "ONE_MINUTE", want)
+    if not db_rows:
+        return cached[-count:], "redis"          # only legitimate "redis" case: ohlc empty for this token
+    if not cached:
+        return db_rows[-count:], "db"
+    return _merge_dedup_by_timestamp(db_rows, cached)[-count:], "merged"
+
+
 @router.get("/candles/{token}", response_model=list[CandleResponse])
 async def get_candles(
     token: str,
-    interval: str = Query("ONE_MINUTE", description="ONE_MINUTE | FIVE_MINUTE | FIFTEEN_MINUTE"),
+    interval: IntervalName = Query("ONE_MINUTE"),
     count:    int  = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Get OHLC candles for a token.
-    Tries Redis first (fast), falls back to PostgreSQL.
+    Native interval: Redis first (fast), falls back to PostgreSQL — unchanged.
+    Non-1m intervals with fewer than `count` native rows are resampled from
+    one-minute data (Redis merged with the ohlc table).
     """
-    # Try Redis
-    candles = await redis_cache.get_candles(token, interval, count)
-    if candles:
-        return [CandleResponse(**c) for c in candles]
+    # Native interval — cache-first exactly as before
+    cached = await redis_cache.get_candles(token, interval, count)
+    if interval == "ONE_MINUTE":
+        if cached:
+            return [CandleResponse(**c) for c in cached]
+        rows = await _load_db_candles(db, token, interval, count)
+        if not rows:
+            raise HTTPException(status_code=404, detail="No candle data found")
+        return [CandleResponse(**r) for r in rows]
 
-    # Fallback: PostgreSQL
-    result = await db.execute(
-        select(OHLC)
-        .where(OHLC.token == token, OHLC.interval == interval)
-        .order_by(desc(OHLC.timestamp))
-        .limit(count)
-    )
-    rows = result.scalars().all()
-    if not rows:
+    if len(cached) >= count:
+        return [CandleResponse(**c) for c in cached]
+    native_db = await _load_db_candles(db, token, interval, count)
+    if len(native_db) >= count:
+        return [CandleResponse(**r) for r in native_db]
+
+    # Resample fallback from one-minute data
+    minutes = INTERVAL_MINUTES[interval]
+    one_min, _ = await _load_candles(db, token, "ONE_MINUTE", min(count * minutes, RESAMPLE_SOURCE_CAP))
+    if not one_min:
         raise HTTPException(status_code=404, detail="No candle data found")
+    bars = resample_candles(
+        one_min, minutes, token=token, interval=interval, symbol=one_min[-1].get("symbol"),
+    )[-count:]
+    return [CandleResponse(**b) for b in bars]
 
-    return [
-        CandleResponse(
-            token=r.token,
-            symbol=r.symbol,
-            interval=r.interval,
-            timestamp=r.timestamp.isoformat(),
-            open=r.open, high=r.high, low=r.low, close=r.close,
-            volume=r.volume, oi=r.oi,
+
+# ── Support / resistance levels ───────────────────────────────────────────────
+
+@router.get("/levels/{underlying}", response_model=LevelsResponse)
+async def get_levels(
+    underlying: str,
+    interval:   IntervalName = Query("ONE_MINUTE"),
+    lookback:   int = Query(500, ge=50, le=1000, description="bars at the requested interval"),
+    max_levels: int = Query(12, ge=1, le=30),
+):
+    """
+    Support/resistance levels for NIFTY / BANKNIFTY spot, computed by the pure
+    app.services.market_data.levels module. The DB session is held only for the
+    candle + previous-day snapshot reads, never across the computation.
+    """
+    u = underlying.upper()
+    if u not in ("NIFTY", "BANKNIFTY"):
+        raise HTTPException(status_code=400, detail="underlying must be NIFTY or BANKNIFTY")
+    spot_token = _settings.NIFTY_TOKEN if u == "NIFTY" else _settings.BANKNIFTY_TOKEN
+    minutes = INTERVAL_MINUTES[interval]
+    fetch_count = min(lookback * minutes, LEVELS_FETCH_HARD_CAP)
+    session_date = datetime.now(IST).date()
+
+    try:
+        async with AsyncSessionLocal() as db:
+            candles, candle_source = await _load_candles_for_levels(db, spot_token, fetch_count)
+            snap = (await db.execute(
+                select(MarketDailySnapshot)
+                .where(MarketDailySnapshot.underlying == u, MarketDailySnapshot.date < session_date)
+                .order_by(desc(MarketDailySnapshot.date))
+                .limit(1)
+            )).scalar_one_or_none()
+            prev_day = (
+                {"high": snap.high, "low": snap.low, "close": snap.close, "date": snap.date.isoformat()}
+                if snap else None
+            )
+        logger.debug("levels %s: db session closed, entering compute_levels (%d bars)", u, len(candles))
+        spot = await redis_cache.get_ltp(spot_token)
+    except (RedisError, RuntimeError) as exc:
+        logger.error("levels %s: cache unavailable: %s", u, exc)
+        raise HTTPException(status_code=503, detail="cache unavailable")
+
+    if not candles:
+        logger.warning("levels %s: no candle data for %s %s", u, spot_token, interval)
+        raise HTTPException(status_code=404, detail=f"No candle data for {spot_token} {interval}")
+    if candle_source == "redis":
+        logger.info("levels %s: ohlc table empty for %s — levels from Redis only", u, spot_token)
+    if prev_day is None:
+        logger.info("levels %s: no previous-day snapshot before %s", u, session_date)
+
+    extra_warnings: list[str] = []
+    if spot is None or spot <= 0:
+        try:
+            spot = float(candles[-1]["close"])
+        except Exception:
+            spot = 0.0
+        if spot <= 0:
+            raise HTTPException(status_code=404, detail=f"No valid spot price for {u}")
+        extra_warnings.append("spot_from_candle_close")
+        logger.debug("levels %s: spot LTP missing — using last candle close", u)
+
+    series = candles if minutes == 1 else resample_candles(
+        candles, minutes, token=spot_token, interval=interval, symbol=candles[-1].get("symbol"),
+    )
+    try:
+        levels, meta = compute_levels(
+            series, spot, prev_day,
+            session_date=session_date, tz=IST, max_levels=max_levels,
+            orb_candles=max(1, 15 // minutes),   # opening range = 09:15-09:30 at every interval
         )
-        for r in reversed(rows)
-    ]
+    except Exception:
+        logger.error("levels %s: level computation failed", u, exc_info=True)
+        raise HTTPException(status_code=500, detail="level computation failed")
+
+    if "insufficient_candles" in meta["warnings"]:
+        logger.debug("levels %s: insufficient candles (%d bars at %s)", u, len(series), interval)
+    meta["warnings"] = meta["warnings"] + extra_warnings
+    meta.update(candle_source=candle_source, candles_used=len(candles), resampled_bars=len(series))
+    return LevelsResponse(
+        underlying=u, token=spot_token, interval=interval, spot=spot,
+        as_of=datetime.now(IST).isoformat(),
+        levels=[asdict(l) for l in levels],
+        meta=meta,
+    )
 
 
 # ── Option Chain ──────────────────────────────────────────────────────────────
