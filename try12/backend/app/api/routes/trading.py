@@ -310,6 +310,10 @@ async def get_signals(
 
 # ── Signal pipeline diagnostics ───────────────────────────────────────────────
 
+class _SkipProbe(Exception):
+    """Internal: a probe skipped because its dependency already failed the preflight."""
+
+
 @router.get("/signals/diagnostics", response_model=SignalDiagnosticsResponse)
 async def get_signal_diagnostics():
     """
@@ -341,6 +345,15 @@ async def get_signal_diagnostics():
         logger.warning("diagnostics probe %s failed: %s", code, exc)
         probe_errors.append({"code": code, "detail": str(exc)})
 
+    # Redis preflight: with Redis down every call costs seconds (connect retries), so
+    # one bounded ping decides whether the Redis-backed probes run at all.
+    redis_ok = True
+    try:
+        await asyncio.wait_for(redis_cache._r().ping(), timeout=1.5)
+    except Exception as exc:
+        redis_ok = False
+        _probe_failed("REDIS_UNAVAILABLE", exc if str(exc) else TimeoutError("redis ping timed out after 1.5 s"))
+
     # Runner
     runner_running = None
     try:
@@ -353,9 +366,13 @@ async def get_signal_diagnostics():
     try:
         from app.services.market_data.feed import market_feed
         feed["connected"] = bool(market_feed.is_connected)
-        feed["subscriptions"] = int(market_feed.subscription_count)
     except Exception as exc:
         _probe_failed("FEED_PROBE", exc)
+    try:
+        from app.services.market_data.feed import market_feed
+        feed["subscriptions"] = int(market_feed.subscription_count)
+    except Exception as exc:
+        _probe_failed("FEED_SUBSCRIPTIONS_PROBE", exc)
     try:
         from app.services.broker.angel_client import _session
         feed["session_valid"] = bool(_session.is_valid())
@@ -422,10 +439,11 @@ async def get_signal_diagnostics():
 
     # VIX
     vix_ltp = None
-    try:
-        vix_ltp = await redis_cache.get_ltp(settings.VIX_TOKEN)
-    except Exception as exc:
-        _probe_failed("VIX_PROBE", exc)
+    if redis_ok:
+        try:
+            vix_ltp = await redis_cache.get_ltp(settings.VIX_TOKEN)
+        except Exception as exc:
+            _probe_failed("VIX_PROBE", exc)
     vix = {"ltp": vix_ltp, "min": _sr.VIX_MIN, "max": _sr.VIX_MAX,
            "gate": vix_gate(vix_ltp, _sr.VIX_MIN, _sr.VIX_MAX)}
 
@@ -442,6 +460,8 @@ async def get_signal_diagnostics():
         }
         extra: dict = {}
         try:
+            if not redis_ok:
+                raise _SkipProbe
             info["spot"] = await redis_cache.get_ltp(token)
             all_c = await redis_cache.get_candles(token, "ONE_MINUTE", 500)
             today_c = []
@@ -458,13 +478,16 @@ async def get_signal_diagnostics():
             if len(today_c) >= _sr.MIN_TODAY_CANDLES:
                 atr = compute_all(today_c).get("atr")
                 info["atr"] = round(float(atr), 4) if atr is not None else None
+        except _SkipProbe:
+            pass
         except Exception as exc:
             _probe_failed(f"CANDLES_PROBE_{u}", exc)
         try:
-            raw = await redis_cache._r().get(f"regime:{u}:current")
-            if raw:
-                info["regime"] = json.loads(raw).get("regime")
-                info["regime_allows_trading"] = bool(get_regime_rule(info["regime"]).enabled_strategies)
+            if redis_ok:
+                raw = await redis_cache._r().get(f"regime:{u}:current")
+                if raw:
+                    info["regime"] = json.loads(raw).get("regime")
+                    info["regime_allows_trading"] = bool(get_regime_rule(info["regime"]).enabled_strategies)
             extra["in_cooldown"] = bool(strategy_orchestrator.is_in_cooldown(u))
         except Exception as exc:
             _probe_failed(f"REGIME_PROBE_{u}", exc)
