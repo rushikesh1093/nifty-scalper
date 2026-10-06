@@ -7,6 +7,7 @@ import { ErrorState } from "@/components/ui/ErrorState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Freshness } from "@/components/ui/Freshness";
 import { useStickyQueryError } from "@/hooks/useStickyQueryError";
+import { useHydrated } from "@/hooks/useHydrated";
 
 // The loading / error / stale / empty state machine (design §6.5). Every data panel renders
 // through this so a failed fetch can never render as an empty state (FR-1).
@@ -44,6 +45,10 @@ export function DataSurface<T>(props: DataSurfaceProps<T>) {
   const retry = onRetry ?? (() => { void query.refetch(); });
   const fallback = skeleton ?? <Skeleton />;
   const meta: SurfaceMeta = { isStale, dataUpdatedAt, isFetching };
+  const hydrated = useHydrated();
+
+  // 0. SSR / hydration render: the server never has data, so always match its skeleton first.
+  if (!hydrated) return <div className={className}>{fallback}</div>;
 
   // 1. pending, nothing to show yet
   if (isPending && data === undefined && !isError) return <div className={className}>{fallback}</div>;

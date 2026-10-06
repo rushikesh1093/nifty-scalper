@@ -1,172 +1,219 @@
 "use client";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getPositions, closePosition, clearTestTrades } from "@/lib/tradingApi";
-import { useMarketStore } from "@/lib/store";
-import { formatPrice, cn } from "@/lib/utils";
 import toast from "react-hot-toast";
+import { getPositions, closePosition, clearTestTrades } from "@/lib/tradingApi";
+import { ApiError, errorMessage } from "@/lib/http";
+import { queryKeys } from "@/lib/queryKeys";
+import { useMarketStore, selectTick } from "@/lib/store";
+import { useTickFeed } from "@/hooks/useTickFeed";
+import { cn } from "@/lib/utils";
+import { formatIst } from "@/lib/time";
+import { Panel } from "@/components/ui/Panel";
+import { DataSurface } from "@/components/ui/DataSurface";
+import { TableSkeleton } from "@/components/ui/Skeleton";
+import { Badge, type BadgeIntent } from "@/components/ui/Badge";
+import { PriceText, DeltaText } from "@/components/ui/PriceText";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { STRATEGY_META } from "./strategyMeta";
 import type { Position } from "@/types/trading";
 
-const EXIT_BADGE: Record<string, { fg: string; bg: string }> = {
-  TARGET:  { fg: "var(--green)",  bg: "var(--green-dim)"  },
-  SL:      { fg: "var(--red)",    bg: "var(--red-dim)"    },
-  EOD:     { fg: "var(--text-3)", bg: "var(--surface-3)"  },
-  MANUAL:  { fg: "var(--blue)",   bg: "var(--blue-dim)"   },
-  TIMEOUT: { fg: "var(--yellow)", bg: "var(--yellow-dim)" },
+const EXIT_INTENT: Record<string, BadgeIntent> = {
+  TARGET: "positive", SL: "negative", EOD: "neutral", MANUAL: "info", TIMEOUT: "warning",
 };
+const STRATEGY_LABEL: Record<string, string> = Object.fromEntries(STRATEGY_META.map((s) => [s.key, s.label]));
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const failText = (e: unknown) => (e instanceof ApiError && e.detail ? e.detail : errorMessage(e));
 
-const TH = "px-3 py-2.5 text-left whitespace-nowrap";
-const TD = "px-3 py-2.5 align-middle";
-
-function PnLCell({ pos }: { pos: Position }) {
-  const pnl = pos.net_pnl ?? 0;
-  if (!pos.is_open) {
-    return (
-      <span className="font-mono font-semibold" style={{ color: pnl >= 0 ? "var(--green)" : "var(--red)" }}>
-        {pnl >= 0 ? "+" : ""}₹{Math.abs(pnl).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
-      </span>
-    );
+/** Open-position P&L from the live tick of the traded contract (field selector per row). */
+function LivePnl({ pos }: { pos: Position }) {
+  useTickFeed(pos.token || null);
+  const tick = useMarketStore(selectTick(pos.token));
+  const ltp = num(tick?.ltp);
+  const entry = num(pos.entry);
+  if (ltp === null || entry === null) {
+    return <span className="text-table text-text-2">awaiting tick</span>;
   }
-  return <span className="font-mono text-[10px]" style={{ color: "var(--text-3)" }}>live</span>;
+  // Long option: (ltp − entry) × remaining qty, plus any partial-exit gross already realised.
+  const est = (ltp - entry) * (num(pos.qty) ?? 0) + (num(pos.gross_pnl) ?? 0);
+  return (
+    <span className="inline-flex flex-col items-end">
+      <DeltaText value={est} prefix="₹" decimals={0} />
+      <span className="font-mono text-micro text-text-2">LTP {ltp.toFixed(2)} · gross est.</span>
+    </span>
+  );
 }
 
-export function PositionsTable({ showClosed = false }: { showClosed?: boolean }) {
+function PositionRow({ p, closed, onClose, closing }: { p: Position; closed: boolean; onClose: (id: number) => void; closing: boolean }) {
+  return (
+    <tr data-position-id={p.id} className="odd:bg-surface-2">
+      <td className="font-medium text-text-1">{STRATEGY_LABEL[p.strategy] ?? p.strategy?.replace(/_/g, " ")}</td>
+      <td>
+        <div className="font-mono text-text-1">{p.symbol}</div>
+        {num(p.capital_used) !== null && <div className="font-mono text-micro text-text-2">₹{Math.round(p.capital_used as number).toLocaleString("en-IN")}</div>}
+      </td>
+      <td className="num text-text-1"><PriceText value={num(p.entry)} /></td>
+      <td className="num text-red"><PriceText value={num(p.sl)} /></td>
+      <td className="num text-green"><PriceText value={num(p.target)} /></td>
+      {closed && <td className="num"><PriceText value={num(p.exit)} /></td>}
+      {closed && (
+        <td>
+          <Badge intent={EXIT_INTENT[p.exit_reason ?? ""] ?? "neutral"} status={p.exit_reason ?? undefined}>{p.exit_reason || "—"}</Badge>
+        </td>
+      )}
+      <td className="num">
+        {closed ? <DeltaText value={num(p.net_pnl)} prefix="₹" decimals={0} /> : <LivePnl pos={p} />}
+      </td>
+      <td className="num font-mono">{p.lots}</td>
+      <td className="whitespace-nowrap font-mono text-text-2">
+        {formatIst(closed ? p.exit_time ?? p.entry_time : p.entry_time, { seconds: false, withDate: closed })}
+      </td>
+      {!closed && (
+        <td>
+          <button
+            type="button"
+            onClick={() => onClose(p.id)}
+            disabled={closing}
+            aria-label={`Close position ${p.symbol}`}
+            className="rounded border border-red/40 bg-red/10 px-2.5 py-1 text-micro font-semibold text-red hover:bg-red/20 disabled:opacity-50"
+          >
+            Close
+          </button>
+        </td>
+      )}
+    </tr>
+  );
+}
+
+export function PositionsTable() {
   const qc = useQueryClient();
-  const { data: positions = [], isLoading } = useQuery({
-    queryKey:        ["positions", showClosed],
-    queryFn:         () => getPositions({ is_open: showClosed ? false : true, limit: 100 }),
-    refetchInterval: 6000,
+  const [closed, setClosed] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const params = { is_open: !closed, limit: 100 };
+  const query = useQuery({
+    queryKey: queryKeys.positions(params),
+    queryFn: () => getPositions(params),
+    refetchInterval: 5_000,
   });
+
+  const invalidateDesk = () => {
+    for (const key of [
+      queryKeys.positionsAll, queryKeys.capital, queryKeys.stats, queryKeys.pnlToday,
+      queryKeys.pnlHistoryAll, queryKeys.diagnostics, queryKeys.config,
+    ]) void qc.invalidateQueries({ queryKey: key });
+  };
 
   const close = useMutation({
     mutationFn: closePosition,
-    onSuccess:  () => { qc.invalidateQueries({ queryKey: ["positions"] }); toast.success("Position closed"); },
-    onError:    () => toast.error("Failed to close"),
+    onSuccess: () => { invalidateDesk(); toast.success("Position closed"); },
+    onError: (e: unknown) => { console.error("[positions] close failed", e); toast.error(`Close failed: ${failText(e)}`); },
   });
 
   const clearTrades = useMutation({
     mutationFn: clearTestTrades,
-    onSuccess:  () => {
-      qc.invalidateQueries({ queryKey: ["positions"] });
-      qc.invalidateQueries({ queryKey: ["pnl"] });
-      qc.invalidateQueries({ queryKey: ["signals"] });
-      qc.invalidateQueries({ queryKey: ["capital"] });
+    onSuccess: () => {
+      invalidateDesk();
+      void qc.invalidateQueries({ queryKey: queryKeys.signalsAll });
+      setConfirmClear(false);
       toast.success("All test trades cleared");
     },
-    onError:    () => toast.error("Failed to clear trades"),
+    onError: (e: unknown) => { console.error("[positions] clear failed", e); toast.error(`Clear failed: ${failText(e)}`); },
   });
 
-  const display   = positions;
-  const totalPnL  = display.reduce((s: number, p: Position) => s + (p.net_pnl || 0), 0);
-
-
-  if (isLoading) return <div className="rounded-xl h-24 animate-pulse" style={{ background: "var(--surface)", border: "1px solid var(--border)" }} />;
+  const rows = Array.isArray(query.data) ? query.data : [];
+  const totalNet = rows.reduce((s, p) => s + (num(p.net_pnl) ?? 0), 0);
 
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-2)" }}>
-            {showClosed ? "Closed Today" : "Open Positions"}
-          </span>
-          <span className="font-mono text-[10px] px-1.5 py-0.5 rounded" style={{ color: "var(--text-3)", background: "var(--surface-3)" }}>
-            {display.length}
-          </span>
-        </div>
-        <div className="flex items-center gap-3">
-          {display.length > 0 && (
-            <span className="font-mono text-[11px] font-semibold" style={{ color: totalPnL >= 0 ? "var(--green)" : "var(--red)" }}>
-              {totalPnL >= 0 ? "+" : ""}₹{Math.abs(totalPnL).toLocaleString("en-IN", { maximumFractionDigits: 0 })} net
+    <Panel
+      title="Positions"
+      meta={query.data !== undefined && <Badge intent="neutral">{rows.length}</Badge>}
+      actions={
+        <>
+          {closed && query.data !== undefined && rows.length > 0 && (
+            <span aria-live="polite" className="text-table text-text-2">
+              net <DeltaText value={totalNet} prefix="₹" decimals={0} />
             </span>
           )}
-          {showClosed && display.length > 0 && (
+          <div role="group" aria-label="Position filter" className="inline-flex overflow-hidden rounded-md border border-border">
+            {([false, true] as const).map((c) => (
+              <button
+                key={String(c)}
+                type="button"
+                aria-pressed={closed === c}
+                onClick={() => setClosed(c)}
+                className={cn(
+                  "px-2.5 py-1 text-table font-semibold",
+                  closed === c ? "bg-accent/30 text-text-1" : "bg-surface-2 text-text-2 hover:text-text-1",
+                )}
+              >
+                {c ? "Closed" : "Open"}
+              </button>
+            ))}
+          </div>
+          {closed && rows.length > 0 && (
             <button
-              onClick={() => {
-                if (window.confirm("Are you sure you want to clear all test trades?")) {
-                  clearTrades.mutate();
-                }
-              }}
+              type="button"
+              onClick={() => setConfirmClear(true)}
               disabled={clearTrades.isPending}
-              className="text-[10px] font-semibold px-2 py-1 rounded transition-all hover:opacity-80 disabled:opacity-50"
-              style={{ color: "var(--red)", background: "var(--red-dim)", border: "1px solid rgba(244, 63, 94, 0.2)" }}
-              title="Clear all test/paper trades and signals"
+              className="rounded border border-red/40 bg-red/10 px-2 py-1 text-micro font-semibold text-red hover:bg-red/20 disabled:opacity-50"
             >
-              {clearTrades.isPending ? "Clearing..." : "Clear Test Trades"}
+              Clear test trades
             </button>
           )}
-        </div>
-      </div>
+        </>
+      }
+      bodyClassName="px-4 pb-4 pt-3"
+    >
+      <DataSurface
+        query={query}
+        isEmpty={(d) => !Array.isArray(d) || d.length === 0}
+        emptyTitle={closed ? "No closed positions" : "No open positions"}
+        emptyHint={closed ? "Closed paper/live positions appear here with their exit reason and net P&L." : "Positions open when a strategy signal passes every risk gate."}
+        skeleton={<TableSkeleton rows={3} cols={9} />}
+        hideFreshness
+      >
+        {(data) => (
+          <div className="-mx-4 -mb-4 max-h-[320px] overflow-auto">
+            <table className="data-table">
+              <caption className="sr-only">{closed ? "Closed positions, most recent first" : "Open positions with live estimated P&L"}</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Strategy</th>
+                  <th scope="col">Contract</th>
+                  <th scope="col" className="num">Entry</th>
+                  <th scope="col" className="num">SL</th>
+                  <th scope="col" className="num">Target</th>
+                  {closed && <th scope="col" className="num">Exit</th>}
+                  {closed && <th scope="col">Reason</th>}
+                  <th scope="col" className="num">P&amp;L</th>
+                  <th scope="col" className="num">Lots</th>
+                  <th scope="col">{closed ? "Exited" : "Entered"}</th>
+                  {!closed && <th scope="col"><span className="sr-only">Actions</span></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((p) => (
+                  <PositionRow key={p.id} p={p} closed={closed} onClose={(id) => close.mutate(id)} closing={close.isPending} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DataSurface>
 
-
-      {display.length === 0 ? (
-        <div className="flex items-center justify-center py-8 text-[11px]" style={{ color: "var(--text-3)" }}>
-          {showClosed ? "No closed trades today" : "No open positions"}
-        </div>
-      ) : (
-        <div className="overflow-auto" style={{ maxHeight: 240 }}>
-          <table className="w-full" style={{ fontSize: 11 }}>
-            <thead className="sticky top-0 z-10" style={{ background: "var(--surface-2)" }}>
-              <tr style={{ color: "var(--text-3)", borderBottom: "1px solid var(--border)", fontSize: 10, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
-                <th className={TH}>Strategy</th>
-                <th className={TH}>Symbol</th>
-                <th className={cn(TH, "text-right")}>Entry</th>
-                <th className={cn(TH, "text-right")}>SL</th>
-                <th className={cn(TH, "text-right")}>Target</th>
-                {showClosed && <th className={cn(TH, "text-right")}>Exit</th>}
-                {showClosed && <th className={cn(TH, "text-center")}>Reason</th>}
-                <th className={cn(TH, "text-right")}>P&amp;L</th>
-                <th className={cn(TH, "text-right")}>Lots</th>
-                <th className={TH}>Time</th>
-                {!showClosed && <th className={cn(TH, "text-center")}>Close</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {display.map((p: Position, i: number) => {
-                const eb = EXIT_BADGE[p.exit_reason || ""] ?? { fg: "var(--text-3)", bg: "var(--surface-3)" };
-                return (
-                  <tr key={p.id} style={{ borderBottom: "1px solid var(--border)", background: i % 2 ? "var(--surface-2)" : "transparent" }}>
-                    <td className={TD}>
-                      <span style={{ color: "var(--text-1)", fontWeight: 500 }}>{p.strategy?.replace(/_/g, " ")}</span>
-                    </td>
-                    <td className={TD}>
-                      <div className="font-mono" style={{ color: "var(--text-2)", fontSize: 10 }}>{p.symbol}</div>
-                      {p.capital_used && <div className="font-mono" style={{ color: "var(--text-3)", fontSize: 9 }}>₹{Math.round(p.capital_used).toLocaleString()}</div>}
-                    </td>
-                    <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--text-1)" }}>{formatPrice(p.entry)}</td>
-                    <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--red)" }}>{formatPrice(p.sl)}</td>
-                    <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--green)" }}>{formatPrice(p.target)}</td>
-                    {showClosed && <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--text-2)" }}>{formatPrice(p.exit)}</td>}
-                    {showClosed && (
-                      <td className={cn(TD, "text-center")}>
-                        <span className="tag" style={{ color: eb.fg, background: eb.bg }}>{p.exit_reason || "—"}</span>
-                      </td>
-                    )}
-                    <td className={TD}><PnLCell pos={p} /></td>
-                    <td className={cn(TD, "text-right font-mono")} style={{ color: "var(--text-3)" }}>{p.lots}</td>
-                    <td className={TD}>
-                      <span className="font-mono" style={{ color: "var(--text-3)", fontSize: 10 }}>
-                        {p.entry_time ? new Date(p.entry_time).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" }) : "—"}
-                      </span>
-                    </td>
-                    {!showClosed && (
-                      <td className={cn(TD, "text-center")}>
-                        <button
-                          onClick={() => close.mutate(p.id)}
-                          disabled={close.isPending}
-                          className="px-2.5 py-1 rounded text-[10px] font-semibold transition-all disabled:opacity-40"
-                          style={{ color: "var(--red)", background: "var(--red-dim)", border: "1px solid #f43f5e25" }}
-                        >
-                          Close
-                        </button>
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear all test trades?"
+        confirmLabel="Clear everything"
+        danger
+        pending={clearTrades.isPending}
+        onConfirm={() => clearTrades.mutate()}
+        onCancel={() => setConfirmClear(false)}
+      >
+        This deletes every position, every recorded signal, the daily P&amp;L summaries and paper orders/trades,
+        and resets the daily trade counter and used capital. It cannot be undone.
+      </ConfirmDialog>
+    </Panel>
   );
 }

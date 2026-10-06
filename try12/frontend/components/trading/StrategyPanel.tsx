@@ -1,64 +1,117 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
 import { getConfig, setStrategyFlag } from "@/lib/tradingApi";
+import { ApiError, errorMessage } from "@/lib/http";
+import { queryKeys } from "@/lib/queryKeys";
+import { cn } from "@/lib/utils";
+import { DataSurface } from "@/components/ui/DataSurface";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { STRATEGY_META } from "./strategyMeta";
+import type { TradingConfig } from "@/types/trading";
 
-export function StrategyPanel() {
+// Strategy enable flags as real keyboard-operable switches (Space/Enter), with an optimistic
+// update that rolls back if the API refuses.
+
+const failText = (e: unknown) => (e instanceof ApiError && e.detail ? e.detail : errorMessage(e));
+
+function StrategyList({ cfg }: { cfg: TradingConfig }) {
   const qc = useQueryClient();
-  const { data: cfg } = useQuery({ queryKey: ["config"], queryFn: getConfig, refetchInterval: 15000 });
+  const flags = cfg.strategy_flags && typeof cfg.strategy_flags === "object" ? cfg.strategy_flags : {};
+
   const toggle = useMutation({
     mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) => setStrategyFlag(name, enabled),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["config"] }),
+    onMutate: async ({ name, enabled }) => {
+      await qc.cancelQueries({ queryKey: queryKeys.config });
+      const previous = qc.getQueryData<TradingConfig>(queryKeys.config);
+      if (previous) {
+        qc.setQueryData<TradingConfig>(queryKeys.config, {
+          ...previous,
+          strategy_flags: { ...previous.strategy_flags, [name]: enabled },
+        });
+      }
+      return { previous };
+    },
+    onError: (e: unknown, { name }, ctx) => {
+      if (ctx?.previous) qc.setQueryData(queryKeys.config, ctx.previous);
+      console.error("[strategies] flag update failed", e);
+      toast.error(`Could not update ${name}: ${failText(e)}`);
+    },
+    onSuccess: (_d, { name, enabled }) => toast.success(`${name} ${enabled ? "enabled" : "disabled"}`),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.config });
+      void qc.invalidateQueries({ queryKey: queryKeys.diagnostics });
+    },
   });
 
-  const flags       = cfg?.strategy_flags || {};
-  const activeCount = Object.values(flags).filter(Boolean).length;
+  const known = new Set(STRATEGY_META.map((s) => s.key));
+  const items = [
+    ...STRATEGY_META,
+    ...Object.keys(flags).filter((k) => !known.has(k)).map((k) => ({ key: k, label: k.replace(/_/g, " "), edge: "" })),
+  ];
+  const activeCount = items.filter((s) => flags[s.key] !== false).length;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Strategies</span>
-        <span className="font-mono text-[10px]" style={{ color: "var(--text-3)" }}>
-          <span style={{ color: "var(--green)", fontWeight: 700 }}>{activeCount}</span>
-          /{STRATEGY_META.length} active
+      <div className="flex items-center justify-between text-table text-text-2">
+        <span>Enable or pause individual strategies. Regime rules may still block an enabled one.</span>
+        <span className="shrink-0 pl-2 font-mono">
+          <span className="font-bold text-green">{activeCount}</span>/{items.length} on
         </span>
       </div>
-
-      <div className="space-y-1">
-        {STRATEGY_META.map((s, i) => {
+      <ul className="space-y-1">
+        {items.map((s, i) => {
           const enabled = flags[s.key] !== false;
+          const labelId = `strategy-${s.key}-label`;
           return (
-            <div
+            <li
               key={s.key}
-              onClick={() => toggle.mutate({ name: s.key, enabled: !enabled })}
-              className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer select-none transition-all"
-              style={{
-                background: enabled ? "var(--green-dim)" : "transparent",
-                border: `1px solid ${enabled ? "#22d3a020" : "var(--border)"}`,
-                opacity: enabled ? 1 : 0.45,
-              }}
+              className={cn(
+                "flex items-center justify-between gap-3 rounded-lg border px-3 py-2",
+                enabled ? "border-green/25 bg-green/5" : "border-border bg-transparent",
+              )}
             >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <span className="font-mono text-[9px] w-4 shrink-0 text-right" style={{ color: "var(--text-3)" }}>{i + 1}</span>
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span aria-hidden="true" className="w-4 shrink-0 text-right font-mono text-micro text-text-3">{i + 1}</span>
                 <div className="min-w-0">
-                  <div className="text-[11px] font-medium truncate" style={{ color: "var(--text-1)" }}>{s.label}</div>
-                  <div className="text-[9px] truncate" style={{ color: "var(--text-3)" }}>{s.edge}</div>
+                  <div id={labelId} className={cn("truncate text-table font-medium", enabled ? "text-text-1" : "text-text-2")}>{s.label}</div>
+                  {s.edge && <div className="truncate text-micro normal-case tracking-normal text-text-2">{s.edge}</div>}
                 </div>
               </div>
-              {/* Toggle */}
-              <div
-                className="w-8 h-4 rounded-full relative shrink-0 ml-3 transition-colors"
-                style={{ background: enabled ? "var(--green)" : "var(--surface-3)" }}
+              <button
+                type="button"
+                role="switch"
+                aria-checked={enabled}
+                aria-labelledby={labelId}
+                data-strategy={s.key}
+                onClick={() => toggle.mutate({ name: s.key, enabled: !enabled })}
+                className={cn(
+                  "relative h-5 w-9 shrink-0 rounded-full border transition-colors",
+                  enabled ? "border-green bg-green" : "border-border-2 bg-surface-3",
+                )}
               >
+                <span className="sr-only">{enabled ? "on" : "off"}</span>
                 <span
-                  className="absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform"
-                  style={{ transform: enabled ? "translateX(18px)" : "translateX(2px)" }}
+                  aria-hidden="true"
+                  className={cn(
+                    "absolute top-0.5 h-3.5 w-3.5 rounded-full bg-text-1 shadow transition-transform",
+                    enabled ? "translate-x-[18px]" : "translate-x-0.5",
+                  )}
                 />
-              </div>
-            </div>
+              </button>
+            </li>
           );
         })}
-      </div>
+      </ul>
     </div>
+  );
+}
+
+export function StrategyPanel() {
+  const query = useQuery({ queryKey: queryKeys.config, queryFn: getConfig, refetchInterval: 15_000 });
+  return (
+    <DataSurface query={query} skeleton={<Skeleton label="Loading strategies" className="py-4" />}>
+      {(cfg) => <StrategyList cfg={cfg} />}
+    </DataSurface>
   );
 }

@@ -1,192 +1,349 @@
 "use client";
+import { useId, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getCapital, setTradeAmount, setCapital } from "@/lib/tradingApi";
-import { useState } from "react";
-import { cn } from "@/lib/utils";
 import toast from "react-hot-toast";
-import type { CapitalSummary } from "@/types/trading";
+import { getCapital, setTradeAmount, setCapital } from "@/lib/tradingApi";
+import { ApiError, errorMessage } from "@/lib/http";
+import { queryKeys } from "@/lib/queryKeys";
+import { cn } from "@/lib/utils";
+import { DataSurface } from "@/components/ui/DataSurface";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { DeltaText } from "@/components/ui/PriceText";
+import type { CapitalSummary, TradePreviewRow } from "@/types/trading";
 
-const PRESETS = [10000, 15000, 20000, 25000, 50000, 75000];
-const fmt = (n: number) => "₹" + n.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+// Capital + per-trade sizing. Absorbs the retired TradeAmountSetter (presets, custom amount,
+// capital update, lot preview) with validated, labelled inputs (design §8.2).
 
-function ProgressBar({ pct, color }: { pct: number; color: string }) {
+const PRESETS = [5000, 10000, 15000, 20000, 25000, 50000, 75000];
+const MAX_CAPITAL = 10_000_000;
+
+const rupees = (n: number | null | undefined) =>
+  n == null || !Number.isFinite(n) ? "—" : "₹" + n.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+const failText = (e: unknown) => (e instanceof ApiError && e.detail ? e.detail : errorMessage(e));
+
+function validateCapital(raw: string): string | null {
+  if (raw.trim() === "") return "Enter the total capital";
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return "Must be a number";
+  if (v <= 0) return "Must be greater than 0";
+  if (v > MAX_CAPITAL) return "Cannot exceed ₹1,00,00,000";
+  if (!Number.isInteger(v)) return "Whole rupees only";
+  return null;
+}
+
+function validateTradeAmount(raw: string, capital: number): string | null {
+  if (raw.trim() === "") return "Enter a per-trade amount";
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return "Must be a number";
+  if (v <= 0) return "Must be greater than 0";
+  if (v > capital) return "Cannot exceed total capital";
+  return null;
+}
+
+function Meter({ label, pct, valueText, tone }: { label: string; pct: number; valueText: string; tone: "ok" | "warn" | "bad" | "accent" }) {
+  const clamped = Math.min(Math.max(Number.isFinite(pct) ? pct : 0, 0), 100);
+  const id = useId();
   return (
-    <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: "var(--surface-3)" }}>
-      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${Math.min(Math.max(pct,0),100)}%`, background: color }} />
+    <div className="space-y-1.5">
+      <div className="flex justify-between text-table text-text-2">
+        <span id={id}>{label}</span>
+        <span className="font-mono tabular-nums">{valueText}</span>
+      </div>
+      <div
+        role="progressbar"
+        aria-labelledby={id}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(clamped)}
+        aria-valuetext={valueText}
+        className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3"
+      >
+        <div
+          className={cn(
+            "h-full rounded-full transition-[width] duration-700",
+            tone === "ok" && "bg-green", tone === "warn" && "bg-yellow", tone === "bad" && "bg-red", tone === "accent" && "bg-accent",
+          )}
+          style={{ width: `${clamped}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function AmountForm({
+  label, placeholder, submitLabel, hint, validate, pending, onSubmit, onCancel, autoFocus,
+}: {
+  label: string; placeholder: string; submitLabel: string; hint?: string;
+  validate: (raw: string) => string | null; pending: boolean;
+  onSubmit: (v: number) => void; onCancel?: () => void; autoFocus?: boolean;
+}) {
+  const [raw, setRaw] = useState("");
+  const [touched, setTouched] = useState(false);
+  const id = useId();
+  const error = validate(raw);
+  const showError = touched && error !== null;
+  const describedBy = [hint ? `${id}-hint` : null, showError ? `${id}-err` : null].filter(Boolean).join(" ") || undefined;
+  return (
+    <form
+      noValidate
+      onSubmit={(e) => {
+        e.preventDefault();
+        setTouched(true);
+        if (error === null) onSubmit(Number(raw));
+      }}
+      className="space-y-1"
+    >
+      <label htmlFor={id} className="block text-table text-text-2">{label}</label>
+      <div className="flex gap-2">
+        <input
+          id={id}
+          type="number"
+          inputMode="numeric"
+          min={1}
+          step={1}
+          value={raw}
+          placeholder={placeholder}
+          autoFocus={autoFocus}
+          onChange={(e) => { setRaw(e.target.value); setTouched(true); }}
+          aria-invalid={showError}
+          aria-describedby={describedBy}
+          className={cn(
+            "min-w-0 flex-1 rounded-md border bg-surface-2 px-3 py-1.5 font-mono text-body text-text-1 placeholder:text-text-3",
+            showError ? "border-red" : "border-border-2 focus:border-accent",
+          )}
+        />
+        <button
+          type="submit"
+          disabled={pending || error !== null}
+          className="rounded-md border border-accent/60 bg-accent/30 px-3 py-1.5 text-table font-semibold text-text-1 hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {pending ? "Saving…" : submitLabel}
+        </button>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md border border-border-2 bg-surface-3 px-3 py-1.5 text-table text-text-1 hover:bg-surface-2"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+      {showError && <p id={`${id}-err`} className="text-table text-red">{error}</p>}
+      {hint && <p id={`${id}-hint`} className="text-micro normal-case tracking-normal text-text-2">{hint}</p>}
+    </form>
+  );
+}
+
+function PreviewTable({ rows, onHide }: { rows: TradePreviewRow[]; onHide: () => void }) {
+  return (
+    <div className="space-y-1.5 border-t border-border pt-3">
+      <div className="flex items-center justify-between">
+        <span className="text-micro font-semibold uppercase text-text-2">Lot preview at the new per-trade amount</span>
+        <button type="button" onClick={onHide} className="text-micro text-text-2 underline-offset-2 hover:text-text-1 hover:underline">
+          hide
+        </button>
+      </div>
+      <div className="max-h-48 overflow-auto rounded-md border border-border">
+        <table className="data-table">
+          <caption className="sr-only">Lots bought per option price and lot size</caption>
+          <thead>
+            <tr>
+              <th scope="col" className="num">Option LTP</th>
+              <th scope="col" className="num">Lot size</th>
+              <th scope="col" className="num">Lots</th>
+              <th scope="col" className="num">Cost / lot</th>
+              <th scope="col" className="num">Deployed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={`${r.ltp}-${r.lot_size}`}>
+                <td className="num font-mono text-text-1">₹{r.ltp}</td>
+                <td className="num font-mono">{r.lot_size}</td>
+                <td className="num font-mono font-semibold text-text-1">{r.lots}</td>
+                <td className="num font-mono">{rupees(r.capital_needed)}</td>
+                <td className="num font-mono text-yellow">{rupees(r.capital_used)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-micro normal-case tracking-normal text-text-2">
+        Lots = floor(per-trade amount ÷ (LTP × lot size)), minimum 1, capped at the max lots per trade.
+      </p>
+    </div>
+  );
+}
+
+function CapitalBody({ cap }: { cap: CapitalSummary }) {
+  const qc = useQueryClient();
+  const [editingCapital, setEditingCapital] = useState(false);
+  const [customTrade, setCustomTrade] = useState(false);
+  const [preview, setPreview] = useState<TradePreviewRow[] | null>(null);
+
+  const invalidate = () => {
+    for (const key of [queryKeys.capital, queryKeys.config, queryKeys.stats, queryKeys.diagnostics]) {
+      void qc.invalidateQueries({ queryKey: key });
+    }
+  };
+
+  const tradeMut = useMutation({
+    mutationFn: (ta: number) => setTradeAmount(ta),
+    onSuccess: (d) => {
+      invalidate();
+      setPreview(Array.isArray(d.preview) ? d.preview : null);
+      setCustomTrade(false);
+      toast.success(`Per-trade amount set to ${rupees(d.trade_amount)}`);
+    },
+    onError: (e: unknown) => { console.error("[capital] trade amount failed", e); toast.error(`Update failed: ${failText(e)}`); },
+  });
+
+  const capMut = useMutation({
+    mutationFn: (c: number) => setCapital(c),
+    onSuccess: (d: { capital?: number }) => {
+      invalidate();
+      setEditingCapital(false);
+      toast.success(`Capital set to ${rupees(d.capital)}`);
+    },
+    onError: (e: unknown) => { console.error("[capital] capital failed", e); toast.error(`Update failed: ${failText(e)}`); },
+  });
+
+  const usedPct = Number.isFinite(cap.utilisation_pct) ? cap.utilisation_pct : 0;
+  const lossPct = cap.capital > 0 ? (Math.abs(Math.min(cap.realised_pnl, 0)) / cap.capital) * 100 : 0;
+  const lossOfLimit = cap.max_daily_loss_pct > 0 ? (lossPct / cap.max_daily_loss_pct) * 100 : 0;
+  const lowFunds = cap.available_capital < cap.trade_amount;
+
+  return (
+    <div className="space-y-4">
+      {cap.circuit_breaker && (
+        <div role="alert" className="rounded-md border border-red/40 bg-red/10 px-3 py-2 text-table font-semibold text-red">
+          Circuit breaker tripped{cap.circuit_reason ? ` — ${cap.circuit_reason}` : ""}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between text-table text-text-2">
+        <span>Realised today ({cap.mode})</span>
+        <span aria-live="polite"><DeltaText value={cap.realised_pnl} prefix="₹" decimals={0} /></span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-lg border border-border bg-surface-2 px-2 py-2 text-center">
+          <div className="text-micro font-semibold uppercase text-text-2">Total</div>
+          <div className="font-mono text-body font-bold text-text-1">{rupees(cap.capital)}</div>
+          <button
+            type="button"
+            onClick={() => setEditingCapital((v) => !v)}
+            aria-expanded={editingCapital}
+            className="mt-0.5 text-micro font-semibold text-blue hover:underline"
+          >
+            {editingCapital ? "cancel" : "edit"}
+          </button>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2 py-2 text-center">
+          <div className="text-micro font-semibold uppercase text-text-2">In use</div>
+          <div className="font-mono text-body font-bold text-yellow">{rupees(cap.used_capital)}</div>
+        </div>
+        <div className="rounded-lg border border-border bg-surface-2 px-2 py-2 text-center">
+          <div className="text-micro font-semibold uppercase text-text-2">Available</div>
+          <div className={cn("font-mono text-body font-bold", lowFunds ? "text-red" : "text-green")}>{rupees(cap.available_capital)}</div>
+          {lowFunds && <div className="text-micro normal-case tracking-normal text-red">below per-trade</div>}
+        </div>
+      </div>
+
+      {editingCapital && (
+        <AmountForm
+          label="Total capital (₹)"
+          placeholder={String(cap.capital)}
+          submitLabel="Save"
+          hint="Whole rupees, up to ₹1 crore. The API refuses changes while positions are open."
+          validate={validateCapital}
+          pending={capMut.isPending}
+          onSubmit={(v) => capMut.mutate(v)}
+          onCancel={() => setEditingCapital(false)}
+          autoFocus
+        />
+      )}
+
+      <Meter
+        label="Capital utilisation"
+        pct={usedPct}
+        valueText={`${usedPct.toFixed(1)}%`}
+        tone={usedPct > 80 ? "bad" : usedPct > 50 ? "warn" : "accent"}
+      />
+      <Meter
+        label={`Daily loss limit (${cap.max_daily_loss_pct}%)`}
+        pct={lossOfLimit}
+        valueText={`${lossPct.toFixed(1)}% used`}
+        tone={lossPct >= cap.max_daily_loss_pct ? "bad" : lossPct > cap.max_daily_loss_pct * 0.7 ? "warn" : "ok"}
+      />
+
+      <div className="space-y-2 border-t border-border pt-3">
+        <div className="flex items-baseline justify-between">
+          <span className="text-micro font-semibold uppercase text-text-2">Per-trade amount</span>
+          <span className="font-mono text-body font-bold text-text-1">{rupees(cap.trade_amount)}</span>
+        </div>
+        <div role="group" aria-label="Per-trade presets" className="grid grid-cols-4 gap-1.5">
+          {PRESETS.map((amt) => {
+            const current = cap.trade_amount === amt;
+            const tooBig = amt > cap.capital;
+            return (
+              <button
+                key={amt}
+                type="button"
+                aria-pressed={current}
+                disabled={tradeMut.isPending || tooBig}
+                title={tooBig ? "Exceeds total capital" : undefined}
+                onClick={() => tradeMut.mutate(amt)}
+                className={cn(
+                  "rounded-md border py-1 text-table font-semibold disabled:cursor-not-allowed disabled:opacity-50",
+                  current ? "border-accent/60 bg-accent/30 text-text-1" : "border-border bg-surface-2 text-text-2 hover:text-text-1",
+                )}
+              >
+                ₹{amt / 1000}k
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            aria-expanded={customTrade}
+            onClick={() => setCustomTrade((v) => !v)}
+            className="rounded-md border border-border bg-surface-2 py-1 text-table font-semibold text-text-2 hover:text-text-1"
+          >
+            {customTrade ? "Cancel" : "Custom"}
+          </button>
+        </div>
+        {customTrade && (
+          <AmountForm
+            label="Custom per-trade amount (₹)"
+            placeholder="e.g. 12500"
+            submitLabel="Set"
+            validate={(raw) => validateTradeAmount(raw, cap.capital)}
+            pending={tradeMut.isPending}
+            onSubmit={(v) => tradeMut.mutate(v)}
+            autoFocus
+          />
+        )}
+      </div>
+
+      {preview && preview.length > 0 && <PreviewTable rows={preview} onHide={() => setPreview(null)} />}
+
+      <div className="flex items-center justify-between border-t border-border pt-2 text-table text-text-2">
+        <span>Trades <span className="font-mono text-text-1">{cap.daily_trades}/{cap.max_trades_per_day}</span></span>
+        <span>Open <span className="font-mono text-text-1">{cap.open_positions}/{cap.max_open_positions}</span></span>
+        <span className={cn("font-semibold", cap.circuit_breaker ? "text-red" : "text-green")}>
+          {cap.circuit_breaker ? "HALTED" : "ACTIVE"}
+        </span>
+      </div>
     </div>
   );
 }
 
 export function CapitalWidget() {
-  const qc = useQueryClient();
-  const [editing, setEditing]   = useState<null | "trade" | "capital">(null);
-  const [inputVal, setInputVal] = useState("");
-
-  const { data: cap } = useQuery<CapitalSummary>({
-    queryKey: ["capital"], queryFn: getCapital, refetchInterval: 8000,
-  });
-
-  const tradeMut = useMutation({
-    mutationFn: (ta: number) => setTradeAmount(ta),
-    onSuccess: (d: any) => {
-      qc.invalidateQueries({ queryKey: ["capital"] });
-      qc.invalidateQueries({ queryKey: ["config"] });
-      toast.success(`Per-trade set to Rs.${d.trade_amount?.toLocaleString("en-IN")}`);
-      setEditing(null); setInputVal("");
-    },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed"),
-  });
-
-  const capMut = useMutation({
-    mutationFn: (c: number) => setCapital(c),
-    onSuccess: (d: any) => {
-      qc.invalidateQueries({ queryKey: ["capital"] });
-      qc.invalidateQueries({ queryKey: ["config"] });
-      toast.success(`Capital set to Rs.${d.capital?.toLocaleString("en-IN")}`);
-      setEditing(null); setInputVal("");
-    },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Failed"),
-  });
-
-  if (!cap) return <div className="rounded-xl h-40 shimmer" />;
-
-  const usedPct = cap.utilisation_pct ?? 0;
-  const lossPct = cap.capital > 0 ? Math.abs(cap.realised_pnl) / cap.capital * 100 : 0;
-  const pnlPositive = cap.realised_pnl >= 0;
-
+  const query = useQuery({ queryKey: queryKeys.capital, queryFn: getCapital, refetchInterval: 8_000 });
   return (
-    <div className="space-y-4">
-      {/* Circuit breaker banner */}
-      {cap.circuit_breaker && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-[11px] font-semibold"
-          style={{ background: "var(--red-dim)", border: "1px solid #f43f5e30", color: "var(--red)" }}>
-          <svg className="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-          </svg>
-          {cap.circuit_reason}
-        </div>
-      )}
-
-      {/* Capital header */}
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Capital</span>
-        <span className="font-mono text-[11px] font-semibold" style={{ color: pnlPositive ? "var(--green)" : "var(--red)" }}>
-          {pnlPositive ? "+" : ""}₹{cap.realised_pnl.toLocaleString("en-IN", { maximumFractionDigits: 0 })} today
-        </span>
-      </div>
-
-      {/* Three capital cards */}
-      <div className="grid grid-cols-3 gap-2">
-        {[
-          { label: "Total",     val: fmt(cap.capital),            color: "var(--text-1)",  action: () => setEditing("capital") },
-          { label: "In Use",    val: fmt(cap.used_capital),       color: "var(--yellow)",  action: null },
-          { label: "Available", val: fmt(cap.available_capital),  color: cap.available_capital < cap.trade_amount ? "var(--red)" : "var(--green)", action: null },
-        ].map(({ label, val, color, action }) => (
-          <div
-            key={label}
-            onClick={() => action?.()}
-            className="rounded-lg px-2 py-2.5 text-center"
-            style={{
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              cursor: action ? "pointer" : "default",
-            }}
-          >
-            <div className="text-[9px] font-semibold uppercase tracking-wider mb-1" style={{ color: "var(--text-3)" }}>{label}</div>
-            <div className="font-mono font-bold" style={{ fontSize: 13, color }}>{val}</div>
-            {action && <div className="text-[9px] mt-0.5" style={{ color: "var(--text-3)" }}>tap to edit</div>}
-          </div>
-        ))}
-      </div>
-
-      {/* Capital edit */}
-      {editing === "capital" && (
-        <div className="flex gap-2">
-          <input type="number" value={inputVal} onChange={e => setInputVal(e.target.value)}
-            placeholder={String(cap.capital)} autoFocus
-            className="flex-1 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none"
-            style={{ background: "var(--surface-2)", border: "1px solid var(--accent)", color: "var(--text-1)" }}
-          />
-          <button onClick={() => { const v = parseFloat(inputVal); if (v > 0) capMut.mutate(v); }}
-            disabled={capMut.isPending}
-            className="px-3 py-2 rounded-lg text-xs font-semibold"
-            style={{ background: "var(--accent)", color: "#fff" }}>Save</button>
-          <button onClick={() => { setEditing(null); setInputVal(""); }}
-            className="px-3 py-2 rounded-lg text-xs"
-            style={{ background: "var(--surface-3)", color: "var(--text-2)" }}>Cancel</button>
-        </div>
-      )}
-
-      {/* Utilisation */}
-      <div className="space-y-1.5">
-        <div className="flex justify-between" style={{ fontSize: 10, color: "var(--text-3)" }}>
-          <span>Capital utilisation</span><span>{usedPct.toFixed(1)}%</span>
-        </div>
-        <ProgressBar pct={usedPct} color={usedPct > 80 ? "var(--red)" : usedPct > 50 ? "var(--yellow)" : "var(--accent)"} />
-      </div>
-
-      {/* Daily loss */}
-      <div className="space-y-1.5">
-        <div className="flex justify-between" style={{ fontSize: 10, color: "var(--text-3)" }}>
-          <span>Daily loss limit ({cap.max_daily_loss_pct}%)</span><span>{lossPct.toFixed(1)}% used</span>
-        </div>
-        <ProgressBar pct={cap.max_daily_loss_pct > 0 ? lossPct / cap.max_daily_loss_pct * 100 : 0}
-          color={lossPct >= cap.max_daily_loss_pct ? "var(--red)" : lossPct > cap.max_daily_loss_pct * 0.7 ? "var(--yellow)" : "var(--green)"} />
-      </div>
-
-      {/* Per-trade amount */}
-      <div className="pt-3" style={{ borderTop: "1px solid var(--border)" }}>
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Per-trade amount</span>
-          <button onClick={() => setEditing(editing === "trade" ? null : "trade")}
-            className="text-[10px] font-medium transition-colors"
-            style={{ color: "var(--accent)" }}>
-            {editing === "trade" ? "cancel" : "change"}
-          </button>
-        </div>
-
-        {editing !== "trade" ? (
-          <div className="space-y-2">
-            <div className="grid grid-cols-3 gap-1.5">
-              {PRESETS.map(amt => (
-                <button key={amt} onClick={() => tradeMut.mutate(amt)} disabled={tradeMut.isPending}
-                  className="py-1.5 rounded-lg text-[10px] font-semibold transition-all"
-                  style={{
-                    background: cap.trade_amount === amt ? "var(--accent-dim)" : "var(--surface-2)",
-                    border: `1px solid ${cap.trade_amount === amt ? "var(--accent-glow)" : "var(--border)"}`,
-                    color: cap.trade_amount === amt ? "var(--accent)" : "var(--text-3)",
-                  }}>
-                  ₹{(amt / 1000).toFixed(0)}k
-                </button>
-              ))}
-            </div>
-            <div className="text-right font-mono font-bold" style={{ fontSize: 13, color: "var(--accent)" }}>
-              {fmt(cap.trade_amount)} <span className="text-[9px] font-normal" style={{ color: "var(--text-3)" }}>current</span>
-            </div>
-          </div>
-        ) : (
-          <div className="flex gap-2">
-            <input type="number" value={inputVal} onChange={e => setInputVal(e.target.value)}
-              placeholder="custom amount" autoFocus
-              className="flex-1 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none"
-              style={{ background: "var(--surface-2)", border: "1px solid var(--accent)", color: "var(--text-1)" }}
-            />
-            <button onClick={() => { const v = parseFloat(inputVal); if (v > 0) tradeMut.mutate(v); }}
-              disabled={tradeMut.isPending}
-              className="px-3 py-2 rounded-lg text-xs font-semibold"
-              style={{ background: "var(--accent)", color: "#fff" }}>Set</button>
-          </div>
-        )}
-      </div>
-
-      {/* Footer stats */}
-      <div className="flex items-center justify-between pt-2" style={{ borderTop: "1px solid var(--border)", fontSize: 10, color: "var(--text-3)" }}>
-        <span>Trades <span className="font-mono" style={{ color: "var(--text-1)" }}>{cap.daily_trades}/{cap.max_trades_per_day}</span></span>
-        <span>Open <span className="font-mono" style={{ color: "var(--text-1)" }}>{cap.open_positions}/{cap.max_open_positions}</span></span>
-        <span className="font-semibold" style={{ color: cap.circuit_breaker ? "var(--red)" : "var(--green)" }}>
-          {cap.circuit_breaker ? "HALTED" : "ACTIVE"}
-        </span>
-      </div>
-    </div>
+    <DataSurface query={query} skeleton={<Skeleton label="Loading capital" className="py-4" />}>
+      {(cap) => <CapitalBody cap={cap} />}
+    </DataSurface>
   );
 }

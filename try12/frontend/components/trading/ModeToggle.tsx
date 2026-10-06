@@ -1,75 +1,93 @@
 "use client";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getMode, switchPaper, switchLive } from "@/lib/tradingApi";
 import toast from "react-hot-toast";
+import { getMode, switchPaper, switchLive } from "@/lib/tradingApi";
+import { ApiError, errorMessage } from "@/lib/http";
+import { queryKeys } from "@/lib/queryKeys";
+import { Panel } from "@/components/ui/Panel";
+import { DataSurface } from "@/components/ui/DataSurface";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { Badge } from "@/components/ui/Badge";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+
+const failText = (e: unknown) => (e instanceof ApiError && e.detail ? e.detail : errorMessage(e));
 
 export function ModeToggle() {
   const qc = useQueryClient();
   const [confirm, setConfirm] = useState(false);
+  const query = useQuery({ queryKey: queryKeys.mode, queryFn: getMode, refetchInterval: 10_000 });
 
-  const { data: modeData } = useQuery({
-    queryKey: ["trading-mode"], queryFn: getMode, refetchInterval: 10000,
-  });
+  const invalidate = () => {
+    for (const key of [queryKeys.mode, queryKeys.config, queryKeys.capital, queryKeys.diagnostics]) {
+      void qc.invalidateQueries({ queryKey: key });
+    }
+  };
 
   const toPaper = useMutation({
     mutationFn: switchPaper,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["trading-mode"] }); toast.success("Switched to PAPER"); setConfirm(false); },
+    onSuccess: () => { invalidate(); toast.success("Switched to PAPER"); },
+    onError: (e: unknown) => { console.error("[mode] paper switch failed", e); toast.error(`Cannot switch to paper: ${failText(e)}`); },
   });
   const toLive = useMutation({
     mutationFn: () => switchLive(true),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["trading-mode"] }); setConfirm(false); toast.success("LIVE MODE ON"); },
-    onError: (e: any) => toast.error(e.response?.data?.detail || "Cannot go live"),
+    onSuccess: () => { invalidate(); setConfirm(false); toast.success("LIVE mode on"); },
+    onError: (e: unknown) => { console.error("[mode] live switch failed", e); toast.error(`Cannot go live: ${failText(e)}`); },
   });
 
-  const isLive = modeData?.mode === "LIVE";
-
   return (
-    <div className="rounded-xl p-4 space-y-3" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-3)" }}>Trading Mode</span>
-        <span
-          className="tag font-bold"
-          style={isLive
-            ? { color: "var(--red)",   background: "var(--red-dim)",   border: "1px solid #f43f5e30" }
-            : { color: "var(--green)", background: "var(--green-dim)", border: "1px solid #22d3a030" }
-          }
-        >
-          {isLive ? "● LIVE" : "● PAPER"}
-        </span>
-      </div>
+    <Panel title="Trading mode">
+      <DataSurface query={query} skeleton={<Skeleton label="Loading mode" />} hideFreshness>
+        {(m) => {
+          const isLive = m.mode === "LIVE";
+          return (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-table text-text-2">
+                  {isLive ? "Real orders are placed through AngelOne." : "Simulated fills; no broker orders."}
+                </span>
+                <span aria-live="polite" aria-atomic="true">
+                  <span className="sr-only">Current mode: </span>
+                  <Badge intent={isLive ? "negative" : "positive"} strength="outline" status={m.mode} dot={isLive ? "pulse" : true}>
+                    {m.mode}
+                  </Badge>
+                </span>
+              </div>
+              {isLive ? (
+                <button
+                  type="button"
+                  onClick={() => toPaper.mutate()}
+                  disabled={toPaper.isPending}
+                  className="w-full rounded-lg border border-border-2 bg-surface-3 py-2 text-body font-semibold text-text-1 hover:bg-surface-2 disabled:opacity-50"
+                >
+                  {toPaper.isPending ? "Switching…" : "Switch to paper"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirm(true)}
+                  className="w-full rounded-lg border border-red/40 bg-red/10 py-2 text-body font-semibold text-red hover:bg-red/20"
+                >
+                  Go live…
+                </button>
+              )}
+            </div>
+          );
+        }}
+      </DataSurface>
 
-      {isLive ? (
-        <button onClick={() => toPaper.mutate()} disabled={toPaper.isPending}
-          className="w-full py-2.5 rounded-lg text-[12px] font-semibold transition-all"
-          style={{ background: "var(--surface-3)", color: "var(--text-2)", border: "1px solid var(--border-2)" }}>
-          Switch to Paper
-        </button>
-      ) : !confirm ? (
-        <button onClick={() => setConfirm(true)}
-          className="w-full py-2.5 rounded-lg text-[12px] font-semibold transition-all"
-          style={{ background: "var(--red-dim)", color: "var(--red)", border: "1px solid #f43f5e30" }}>
-          Go Live
-        </button>
-      ) : (
-        <div className="space-y-2.5">
-          <p className="text-[10px] text-center leading-relaxed" style={{ color: "var(--red)" }}>
-            Real orders will be placed with your AngelOne account.<br />This cannot be undone mid-session.
-          </p>
-          <div className="flex gap-2">
-            <button onClick={() => toLive.mutate()} disabled={toLive.isPending}
-              className="flex-1 py-2 rounded-lg text-[11px] font-bold"
-              style={{ background: "var(--red)", color: "#fff" }}>
-              Confirm — Go Live
-            </button>
-            <button onClick={() => setConfirm(false)}
-              className="flex-1 py-2 rounded-lg text-[11px] font-medium"
-              style={{ background: "var(--surface-3)", color: "var(--text-2)", border: "1px solid var(--border)" }}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+      <ConfirmDialog
+        open={confirm}
+        title="Switch to LIVE trading?"
+        confirmLabel="Confirm — go live"
+        danger
+        pending={toLive.isPending}
+        onConfirm={() => toLive.mutate()}
+        onCancel={() => setConfirm(false)}
+      >
+        Real orders will be placed with your AngelOne account using the current capital and sizing settings.
+        You can switch back to paper at any time, but orders already sent are not reversed.
+      </ConfirmDialog>
+    </Panel>
   );
 }
