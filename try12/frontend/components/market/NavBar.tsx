@@ -13,40 +13,30 @@ export function NavBar() {
   const pathname = usePathname();
 
   return (
-    <nav style={{
-      display: "flex",
-      alignItems: "stretch",
-      height: 40,
-      padding: "0 16px",
-      gap: 2,
-      background: "var(--surface)",
-      borderBottom: "1px solid var(--border)",
-    }}>
+    <nav aria-label="Primary" className="flex h-10 items-stretch gap-0.5 border-b border-border bg-surface px-4">
       {/* Logo */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 16, paddingRight: 16, borderRight: "1px solid var(--border-2)" }}>
-        <div style={{
-          width: 22, height: 22, borderRadius: 5, background: "var(--accent)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          color: "#fff", fontSize: 11, fontWeight: 700, flexShrink: 0,
-        }}>N</div>
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-1)", letterSpacing: "-0.01em" }}>
-          Nifty Scalper
-        </span>
+      <div className="mr-4 flex items-center gap-2 border-r border-border-2 pr-4">
+        <div
+          aria-hidden="true"
+          className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[5px] bg-accent text-[11px] font-bold text-white"
+        >
+          N
+        </div>
+        <span className="text-[12px] font-semibold tracking-tight text-text-1">Nifty Scalper</span>
       </div>
 
-      {LINKS.map(({ href, label }) => {
-        const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
-        return (
-          <Link
-            key={href}
-            href={href}
-            className="nav-link"
-            data-active={active ? "true" : "false"}
-          >
-            {label}
-          </Link>
-        );
-      })}
+      <ul className="flex items-stretch gap-0.5">
+        {LINKS.map(({ href, label }) => {
+          const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+          return (
+            <li key={href} className="flex">
+              <Link href={href} className="nav-link" aria-current={active ? "page" : undefined}>
+                {label}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
     </nav>
   );
 }

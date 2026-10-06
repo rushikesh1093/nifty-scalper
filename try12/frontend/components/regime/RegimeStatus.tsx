@@ -1,81 +1,118 @@
 "use client";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getCurrentRegime } from "@/lib/api";
-import { useEffect, useState } from "react";
+import { ApiError, errorMessage } from "@/lib/http";
+import { queryKeys } from "@/lib/queryKeys";
+import { useDiagnostics } from "@/hooks/useDiagnostics";
+import { useStickyQueryError } from "@/hooks/useStickyQueryError";
+import { cn } from "@/lib/utils";
 
-const REGIME_COLORS: Record<string, string> = {
-  // Bullish regimes (green)
-  BULL_TREND_NORMAL_VOL:      "var(--green)",
-  BREAKOUT_EVENT_BULLISH:     "var(--green)",
-  
-  // Bearish regimes (red)
-  BEAR_TREND_NORMAL_VOL:      "var(--red)",
-  BREAKOUT_EVENT_BEARISH:     "var(--red)",
-  HIGH_VOL_CHOP:              "var(--red)",
-  
-  // Neutral/mixed regimes (yellow/orange)
-  TREND_HIGH_VOL:             "#f59e0b",
-  LOW_VOL_COMPRESSION:        "#f59e0b",
-  RANGE_NORMAL_VOL:           "#f59e0b",
-  REGIME_TRANSITION:          "#f59e0b",
-  
-  // Special (gray)
-  EXPIRY_DAY:                 "var(--text-3)",
-  UNKNOWN:                    "var(--text-3)",
+// StatusBar regime chip (finding 4). A failed fetch is an error chip with Retry — never "UNKNOWN".
+const UNDERLYING = "NIFTY";
+
+const REGIME_TONE: Record<string, string> = {
+  BULL_TREND_NORMAL_VOL:  "text-green",
+  BREAKOUT_EVENT_BULLISH: "text-green",
+  BEAR_TREND_NORMAL_VOL:  "text-red",
+  BREAKOUT_EVENT_BEARISH: "text-red",
+  HIGH_VOL_CHOP:          "text-red",
+  TREND_HIGH_VOL:         "text-yellow",
+  LOW_VOL_COMPRESSION:    "text-yellow",
+  RANGE_NORMAL_VOL:       "text-yellow",
+  REGIME_TRANSITION:      "text-yellow",
+  EXPIRY_DAY:             "text-text-2",
 };
 
 function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  const mins = Math.floor(s / 60);
+  const secs = s % 60;
   if (mins < 60) return `${mins}:${secs.toString().padStart(2, "0")}`;
   const hours = Math.floor(mins / 60);
-  const remainMins = mins % 60;
-  return `${hours}:${remainMins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  return `${hours}:${(mins % 60).toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
 }
 
+const CELL = "flex items-center gap-1.5 px-3 border-r border-border";
+
 export function RegimeStatus() {
-  const { data } = useQuery({
-    queryKey: ["regime-current"],
-    queryFn: () => getCurrentRegime("NIFTY"),
-    refetchInterval: 5000, // 5s
+  const query = useQuery({
+    queryKey: queryKeys.regimeCurrent(UNDERLYING),
+    queryFn: () => getCurrentRegime(UNDERLYING),
+    refetchInterval: 10_000,
   });
+  const { data, isFetching, refetch, dataUpdatedAt } = query;
+  const { error, isError } = useStickyQueryError(query);
+  const diag = useDiagnostics();
 
-  const [liveSeconds, setLiveSeconds] = useState(data?.seconds_in_regime || 0);
-
+  // One 1 s ticker for the component's lifetime (StrictMode-safe: cleared on unmount).
+  // `now` stays null until mount so the first (SSR) render is neutral.
+  const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
-    if (data?.seconds_in_regime !== undefined) {
-      setLiveSeconds(data.seconds_in_regime);
-    }
-  }, [data?.seconds_in_regime]);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setLiveSeconds((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(timer);
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
   }, []);
 
-  const regime = data?.regime || "UNKNOWN";
-  const color = REGIME_COLORS[regime] || "var(--text-3)";
+  if (isError) {
+    const detail = error instanceof ApiError ? error.detail : null;
+    return (
+      <div className={CELL} data-testid="regime-chip" data-state="error">
+        <span role="alert" className="flex items-center gap-1.5 text-red" title={detail ?? errorMessage(error)}>
+          <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-red" />
+          Regime: unavailable
+        </span>
+        <button
+          type="button"
+          onClick={() => { void refetch(); }}
+          disabled={isFetching}
+          aria-label="Retry loading the current regime"
+          className="rounded border border-red/40 bg-red/10 px-1.5 py-px text-micro font-semibold text-red hover:bg-red/20 disabled:opacity-50"
+        >
+          {isFetching ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className={CELL} data-testid="regime-chip" data-state="pending">
+        <span className="text-text-3">Regime —</span>
+      </div>
+    );
+  }
+
+  if (data.source === "absent") {
+    return (
+      <div className={CELL} data-testid="regime-chip" data-state="absent">
+        <span aria-live="polite" className="flex items-center gap-1.5 text-text-2">
+          <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-text-3" />
+          No regime yet
+        </span>
+      </div>
+    );
+  }
+
+  const elapsed = now === null ? null : data.seconds_in_regime + Math.max(0, (now - dataUpdatedAt) / 1000);
+  const allows = diag.data?.underlyings.find((u) => u.underlying === UNDERLYING)?.regime_allows_trading;
+  const tone = REGIME_TONE[data.regime] ?? "text-text-2";
 
   return (
-    <div
-      className="flex items-center gap-1.5 px-3"
-      style={{ borderRight: "1px solid var(--border)" }}
-    >
-      <span
-        className="w-1.5 h-1.5 rounded-full shrink-0"
-        style={{ background: color }}
-      />
-      <span style={{ color, fontSize: "11px", fontWeight: 500 }}>
-        {regime.replace(/_/g, " ")}
+    <div className={CELL} data-testid="regime-chip" data-state="ok">
+      {/* Only the regime + policy are live-announced; the per-second duration is not. */}
+      <span aria-live="polite" className="flex items-center gap-1.5">
+        <span aria-hidden="true" className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-current", tone)} />
+        <span className={cn("font-medium", tone)}>
+          <span className="sr-only">{UNDERLYING} regime: </span>
+          {data.regime.replace(/_/g, " ")}
+        </span>
+        {allows === true && <span className="text-micro text-green">permits trading</span>}
+        {allows === false && <span className="text-micro text-red">blocks trading</span>}
       </span>
-      <span
-        className="font-mono"
-        style={{ color: "var(--text-3)", fontSize: "10px" }}
-      >
-        {formatDuration(liveSeconds)}
+      <span className="font-mono text-micro text-text-3" title={data.since ? `since ${data.since}` : undefined}>
+        {elapsed === null ? "—" : formatDuration(elapsed)}
       </span>
     </div>
   );

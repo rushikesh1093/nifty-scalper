@@ -33,11 +33,13 @@ export interface BadgeProps {
   /** Leading status dot. `pulse` animates it (live states). */
   dot?:      boolean | "pulse";
   title?:    string;
+  /** Uppercase micro label (default). `false` for sentence-case chips such as the status bar. */
+  caps?:     boolean;
   className?: string;
 }
 
 export function Badge({
-  children, intent = "neutral", strength = "subtle", status, dot, title, className,
+  children, intent = "neutral", strength = "subtle", status, dot, title, caps = true, className,
 }: BadgeProps) {
   const c = INTENT[intent];
   return (
@@ -45,7 +47,8 @@ export function Badge({
       data-status={status}
       title={title}
       className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-micro font-semibold uppercase",
+        "inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 font-semibold",
+        caps ? "text-micro uppercase" : "text-table tracking-normal",
         strength === "subtle"  && [c.fg, c.bg],
         strength === "outline" && [c.fg, "border bg-transparent", c.border],
         strength === "solid"   && [c.solidFg, SOLID_BG[intent]],

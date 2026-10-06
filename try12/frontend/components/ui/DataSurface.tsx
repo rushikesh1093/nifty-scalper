@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Freshness } from "@/components/ui/Freshness";
+import { useStickyQueryError } from "@/hooks/useStickyQueryError";
 
 // The loading / error / stale / empty state machine (design §6.5). Every data panel renders
 // through this so a failed fetch can never render as an empty state (FR-1).
@@ -36,13 +37,16 @@ export type DataSurfaceProps<T> = DataSurfaceBase<T> &
 
 export function DataSurface<T>(props: DataSurfaceProps<T>) {
   const { query, children, skeleton, emptyHint, onRetry, className, hideFreshness } = props;
-  const { data, isPending, isError, error, isFetching, isStale, dataUpdatedAt } = query;
+  const { data, isPending, isFetching, isStale, dataUpdatedAt } = query;
+  // Sticky: survives React Query v5 resetting a never-successful query to "pending" on each refetch,
+  // so a down backend shows a steady ErrorState instead of flickering back to the skeleton.
+  const { isError, error } = useStickyQueryError(query as UseQueryResult<unknown, unknown>);
   const retry = onRetry ?? (() => { void query.refetch(); });
   const fallback = skeleton ?? <Skeleton />;
   const meta: SurfaceMeta = { isStale, dataUpdatedAt, isFetching };
 
   // 1. pending, nothing to show yet
-  if (isPending && data === undefined) return <div className={className}>{fallback}</div>;
+  if (isPending && data === undefined && !isError) return <div className={className}>{fallback}</div>;
 
   // 2. error and no data — the state that used to render as an empty list
   if (isError && data === undefined) {

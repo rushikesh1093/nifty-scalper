@@ -228,8 +228,7 @@ body {
   white-space: nowrap;
 }
 .nav-link:hover { color: var(--text-1); }
-.nav-link[aria-current="page"],
-.nav-link[data-active="true"] {
+.nav-link[aria-current="page"] {
   color: var(--text-1);
   border-bottom-color: var(--accent);
 }
