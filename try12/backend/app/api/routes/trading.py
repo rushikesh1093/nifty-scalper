@@ -7,6 +7,7 @@ Trading API routes:
   PUT  /trading/config                  — update config
   PUT  /trading/config/strategy-flag    — enable/disable a strategy
   GET  /trading/signals                 — recent signals
+  GET  /trading/signals/diagnostics     — why signals are (not) firing / converting
   GET  /trading/positions               — open + closed positions
   POST /trading/positions/{id}/close    — manual close a position
   GET  /trading/pnl                     — daily P&L summary
@@ -39,6 +40,7 @@ from app.db.models.paper_trade import (
     TradingMode, SignalStatus,
 )
 from app.db.models.market_study import IntradayMarketFeature, MarketDailySnapshot, VIXData
+from app.schemas.diagnostics import SignalDiagnosticsResponse
 from app.services.trading.mode_manager import mode_manager
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.option_selector import option_selector
@@ -260,7 +262,14 @@ async def get_signals(
     if underlying:
         q = q.where(StrategySignal.underlying == underlying.upper())
     if status:
-        q = q.where(StrategySignal.status == SignalStatus(status.upper()))
+        try:
+            status_enum = SignalStatus(status.upper())
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"status must be one of: {', '.join(s.value for s in SignalStatus)}",
+            )
+        q = q.where(StrategySignal.status == status_enum)
     if today_only:
         # Filter to today's IST date using timezone-aware bounds.
         # signal_time is stored as UTC with timezone — convert today IST to UTC bounds.
@@ -285,6 +294,7 @@ async def get_signals(
             "vwap":             r.vwap,
             "strike":           r.suggested_strike,
             "symbol":           r.suggested_symbol,
+            "suggested_token":  r.suggested_token,
             "entry_ref":        r.entry_price_ref,
             "sl_ref":           r.stop_loss_ref,
             "target_ref":       r.target_ref,
@@ -296,6 +306,247 @@ async def get_signals(
         }
         for r in rows
     ]
+
+
+# ── Signal pipeline diagnostics ───────────────────────────────────────────────
+
+@router.get("/signals/diagnostics", response_model=SignalDiagnosticsResponse)
+async def get_signal_diagnostics():
+    """
+    Read-only explanation of why signals are (not) firing / converting.
+    Total by construction: every probe is individually wrapped; a failing probe
+    becomes a warning blocker and the endpoint still returns 200.
+    """
+    # Function-local imports: gates/constants are read from the runner itself so
+    # the reported thresholds can never drift from the ones the loop applies.
+    from app.services.trading import strategy_runner as _sr
+    from app.services.trading.signal_diagnostics import (
+        SESSION_WINDOW_NOTE, derive_blockers, format_session_window, session_window_open, vix_gate,
+    )
+    from app.services.trading.regime_rules import get_regime_rule
+    from app.services.trading.strategy_orchestrator import strategy_orchestrator
+    from app.services.cache.redis_client import redis_cache
+    from app.services.market_data.levels import IST, parse_candle_ts
+    from app.db.base import AsyncSessionLocal
+    from app.db.models.instrument import Instrument, InstrumentType, OptionType
+    from app.services.broker.instrument_sync import get_active_expiries
+    from app.strategies.indicators import compute_all
+    from sqlalchemy import func as _func
+
+    now_ist = datetime.now(IST)
+    start, end = settings.SESSION_START_IST, settings.SESSION_END_IST
+    probe_errors: list[dict] = []
+
+    def _probe_failed(code: str, exc: Exception) -> None:
+        logger.warning("diagnostics probe %s failed: %s", code, exc)
+        probe_errors.append({"code": code, "detail": str(exc)})
+
+    # Runner
+    runner_running = None
+    try:
+        runner_running = _sr.strategy_runner.is_running
+    except Exception as exc:
+        _probe_failed("RUNNER_PROBE", exc)
+
+    # Feed + broker session
+    feed = {"connected": None, "subscriptions": None, "session_valid": None}
+    try:
+        from app.services.market_data.feed import market_feed
+        feed["connected"] = bool(market_feed.is_connected)
+        feed["subscriptions"] = int(market_feed.subscription_count)
+    except Exception as exc:
+        _probe_failed("FEED_PROBE", exc)
+    try:
+        from app.services.broker.angel_client import _session
+        feed["session_valid"] = bool(_session.is_valid())
+    except Exception as exc:
+        _probe_failed("SESSION_PROBE", exc)
+
+    # Config (mode, study phase, strategy flags)
+    mode = study_phase = None
+    strategy_flags: dict = {}
+    try:
+        cfg = await mode_manager.get_config()
+        if cfg:
+            mode = cfg.mode.value if hasattr(cfg.mode, "value") else str(cfg.mode)
+            study_phase = bool(cfg.study_phase)
+            strategy_flags = cfg.strategy_flags or {}
+    except Exception as exc:
+        _probe_failed("CONFIG_PROBE", exc)
+
+    # DB: signals + positions (DB_UNAVAILABLE if unreachable — counts stay null)
+    db_available = True
+    signals = {"today_count": None, "by_status": {}, "last_signal_at": None, "last_signal_age_secs": None}
+    positions = {"open": None, "today_total": None}
+    day_start_utc = datetime.combine(now_ist.date(), datetime.min.time()).replace(tzinfo=IST).astimezone(timezone.utc)
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(
+                select(StrategySignal.status, _func.count())
+                .where(StrategySignal.signal_time >= day_start_utc)
+                .group_by(StrategySignal.status)
+            )).all()
+            by_status = {(s.value if hasattr(s, "value") else str(s)): int(n) for s, n in rows}
+            signals["by_status"] = by_status
+            signals["today_count"] = sum(by_status.values())
+            last = (await db.execute(select(_func.max(StrategySignal.signal_time)))).scalar()
+            if last is not None:
+                signals["last_signal_at"] = last.astimezone(IST).isoformat()
+                signals["last_signal_age_secs"] = max(0, int((now_ist - last).total_seconds()))
+            positions["open"] = int((await db.execute(
+                select(_func.count()).select_from(PaperPosition).where(PaperPosition.is_open == True)  # noqa: E712
+            )).scalar() or 0)
+            positions["today_total"] = int((await db.execute(
+                select(_func.count()).select_from(PaperPosition).where(PaperPosition.entry_time >= day_start_utc)
+            )).scalar() or 0)
+    except Exception as exc:
+        logger.error("diagnostics: database unreachable: %s", exc)
+        db_available = False
+
+    # Capital
+    capital = {k: None for k in ("capital", "available", "trade_amount", "daily_trades", "max_trades_per_day",
+                                 "open_positions", "max_open_positions", "circuit_breaker", "circuit_reason")}
+    if db_available:
+        try:
+            cs = await mode_manager.get_capital_summary()
+            if cs:
+                capital.update(
+                    capital=cs.get("capital"), available=cs.get("available_capital"),
+                    trade_amount=cs.get("trade_amount"), daily_trades=cs.get("daily_trades"),
+                    max_trades_per_day=cs.get("max_trades_per_day"), open_positions=cs.get("open_positions"),
+                    max_open_positions=cs.get("max_open_positions"),
+                    circuit_breaker=bool(cs.get("circuit_breaker")), circuit_reason=cs.get("circuit_reason") or "",
+                )
+        except Exception as exc:
+            _probe_failed("CAPITAL_PROBE", exc)
+
+    # VIX
+    vix_ltp = None
+    try:
+        vix_ltp = await redis_cache.get_ltp(settings.VIX_TOKEN)
+    except Exception as exc:
+        _probe_failed("VIX_PROBE", exc)
+    vix = {"ltp": vix_ltp, "min": _sr.VIX_MIN, "max": _sr.VIX_MAX,
+           "gate": vix_gate(vix_ltp, _sr.VIX_MIN, _sr.VIX_MAX)}
+
+    # Per underlying
+    underlyings: list[dict] = []
+    session_start_mins = start.hour * 60 + start.minute
+    for u in ("NIFTY", "BANKNIFTY"):
+        token = settings.NIFTY_TOKEN if u == "NIFTY" else settings.BANKNIFTY_TOKEN
+        info: dict = {
+            "underlying": u, "spot": None, "candles_today": None,
+            "candles_required": _sr.MIN_TODAY_CANDLES,
+            "atr": None, "atr_min": _sr.ATR_MIN_NIFTY if u == "NIFTY" else _sr.ATR_MIN_BANKNIFTY,
+            "last_candle_at": None, "regime": None, "regime_allows_trading": None,
+        }
+        extra: dict = {}
+        try:
+            info["spot"] = await redis_cache.get_ltp(token)
+            all_c = await redis_cache.get_candles(token, "ONE_MINUTE", 500)
+            today_c = []
+            for c in all_c:
+                try:
+                    ts = parse_candle_ts(c.get("timestamp")).astimezone(IST)
+                except Exception:
+                    continue
+                if ts.date() == now_ist.date() and ts.hour * 60 + ts.minute >= session_start_mins:
+                    today_c.append(c)
+            info["candles_today"] = len(today_c)
+            if all_c:
+                info["last_candle_at"] = str(all_c[-1].get("timestamp"))
+            if len(today_c) >= _sr.MIN_TODAY_CANDLES:
+                atr = compute_all(today_c).get("atr")
+                info["atr"] = round(float(atr), 4) if atr is not None else None
+        except Exception as exc:
+            _probe_failed(f"CANDLES_PROBE_{u}", exc)
+        try:
+            raw = await redis_cache._r().get(f"regime:{u}:current")
+            if raw:
+                info["regime"] = json.loads(raw).get("regime")
+                info["regime_allows_trading"] = bool(get_regime_rule(info["regime"]).enabled_strategies)
+            extra["in_cooldown"] = bool(strategy_orchestrator.is_in_cooldown(u))
+        except Exception as exc:
+            _probe_failed(f"REGIME_PROBE_{u}", exc)
+        if db_available:
+            try:
+                async with AsyncSessionLocal() as db:
+                    snap_date = (await db.execute(
+                        select(MarketDailySnapshot.date)
+                        .where(MarketDailySnapshot.underlying == u, MarketDailySnapshot.date < now_ist.date())
+                        .order_by(desc(MarketDailySnapshot.date)).limit(1)
+                    )).scalar()
+                    extra["prev_day_snapshot"] = snap_date.isoformat() if snap_date else None
+                    info["prev_day_snapshot"] = extra["prev_day_snapshot"]
+
+                    # CAPITAL_BELOW_LOT_COST: nearest-expiry ATM CE/PE premium x lot size
+                    if info["spot"]:
+                        step = 50 if u == "NIFTY" else 100
+                        atm = round(info["spot"] / step) * step
+                        expiries = await get_active_expiries(db, u)
+                        insts = []
+                        if expiries:
+                            insts = (await db.execute(
+                                select(Instrument).where(
+                                    Instrument.name == u,
+                                    Instrument.instrument_type == InstrumentType.OPTIDX,
+                                    Instrument.expiry == expiries[0],
+                                    Instrument.strike == atm,
+                                    Instrument.option_type.in_([OptionType.CE, OptionType.PE]),
+                                    Instrument.is_active == True,  # noqa: E712
+                                )
+                            )).scalars().all()
+                        chain_ltp: dict = {}
+                        if expiries:
+                            chain = await redis_cache.get_option_chain(u, str(expiries[0]))
+                            for s in (chain or {}).get("strikes", []):
+                                if s.get("token") and s.get("ltp"):
+                                    chain_ltp[str(s["token"])] = float(s["ltp"])
+                        best = None
+                        for inst in insts:
+                            prem = chain_ltp.get(inst.token) or await redis_cache.get_ltp(inst.token)
+                            if prem and prem > 0:
+                                cost = prem * inst.lot_size
+                                if best is None or cost < best[0]:
+                                    best = (cost, prem, inst.lot_size)
+                        if best:
+                            extra.update(lot_cost=round(best[0], 2), atm_premium=best[1], lot_size=best[2])
+                        else:
+                            extra["lot_cost_unavailable"] = True
+                    else:
+                        extra["lot_cost_unavailable"] = True
+            except Exception as exc:
+                _probe_failed(f"LOT_COST_PROBE_{u}", exc)
+        underlyings.append(info | {"_extra": extra})
+
+    # Strategies
+    strategies = {"total": None, "enabled": None, "disabled": []}
+    try:
+        names = [s.name for s in _sr.strategy_runner._strategies.get("NIFTY", [])] or list(strategy_flags.keys())
+        if names:
+            disabled = [n for n in names if strategy_flags.get(n, True) is False]
+            strategies = {"total": len(names), "enabled": len(names) - len(disabled), "disabled": disabled}
+    except Exception as exc:
+        _probe_failed("STRATEGIES_PROBE", exc)
+
+    blockers = derive_blockers({
+        "now_ist": now_ist, "session_start": start, "session_end": end,
+        "db_available": db_available, "runner_running": runner_running, "study_phase": study_phase,
+        "feed": feed, "vix": vix, "capital": capital, "strategies": strategies,
+        "underlyings": [{**{k: v for k, v in i.items() if k != "_extra"}, **i["_extra"]} for i in underlyings],
+        "probe_errors": probe_errors,
+    })
+
+    return SignalDiagnosticsResponse(
+        as_of=now_ist.isoformat(),
+        session_window_open=session_window_open(now_ist, start, end),
+        session_window=format_session_window(start, end),
+        session_window_note=SESSION_WINDOW_NOTE,
+        runner_running=runner_running, mode=mode, study_phase=study_phase,
+        feed=feed, signals=signals, positions=positions,
+        underlyings=[{k: v for k, v in i.items() if k != "_extra"} for i in underlyings],
+        vix=vix, capital=capital, strategies=strategies, blockers=blockers,
+    )
 
 
 # ── Positions ─────────────────────────────────────────────────────────────────
@@ -322,6 +573,7 @@ async def get_positions(
         {
             "id":               r.id,
             "strategy":         r.strategy_name,
+            "token":            r.token,
             "symbol":           r.symbol,
             "underlying":       r.underlying,
             "strike":           r.strike,
