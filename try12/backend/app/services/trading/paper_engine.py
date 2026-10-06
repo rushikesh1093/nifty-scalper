@@ -447,13 +447,12 @@ class PaperEngine:
 
                 if gain_pct >= 35.0:
                     new_sl = round(live_entry * 1.25, 1)
+                elif gain_pct >= 25.0:
+                    # Lock 10% profit: SL → entry × 1.10 so even a 5% pullback
+                    # (normal market volatility) keeps position profitable.
+                    new_sl = round(live_entry * 1.10, 1)
                 elif gain_pct >= 20.0:
                     new_sl = round(live_entry * 1.15, 1)
-                elif gain_pct >= 10.0:
-                    # True breakeven lock: SL → entry × 1.001 so the position
-                    # always closes profitable once this tier fires.
-                    # (Previous value was 0.99× which still accepted a 1% loss.)
-                    new_sl = round(live_entry * 1.001, 1)
                 else:
                     new_sl = None
 
