@@ -102,9 +102,11 @@ function SignalRows({
               <td className="font-medium text-text-1">{strategyLabel(s.strategy)}</td>
               <td>{s.underlying}</td>
               <td>
+                {/* `direction` is the underlying's direction; the engine always buys the option
+                    (option_selector: BUY → CE, SELL → PE), so both legs read "BUY". */}
                 <Badge intent={isBuy ? "positive" : "negative"} status={s.direction}>
                   <span aria-hidden="true">{isBuy ? "▲" : "▼"}</span>
-                  {isBuy ? "BUY CE" : "SELL PE"}
+                  {isBuy ? "BUY CE" : "BUY PE"}
                 </Badge>
               </td>
               <td className="num"><PriceText value={num(s.spot)} /></td>
