@@ -64,6 +64,12 @@ function DailyCharts({ daily, theme }: { daily: DailySnapshot[]; theme: ChartThe
       ] as const).map(([title, key, token, ref]) => (
         <div key={key}>
           <div className="mb-1 text-table text-text-2">{title}</div>
+          {daily.every((d) => num(d[key]) === null) ? (
+            // Older snapshots lack these fields; say so instead of drawing an empty plot.
+            <div style={{ height: 120 }} className="flex items-center justify-center rounded-md border border-dashed border-border text-table text-text-3">
+              Not recorded for these {daily.length} days
+            </div>
+          ) : (
           <div style={{ height: 120 }} role="img" aria-label={`${title} for ${daily.length} days`}>
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={daily} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
@@ -76,6 +82,7 @@ function DailyCharts({ daily, theme }: { daily: DailySnapshot[]; theme: ChartThe
               </AreaChart>
             </ResponsiveContainer>
           </div>
+          )}
         </div>
       ))}
     </div>
