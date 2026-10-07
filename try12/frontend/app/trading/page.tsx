@@ -26,11 +26,14 @@ const SIDEBAR_TABS: { key: DeskSidebarTab; label: string }[] = [
   { key: "selector",   label: "Option selector" },
 ];
 
+// One placeholder per DeskStats tile, keyed by the tile it stands in for.
+const STAT_TILE_KEYS = ["pnl", "trades", "win-rate", "open-positions", "available"] as const;
+
 function StatTilesSkeleton() {
   return (
     <div role="status" aria-live="polite" className="grid grid-cols-2 gap-2 md:grid-cols-5">
       <span className="sr-only">Loading daily stats…</span>
-      {Array.from({ length: 5 }, (_, i) => <div key={i} aria-hidden="true" className="shimmer h-[66px] rounded-lg" />)}
+      {STAT_TILE_KEYS.map((k) => <div key={k} aria-hidden="true" className="shimmer h-[66px] rounded-lg" />)}
     </div>
   );
 }

@@ -195,7 +195,7 @@ export function SignalDiagnosticsPanel({ onNavigate }: { onNavigate?: (tab: Desk
                   </p>
                 ) : (
                   <ul className="space-y-2" aria-label="Blockers">
-                    {blockers.map((b, i) => <BlockerItem key={`${b.code}-${b.underlying ?? ""}-${i}`} b={b} onNavigate={onNavigate} />)}
+                    {blockers.map((b) => <BlockerItem key={`${b.code}|${b.underlying ?? ""}|${b.message}`} b={b} onNavigate={onNavigate} />)}
                   </ul>
                 )}
                 <Checklist d={d} now={now} />

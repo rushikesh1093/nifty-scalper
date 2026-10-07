@@ -34,8 +34,9 @@ function StrengthBars({ value }: { value: number }) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <span aria-hidden="true" className="inline-flex items-end gap-px">
-        {[1, 2, 3, 4, 5].map((i) => (
-          <span key={i} className={i <= s ? "w-1 rounded-sm bg-text-2" : "w-1 rounded-sm bg-surface-3"} style={{ height: 4 + i * 2 }} />
+        {/* key is the bar's strength level (1..5), not an array index */}
+        {[1, 2, 3, 4, 5].map((level) => (
+          <span key={level} className={level <= s ? "w-1 rounded-sm bg-text-2" : "w-1 rounded-sm bg-surface-3"} style={{ height: 4 + level * 2 }} />
         ))}
       </span>
       <span className="font-mono tabular-nums text-text-2">{s}/5</span>

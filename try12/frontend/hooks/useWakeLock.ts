@@ -28,8 +28,9 @@ export function useWakeLock() {
           // Fired when the browser releases the lock (tab hidden, screen off, etc.)
           lockRef.current = null;
         });
-      } catch {
-        // User denied or API unavailable — silently ignore
+      } catch (e) {
+        // Denied (e.g. tab not visible, battery saver) or unsupported: harmless, but never silent.
+        console.debug("[wake-lock] request refused:", e instanceof Error ? e.message : String(e));
       }
     }
 
@@ -47,7 +48,9 @@ export function useWakeLock() {
     return () => {
       cancelled = true;
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      lockRef.current?.release().catch(() => {});
+      lockRef.current?.release().catch((e: unknown) => {
+        console.debug("[wake-lock] release failed:", e instanceof Error ? e.message : String(e));
+      });
       lockRef.current = null;
     };
   }, []);

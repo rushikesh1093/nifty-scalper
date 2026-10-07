@@ -18,7 +18,7 @@ export function NavBar() {
       <div className="mr-4 flex items-center gap-2 border-r border-border-2 pr-4">
         <div
           aria-hidden="true"
-          className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[5px] bg-accent text-[11px] font-bold text-white"
+          className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[5px] bg-accent text-[11px] font-bold text-text-1"
         >
           N
         </div>
