@@ -7,6 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useDiagnostics } from "@/hooks/useDiagnostics";
 import { useStickyQueryError } from "@/hooks/useStickyQueryError";
 import { cn } from "@/lib/utils";
+import { regimeLabel } from "@/components/regime/regimeMeta";
 
 // StatusBar regime chip (finding 4). A failed fetch is an error chip with Retry — never "UNKNOWN".
 const UNDERLYING = "NIFTY";
@@ -107,7 +108,7 @@ export function RegimeStatus() {
         <span aria-hidden="true" className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-current", tone)} />
         <span className={cn("font-medium", tone)}>
           <span className="sr-only">{UNDERLYING} regime: </span>
-          {data.regime.replace(/_/g, " ")}
+          {regimeLabel(data.regime)}
         </span>
         {allows === true && <span className="text-micro text-green">permits trading</span>}
         {allows === false && <span className="text-micro text-red">blocks trading</span>}
