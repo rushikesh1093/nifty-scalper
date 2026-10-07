@@ -98,10 +98,10 @@ REGIME_RULES: dict[str, RegimeRule] = {
     ),
     # ── No-trade regimes ─────────────────────────────────────────────────────
     "HIGH_VOL_CHOP": RegimeRule(
-        enabled_strategies=frozenset(),
-        allowed_directions=frozenset(),
-        position_multiplier=0.0,
-        notes="High volatility chop — no trading to avoid whipsaws",
+        enabled_strategies=frozenset({"BOLLINGER_BREAKOUT", "VWAP_REVERSAL"}),
+        allowed_directions=frozenset({"BUY", "SELL"}),
+        position_multiplier=0.3,
+        notes="High volatility chop — scaled-down breakout and reversal trades",
     ),
     "REGIME_TRANSITION": RegimeRule(
         enabled_strategies=frozenset(),
@@ -116,10 +116,10 @@ REGIME_RULES: dict[str, RegimeRule] = {
         notes="Option expiry day — no regime-based trades (let expiry guards handle)",
     ),
     "UNKNOWN": RegimeRule(
-        enabled_strategies=frozenset(),
-        allowed_directions=frozenset(),
-        position_multiplier=0.0,
-        notes="Regime classification failed or insufficient data — no trading",
+        enabled_strategies=frozenset({"VWAP_PULLBACK", "VWAP_REVERSAL"}),
+        allowed_directions=frozenset({"BUY", "SELL"}),
+        position_multiplier=0.5,
+        notes="Regime classification failed — trade at half size using mean reversion",
     ),
 }
 

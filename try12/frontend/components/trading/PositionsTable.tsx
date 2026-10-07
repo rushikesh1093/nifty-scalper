@@ -54,6 +54,7 @@ function PositionRow({ p, closed, onClose, closing }: { p: Position; closed: boo
       </td>
       <td className="num text-text-1"><PriceText value={num(p.entry)} /></td>
       <td className="num text-red"><PriceText value={num(p.sl)} /></td>
+      <td className="num text-yellow"><PriceText value={num(p.trailing_sl)} /></td>
       <td className="num text-green"><PriceText value={num(p.target)} /></td>
       {closed && <td className="num"><PriceText value={num(p.exit)} /></td>}
       {closed && (
@@ -170,7 +171,7 @@ export function PositionsTable() {
         isEmpty={(d) => !Array.isArray(d) || d.length === 0}
         emptyTitle={closed ? "No closed positions" : "No open positions"}
         emptyHint={closed ? "Closed paper/live positions appear here with their exit reason and net P&L." : "Positions open when a strategy signal passes every risk gate."}
-        skeleton={<TableSkeleton rows={3} cols={9} />}
+        skeleton={<TableSkeleton rows={3} cols={10} />}
         hideFreshness
       >
         {(data) => (
@@ -183,6 +184,7 @@ export function PositionsTable() {
                   <th scope="col">Contract</th>
                   <th scope="col" className="num">Entry</th>
                   <th scope="col" className="num">SL</th>
+                  <th scope="col" className="num">Trail SL</th>
                   <th scope="col" className="num">Target</th>
                   {closed && <th scope="col" className="num">Exit</th>}
                   {closed && <th scope="col">Reason</th>}
