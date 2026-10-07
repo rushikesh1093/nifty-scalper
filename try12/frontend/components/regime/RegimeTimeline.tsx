@@ -1,212 +1,109 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
-import { getRegimeHistory } from "@/lib/api";
 import { useState } from "react";
+import { cn } from "@/lib/utils";
+import { formatIst } from "@/lib/time";
+import { useRegimeHistory, type Underlying } from "@/hooks/useRegime";
+import { Panel } from "@/components/ui/Panel";
+import { DataSurface } from "@/components/ui/DataSurface";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { Badge } from "@/components/ui/Badge";
+import { formatDurationSecs, regimeLabel, regimeSwatch, regimeTone } from "@/components/regime/regimeMeta";
+import type { RegimeSpan } from "@/types/market";
 
-const REGIME_COLORS: Record<string, string> = {
-  // Bullish regimes (green)
-  BULL_TREND_NORMAL_VOL:      "#10b981",
-  BREAKOUT_EVENT_BULLISH:     "#10b981",
-  
-  // Bearish regimes (red)
-  BEAR_TREND_NORMAL_VOL:      "#ef4444",
-  BREAKOUT_EVENT_BEARISH:     "#ef4444",
-  HIGH_VOL_CHOP:              "#ef4444",
-  
-  // Neutral/mixed regimes (yellow/orange)
-  TREND_HIGH_VOL:             "#f59e0b",
-  LOW_VOL_COMPRESSION:        "#f59e0b",
-  RANGE_NORMAL_VOL:           "#f59e0b",
-  REGIME_TRANSITION:          "#f59e0b",
-  
-  // Special (gray)
-  EXPIRY_DAY:                 "#6b7280",
-  UNKNOWN:                    "#6b7280",
-};
+const MIN_WIDTH_PCT = 0.5;
 
-export function RegimeTimeline() {
-  const { data, isLoading } = useQuery({
-    queryKey: ["regime-history"],
-    queryFn: () => getRegimeHistory("NIFTY", 24),
-    refetchInterval: 60000, // 60s
-  });
+function spanTime(v: string) {
+  return formatIst(v, { seconds: false, withDate: true });
+}
 
-  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
-
-  if (isLoading) {
-    return (
-      <div style={{ padding: "16px", color: "var(--text-3)", fontSize: "12px" }}>
-        Loading timeline...
-      </div>
-    );
-  }
-
-  if (!data || data.length === 0) {
-    return (
-      <div style={{ padding: "16px", color: "var(--text-3)", fontSize: "12px" }}>
-        No regime history available.
-      </div>
-    );
-  }
-
-  // Sort by timestamp ascending (oldest first) for timeline display
-  // Collapsed spans (RegimeSpan) arrive ascending; sort defensively by span start.
-  const sorted = [...data].sort(
-    (a, b) => new Date(a.from).getTime() - new Date(b.from).getTime()
-  );
-
-  // Calculate durations between transitions
-  const blocks = sorted.map((entry, idx) => {
-    const startTime = new Date(entry.from).getTime();
-    const endTime =
-      idx < sorted.length - 1
-        ? new Date(sorted[idx + 1].from).getTime()
-        : Date.now();
-    const durationMs = endTime - startTime;
-    const durationMins = Math.floor(durationMs / 60000);
-
-    return {
-      regime: entry.regime,
-      timestamp: entry.from,
-      color: REGIME_COLORS[entry.regime] || REGIME_COLORS.UNKNOWN,
-      durationMins,
-      adx: entry.adx,
-      atr: entry.atr,
-      previous_regime: entry.previous_regime,
-    };
-  });
-
-  const totalDuration = blocks.reduce((sum, b) => sum + b.durationMins, 0);
+function Band({ spans }: { spans: RegimeSpan[] }) {
+  // Collapsed spans arrive ascending; sort defensively by start instant.
+  const sorted = [...spans].sort((a, b) => Date.parse(a.from) - Date.parse(b.from));
+  const total = sorted.reduce((s, x) => s + Math.max(0, x.duration_secs || 0), 0);
+  const [active, setActive] = useState<string | null>(sorted.at(-1)?.from ?? null);
+  const current = sorted.find((s) => s.from === active) ?? sorted.at(-1) ?? null;
+  const present = Array.from(new Set(sorted.map((s) => s.regime)));
+  const isRedis = sorted.some((s) => s.source === "redis");
 
   return (
-    <div
-      style={{
-        background: "var(--surface-2)",
-        border: "1px solid var(--border)",
-        borderRadius: "8px",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          padding: "12px 16px",
-          borderBottom: "1px solid var(--border)",
-          fontWeight: 600,
-          fontSize: "13px",
-          color: "var(--text-2)",
-        }}
-      >
-        Regime Timeline (Last 24 Hours)
+    <div className="space-y-3" data-testid="regime-timeline" data-spans={sorted.length} data-source={isRedis ? "redis" : "db"}>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-micro text-text-3">
+        <span>
+          {sorted.length} span{sorted.length === 1 ? "" : "s"} · {spanTime(sorted[0].from)} → {spanTime(sorted[sorted.length - 1].to)}
+        </span>
+        {isRedis && <Badge intent="warning" caps={false}>last 5 states only (cache)</Badge>}
       </div>
-      <div style={{ padding: "20px 16px" }}>
-        <div
-          style={{
-            display: "flex",
-            height: "40px",
-            borderRadius: "6px",
-            overflow: "hidden",
-            border: "1px solid var(--border)",
-            position: "relative",
-          }}
-        >
-          {blocks.map((block, idx) => {
-            const widthPercent = (block.durationMins / totalDuration) * 100;
-            return (
-              <div
-                key={idx}
-                onMouseEnter={() => setHoveredIdx(idx)}
-                onMouseLeave={() => setHoveredIdx(null)}
-                style={{
-                  width: `${widthPercent}%`,
-                  background: block.color,
-                  cursor: "pointer",
-                  position: "relative",
-                  transition: "opacity 0.2s",
-                  opacity: hoveredIdx === idx ? 0.8 : 1,
-                }}
-              >
-                {hoveredIdx === idx && (
-                  <div
-                    style={{
-                      position: "absolute",
-                      bottom: "100%",
-                      left: "50%",
-                      transform: "translateX(-50%)",
-                      marginBottom: "8px",
-                      background: "var(--surface)",
-                      border: "1px solid var(--border)",
-                      borderRadius: "6px",
-                      padding: "8px 12px",
-                      fontSize: "11px",
-                      color: "var(--text-2)",
-                      whiteSpace: "nowrap",
-                      zIndex: 10,
-                      boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-                    }}
-                  >
-                    <div style={{ fontWeight: 600, marginBottom: "4px" }}>
-                      {block.regime.replace(/_/g, " ")}
-                    </div>
-                    <div style={{ color: "var(--text-3)" }}>
-                      Duration: {formatDuration(block.durationMins)}
-                    </div>
-                    <div style={{ color: "var(--text-3)" }}>
-                      {new Date(block.timestamp).toLocaleTimeString("en-IN", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </div>
-                    {block.adx !== null && (
-                      <div style={{ color: "var(--text-3)" }}>
-                        ADX: {block.adx.toFixed(1)}
-                      </div>
-                    )}
-                    {block.atr !== null && (
-                      <div style={{ color: "var(--text-3)" }}>
-                        ATR: {block.atr.toFixed(2)}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
 
-        {/* Legend */}
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: "12px",
-            marginTop: "16px",
-            fontSize: "11px",
-          }}
-        >
-          {Object.entries(REGIME_COLORS).map(([regime, color]) => (
-            <div key={regime} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <div
-                style={{
-                  width: "12px",
-                  height: "12px",
-                  background: color,
-                  borderRadius: "2px",
-                }}
-              />
-              <span style={{ color: "var(--text-3)" }}>
-                {regime.replace(/_/g, " ")}
-              </span>
-            </div>
-          ))}
-        </div>
+      <div role="group" aria-label="Regime spans, oldest first" className="flex h-10 w-full gap-px overflow-hidden rounded-md border border-border bg-surface-2">
+        {sorted.map((s) => {
+          const pct = total > 0 ? (Math.max(0, s.duration_secs) / total) * 100 : 100 / sorted.length;
+          const label = `${regimeLabel(s.regime)}, ${formatDurationSecs(s.duration_secs)}, ${spanTime(s.from)}–${spanTime(s.to)}`;
+          return (
+            <button
+              key={s.from}
+              type="button"
+              data-width-pct={pct.toFixed(3)}
+              aria-label={label}
+              aria-pressed={current?.from === s.from}
+              title={label}
+              onClick={() => setActive(s.from)}
+              onFocus={() => setActive(s.from)}
+              style={{ width: `${Math.max(MIN_WIDTH_PCT, pct)}%` }}
+              className={cn(
+                "h-full shrink-0 transition-opacity hover:opacity-80 focus-visible:z-10",
+                regimeSwatch(s.regime),
+                current?.from === s.from && "ring-2 ring-inset ring-text-1",
+              )}
+            />
+          );
+        })}
       </div>
+
+      {current && (
+        <dl aria-live="polite" className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-md border border-border bg-surface-2 p-3 text-table sm:grid-cols-3 lg:grid-cols-6" data-testid="regime-span-details">
+          <div className="col-span-2 sm:col-span-3 lg:col-span-2">
+            <dt className="text-micro text-text-3">Regime</dt>
+            <dd className={cn("font-semibold", regimeTone(current.regime))}>{regimeLabel(current.regime)}</dd>
+          </div>
+          <div><dt className="text-micro text-text-3">From</dt><dd className="font-mono text-text-1">{spanTime(current.from)}</dd></div>
+          <div><dt className="text-micro text-text-3">To</dt><dd className="font-mono text-text-1">{spanTime(current.to)}</dd></div>
+          <div><dt className="text-micro text-text-3">Duration</dt><dd className="font-mono text-text-1">{formatDurationSecs(current.duration_secs)}</dd></div>
+          <div>
+            <dt className="text-micro text-text-3">ADX / ATR</dt>
+            <dd className="font-mono text-text-1">{current.adx != null ? current.adx.toFixed(1) : "—"} / {current.atr != null ? current.atr.toFixed(2) : "—"}</dd>
+          </div>
+          <div className="col-span-2 sm:col-span-3 lg:col-span-6 text-micro text-text-3">
+            {current.samples} sample{current.samples === 1 ? "" : "s"} · previous {regimeLabel(current.previous_regime)} · source {current.source}
+          </div>
+        </dl>
+      )}
+
+      <ul aria-label="Legend" className="flex flex-wrap gap-x-4 gap-y-1 text-micro text-text-2">
+        {present.map((r) => (
+          <li key={r} className="flex items-center gap-1.5">
+            <span aria-hidden="true" className={cn("h-2.5 w-2.5 rounded-sm", regimeSwatch(r))} />
+            {regimeLabel(r)}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
 
-function formatDuration(minutes: number): string {
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return `${hours}h ${mins}m`;
+export function RegimeTimeline({ underlying }: { underlying: Underlying }) {
+  const query = useRegimeHistory(underlying);
+  return (
+    <Panel title="Regime timeline" meta={<Badge intent="neutral">{underlying} · 24h</Badge>}>
+      <DataSurface
+        query={query}
+        isEmpty={(d) => !Array.isArray(d) || d.length === 0}
+        emptyTitle="No regime detections in the last 24 hours"
+        emptyHint="The runner records a regime each minute between 09:15 and 15:25 IST."
+        skeleton={<Skeleton label="Loading regime timeline" />}
+      >
+        {/* key: reset the selected span when the underlying changes */}
+        {(spans) => <Band key={underlying} spans={spans} />}
+      </DataSurface>
+    </Panel>
+  );
 }

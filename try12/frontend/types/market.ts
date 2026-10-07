@@ -116,12 +116,3 @@ export interface RegimePerformanceRow {
   total_pnl:     number;
   avg_pnl:       number | null;
 }
-
-/** GET /regime/history?collapse=false row shape (descending). Kept until its last consumer is removed. */
-export interface RegimeHistoryEntry {
-  regime:            string;
-  timestamp:         string;
-  adx:               number | null;
-  atr:               number | null;
-  previous_regime:   string | null;
-}

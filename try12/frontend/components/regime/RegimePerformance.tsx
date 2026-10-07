@@ -1,119 +1,56 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
-import { formatPrice } from "@/lib/utils";
-import { getRegimePerformance } from "@/lib/api";
-import { queryKeys } from "@/lib/queryKeys";
+import { useRegimePerformance, type Underlying } from "@/hooks/useRegime";
+import { Panel } from "@/components/ui/Panel";
+import { DataSurface } from "@/components/ui/DataSurface";
+import { TableSkeleton } from "@/components/ui/Skeleton";
+import { Badge } from "@/components/ui/Badge";
+import { DeltaText } from "@/components/ui/PriceText";
+import { cn } from "@/lib/utils";
+import { regimeLabel, regimeTone } from "@/components/regime/regimeMeta";
 
-export function RegimePerformance() {
-  const { data, isLoading } = useQuery({
-    queryKey: queryKeys.regimePerformance(),
-    queryFn: () => getRegimePerformance(),
-    refetchInterval: 30000, // 30s
-  });
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
-  if (isLoading) {
-    return (
-      <div style={{ padding: "16px", color: "var(--text-3)", fontSize: "12px" }}>
-        Loading performance data...
-      </div>
-    );
-  }
-
-  if (!data || data.length === 0) {
-    return (
-      <div style={{ padding: "16px", color: "var(--text-3)", fontSize: "12px" }}>
-        No performance data available.
-      </div>
-    );
-  }
-
+export function RegimePerformance({ underlying }: { underlying: Underlying }) {
+  const query = useRegimePerformance(underlying);
   return (
-    <div
-      style={{
-        background: "var(--surface-2)",
-        border: "1px solid var(--border)",
-        borderRadius: "8px",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          padding: "12px 16px",
-          borderBottom: "1px solid var(--border)",
-          fontWeight: 600,
-          fontSize: "13px",
-          color: "var(--text-2)",
-        }}
+    <Panel title="Performance by regime" meta={<Badge intent="neutral">{underlying}</Badge>} bodyClassName="p-3">
+      <DataSurface
+        query={query}
+        isEmpty={(d) => !Array.isArray(d) || d.length === 0}
+        emptyTitle="No closed trades attributed to a regime yet"
+        emptyHint="Rows appear once positions close with a recorded regime."
+        skeleton={<TableSkeleton rows={4} cols={6} />}
       >
-        Regime Performance Statistics
-      </div>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "var(--surface)", borderBottom: "1px solid var(--border)" }}>
-              <th style={thStyle}>Regime</th>
-              <th style={thStyle}>Strategy</th>
-              <th style={thStyle}>Total Trades</th>
-              <th style={thStyle}>Win Rate</th>
-              <th style={thStyle}>Total P&L</th>
-              <th style={thStyle}>Avg P&L</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((row, idx) => (
-              <tr
-                key={idx}
-                style={{
-                  borderBottom: idx < data.length - 1 ? "1px solid var(--border)" : "none",
-                }}
-              >
-                <td style={tdStyle}>{row.regime.replace(/_/g, " ")}</td>
-                <td style={tdStyle}>{row.strategy_name}</td>
-                <td style={{ ...tdStyle, textAlign: "center" }}>{row.total_trades}</td>
-                <td style={{ ...tdStyle, textAlign: "center" }}>
-                  {row.win_rate.toFixed(1)}%
-                </td>
-                <td
-                  style={{
-                    ...tdStyle,
-                    textAlign: "right",
-                    color: row.total_pnl >= 0 ? "var(--green)" : "var(--red)",
-                    fontWeight: 600,
-                  }}
-                >
-                  ₹{formatPrice(row.total_pnl)}
-                </td>
-                <td
-                  style={{
-                    ...tdStyle,
-                    textAlign: "right",
-                    color:
-                      row.avg_pnl && row.avg_pnl >= 0 ? "var(--green)" : "var(--red)",
-                  }}
-                >
-                  {row.avg_pnl !== null ? `₹${formatPrice(row.avg_pnl)}` : "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+        {(rows) => (
+          <div className="-mx-3 -mt-3 max-h-[360px] overflow-auto" data-testid="regime-performance">
+            <table className="data-table">
+              <caption className="sr-only">Closed-trade performance per regime and strategy for {underlying}</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Regime</th>
+                  <th scope="col">Strategy</th>
+                  <th scope="col" className="num">Trades</th>
+                  <th scope="col" className="num">Win rate</th>
+                  <th scope="col" className="num">Total P&amp;L</th>
+                  <th scope="col" className="num">Avg P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={`${r.regime}|${r.underlying}|${r.strategy_name}`}>
+                    <td className={cn("font-medium", regimeTone(r.regime))}>{regimeLabel(r.regime)}</td>
+                    <td className="text-text-1">{r.strategy_name.replace(/_/g, " ")}</td>
+                    <td className="num font-mono">{num(r.total_trades) ?? "—"}</td>
+                    <td className="num font-mono">{num(r.win_rate) == null ? "—" : `${(r.win_rate as number).toFixed(1)}%`}</td>
+                    <td className="num"><DeltaText value={num(r.total_pnl)} prefix="₹" /></td>
+                    <td className="num"><DeltaText value={num(r.avg_pnl)} prefix="₹" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DataSurface>
+    </Panel>
   );
 }
-
-const thStyle: React.CSSProperties = {
-  padding: "8px 12px",
-  textAlign: "left",
-  fontSize: "11px",
-  fontWeight: 600,
-  color: "var(--text-3)",
-  textTransform: "uppercase",
-  letterSpacing: "0.03em",
-};
-
-const tdStyle: React.CSSProperties = {
-  padding: "10px 12px",
-  fontSize: "12px",
-  color: "var(--text-2)",
-};
