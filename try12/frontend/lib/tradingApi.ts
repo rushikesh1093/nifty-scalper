@@ -4,6 +4,7 @@ import type {
   OptionCandidate, TradingConfig, CapitalSummary, TradePreviewRow,
 } from "@/types/trading";
 import type { SignalDiagnostics } from "@/types/diagnostics";
+import type { DailySnapshot, IntradayFeature } from "@/types/study";
 
 // All calls go through the shared `http` instance; failures arrive as ApiError.
 const api = http;
@@ -55,9 +56,9 @@ export const getPnLHistory    = (days=22)  => api.get<PnLHistory[]>(`/trading/pn
 export const selectOption     = (d:{direction:string;underlying:string;spot_price:number}) =>
   api.post<OptionCandidate[]>("/trading/option-selector",d).then(r=>r.data);
 export const getIntradayFeatures = (underlying="NIFTY",date?:string) =>
-  api.get("/trading/market-study/intraday",{params:{underlying,date}}).then(r=>r.data);
+  api.get<IntradayFeature[]>("/trading/market-study/intraday",{params:{underlying,date}}).then(r=>r.data);
 export const getDailySnapshots= (underlying="NIFTY",days=22) =>
-  api.get("/trading/market-study/daily",{params:{underlying,days}}).then(r=>r.data);
+  api.get<DailySnapshot[]>("/trading/market-study/daily",{params:{underlying,days}}).then(r=>r.data);
 
 // ── Report ────────────────────────────────────────────────────────────────
 /**
