@@ -77,6 +77,7 @@ def _reset_singletons():
         paper_engine._last_known.clear()
         paper_engine._last_persist.clear()
         paper_engine._stale_warned.clear()
+        paper_engine._stale_deferred.clear()
         paper_engine._square_off_cache = None
         regime_detector._regime_history.clear()
         regime_detector._last_log_time.clear()

@@ -14,7 +14,9 @@ from sqlalchemy import select
 from app.db.models.paper_trade import DailyPnLSummary, PaperPosition
 from app.services.trading import paper_engine as pe_mod
 from app.services.trading.option_selector import option_selector
-from app.services.trading.paper_engine import BROKERAGE_PER_LOT, _statutory_charges, paper_engine
+from app.core.trading_params import TradingParams
+from app.services.trading import fills
+from app.services.trading.paper_engine import paper_engine
 from app.services.trading.regime_detector import regime_detector
 from app.services.trading.regime_rules import get_regime_rule
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
@@ -123,8 +125,8 @@ def test_offline_signal_to_closed_position(sqlite_db, fake_redis, monkeypatch, c
     closed = run(_open())[0]
     exit_fill = round(tgt * 0.999, 2)
     gross = round((exit_fill - entry) * qty, 2)
-    brokerage = 2 * BROKERAGE_PER_LOT
-    charges = _statutory_charges(entry * qty, exit_fill * qty, brokerage)
+    brokerage = 2 * fills.brokerage(1, TradingParams())
+    charges = fills.statutory_charges(entry * qty, exit_fill * qty, brokerage, TradingParams())
     expected_net = round(gross - brokerage - charges, 2)
     print(f"[sim] CLOSED reason={closed.exit_reason} exit={closed.actual_exit} "
           f"gross={closed.gross_pnl} brokerage={closed.brokerage} "
@@ -142,7 +144,10 @@ def test_offline_signal_to_closed_position(sqlite_db, fake_redis, monkeypatch, c
             return (await db.execute(select(DailyPnLSummary))).scalars().all()
     [s] = run(_summary())
     assert s.net_pnl == expected_net and s.total_trades == 1 and s.winning_trades == 1
-    assert s.avg_rr == pytest.approx(round((exit_fill - entry) / (entry - sl0), 3))
+    # R against the initial risk written once at entry (design §8.4)
+    assert pos.initial_risk == pytest.approx(round(entry - sl0, 2))
+    assert closed.r_multiple == pytest.approx((exit_fill - entry) / pos.initial_risk)
+    assert s.avg_rr == pytest.approx(closed.r_multiple)
 
     cfg = run(get_config_row(sqlite_db))
     assert cfg.used_capital == 0.0 and cfg.daily_trades_count == 1

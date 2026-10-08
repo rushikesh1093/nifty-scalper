@@ -48,8 +48,19 @@ def test_stale_tick_below_sl_closes_sl_stale(sqlite_db, fake_redis, closes, capl
     fake_redis.put_tick("OPT1", 80.0, age_s=120)
     with caplog.at_level(logging.WARNING, logger="app.services.trading.paper_engine"):
         run(paper_engine._check_position(pos, dtime(11, 0), SQ))
-    assert closes == [(pid, 80.0, "SL_STALE")]
+    # the trigger is the stop; fills.exit_fill applies the gap-through to the
+    # observed 80.0 at close (design §15, tests/test_costs_and_fills.py)
+    assert closes == [(pid, 85.0, "SL_STALE")]
     assert any("Stale price" in r.getMessage() for r in caplog.records)
+
+
+def test_stale_sl_gap_through_fills_at_the_observed_price(sqlite_db, fake_redis):
+    pid, pos = _setup(sqlite_db)
+    fake_redis.put_tick("OPT1", 80.0, age_s=120)
+    run(paper_engine._check_position(pos, dtime(11, 0), SQ))
+    closed = run(get_position(sqlite_db, pid))
+    assert (closed.exit_reason, closed.actual_exit, closed.exit_fill_source) == \
+        ("SL_STALE", 80.0, "LTP_GAP")
 
 
 def test_stale_tick_above_target_does_not_book_profit(sqlite_db, fake_redis, closes):

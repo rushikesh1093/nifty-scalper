@@ -65,17 +65,17 @@ def test_tick_age_follows_the_replay_clock(runtime_ctx):
     """Under a clock set to a 2026-09-01 session time, a 2026-09-01 tick is fresh.
     With the old wall-clock default this age was months, every quote was stale,
     and a replay would silently produce zero trades."""
-    from app.services.trading.paper_engine import (
-        STALE_TICK_SECONDS, _quote_valid, _tick_age_seconds,
-    )
+    from app.runtime.context import params
+    from app.services.trading.fills import quote_valid
+    from app.services.trading.paper_engine import _tick_age_seconds
     session_time = datetime(2026, 9, 1, 5, 0, 0, tzinfo=timezone.utc)      # 10:30 IST
     runtime_ctx.clock.set(session_time)
     tick = {"ts": (session_time - timedelta(seconds=5)).replace(tzinfo=None).isoformat(),
             "best_bid": 99.5, "best_ask": 100.0}
     age = _tick_age_seconds(tick)
     assert age == pytest.approx(5.0)
-    assert age < STALE_TICK_SECONDS
-    assert _quote_valid(tick["best_bid"], tick["best_ask"], age) is True
+    assert age < params().stale_tick_seconds
+    assert quote_valid(tick["best_bid"], tick["best_ask"], age, params()) is True
 
 
 def test_tick_age_has_no_now_parameter():

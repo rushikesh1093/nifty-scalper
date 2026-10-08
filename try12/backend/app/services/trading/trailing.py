@@ -13,14 +13,15 @@ There is NO breakeven-buffer constant: a stop below entry is a tier with a
 negative ``lock_reward_frac``, and ``TradingParams.validate()`` rejects a
 ``breakeven_buffer_reward`` key outright.
 
-This module currently holds the ladder's data and its validator, which
-``TradingParams.validate()`` calls. ``next_stop`` and the paper_engine wiring
-arrive with the exit-ladder change (plan item 4.2).
+``validate_ladder`` is called by ``TradingParams.validate()``; ``next_stop``
+is called by paper_engine._check_position after the exits and the partial
+(§8.2 evaluation order). There is no default-target fallback: a missing or
+non-advancing target is a broken invariant and ``next_stop`` raises.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -94,3 +95,26 @@ def validate_ladder(
     if not (0.0 < partial_fraction < 1.0):
         out.append(f"partial_exit_fraction={partial_fraction} must be in (0, 1)")
     return out
+
+
+def reward_progress(entry: float, target: Optional[float], ltp: float) -> float:
+    """(ltp - entry) / REWARD. Raises ValueError unless target > entry."""
+    if target is None or entry is None or not target > entry:
+        raise ValueError(f"target must be > entry for the ladder (entry={entry}, target={target})")
+    return (ltp - entry) / (target - entry)
+
+
+def next_stop(entry: float, target: Optional[float], ltp: float, current_sl: Optional[float],
+              tiers: Sequence[TrailTier] = DEFAULT_TRAIL_TIERS) -> Optional[tuple[float, str]]:
+    """Highest-trigger-first. Returns (new_sl, tier_label) only when new_sl >
+    current_sl — monotonicity is enforced here, in one place, not by the caller.
+    `target` is REQUIRED and must be > entry; it raises ValueError otherwise."""
+    progress = reward_progress(entry, target, ltp)
+    reward = target - entry
+    for tier in tiers:
+        if progress >= tier.trigger_reward_frac:
+            new_sl = round(entry + tier.lock_reward_frac * reward, 2)
+            if current_sl is None or new_sl > current_sl:
+                return new_sl, tier.label
+            return None
+    return None
