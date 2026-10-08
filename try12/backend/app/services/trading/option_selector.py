@@ -671,7 +671,7 @@ class OptionSelector:
         max_ltp:    float = MAX_LTP,
         sl_pct:     float = 0.30,
         target_pct: float = 0.55,
-    ) -> tuple[list[ScoredCandidate], int]:
+    ) -> tuple[list[ScoredCandidate], int, int]:
         """
         Build and score all candidates. Returns (passed_list, rejected_count, no_tick_count).
         rejected_count  = number of candidates that failed hard filters or soft score.
@@ -700,7 +700,7 @@ class OptionSelector:
             )
             expiry = exp_result.scalar()
             if not expiry:
-                return [], 0
+                return [], 0, 0
 
         # Fetch strikes: ATM ± 5 strikes
         atm  = round(spot_price / step) * step
@@ -720,7 +720,7 @@ class OptionSelector:
         )
         instruments = inst_result.scalars().all()
         if not instruments:
-            return [], 0
+            return [], 0, 0
 
         # Fetch IV from option chain cache (best-effort)
         chain_iv: dict[str, float] = {}

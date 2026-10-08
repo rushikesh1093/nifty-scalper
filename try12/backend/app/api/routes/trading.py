@@ -21,7 +21,12 @@ Trading API routes:
   GET  /trading/market-study/intraday   — intraday features
   GET  /trading/market-study/daily      — daily snapshots
   GET  /trading/market-study/vix        — VIX history
+  POST /trading/kill-switch             — halt new entries + square off all (paper)
+  GET  /trading/kill-switch             — kill switch status
+  POST /trading/kill-switch/release     — lift the halt
   WS   /trading/ws/signals              — live signal stream
+
+NOTE: no route in this module is authenticated yet (see live-fixes-decisions.md §3).
 """
 import asyncio
 import json
@@ -123,6 +128,7 @@ async def get_config():
         "study_phase":         cfg.study_phase,
         "max_trades_per_day":  cfg.max_trades_per_day,
         "daily_trades_count":  cfg.daily_trades_count,
+        "trading_halted":      cfg.trading_halted,
     }
 
 @router.put("/config")
@@ -222,12 +228,13 @@ def _trade_amount_preview(trade_amount: float, max_lots: int) -> list[dict]:
     Preview how many lots ₹trade_amount buys at various typical option prices.
     Useful for the frontend to show the user what they'd get.
     """
-    import math
+    from app.services.trading.paper_engine import _calc_lots
     result = []
     for ltp in [50, 80, 100, 150, 200, 300, 500]:
         for lot_size in [50, 15]:   # Nifty=50, BankNifty=15 (revised Nov 2024)
             cost_per_lot = ltp * lot_size
-            lots = min(max_lots, max(1, math.floor(trade_amount / cost_per_lot)))
+            # 0 lots = unaffordable → paper engine would SKIP such a signal
+            lots = min(max_lots, _calc_lots(trade_amount, ltp, lot_size)[0])
             result.append({
                 "ltp":            ltp,
                 "lot_size":       lot_size,
@@ -608,12 +615,14 @@ async def get_positions(
             "qty":              r.quantity,
             "entry":            r.actual_entry,
             "sl":               r.stop_loss,
+            "initial_sl":       r.initial_stop_loss,
             "target":           r.target,
             "trailing_sl":      r.trailing_sl,
             "exit":             r.actual_exit,
             "exit_reason":      r.exit_reason,
             "capital_used":     r.trade_amount_used,
             "gross_pnl":    r.gross_pnl,
+            "charges":      r.statutory_charges,
             "net_pnl":      r.net_pnl,
             "is_open":      r.is_open,
             "mode":         r.mode,
@@ -634,6 +643,40 @@ async def close_position(pos_id: int):
     if not ok:
         raise HTTPException(status_code=404, detail="Position not found or already closed")
     return {"status": "closed", "id": pos_id}
+
+
+# ── Kill switch (paper only; unauthenticated — see module docstring) ──────────
+
+class KillSwitchRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+@router.post("/kill-switch")
+async def kill_switch(body: Optional[KillSwitchRequest] = None):
+    """
+    Halt all new entries (persisted, survives restart) and square off every
+    open PAPER position at the best available price. Fails safe.
+    No authentication yet.
+    """
+    reason = (body.reason if body and body.reason else None) or "manual kill switch"
+    persisted = await mode_manager.set_trading_halted(True, reason)
+    result = await paper_engine.square_off_all("KILL_SWITCH")
+    return {"halted": True, "reason": reason, "persisted": persisted, **result}
+
+
+@router.get("/kill-switch")
+async def kill_switch_status():
+    """Current kill switch state. No authentication yet."""
+    return await mode_manager.get_halt_status()
+
+
+@router.post("/kill-switch/release")
+async def kill_switch_release():
+    """Lift the halt so paper entries can resume. No authentication yet."""
+    persisted = await mode_manager.set_trading_halted(False, None)
+    if not persisted:
+        raise HTTPException(status_code=500, detail="Failed to persist kill switch release")
+    return {"halted": False}
 
 
 @router.post("/clear-test-trades")

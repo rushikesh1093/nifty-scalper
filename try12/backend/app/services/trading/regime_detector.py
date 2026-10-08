@@ -21,6 +21,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.services.trading.regime_indicators import (
     RegimeIndicators,
     build_regime_indicators,
@@ -99,8 +101,12 @@ class RegimeDetector:
         """
         try:
             # Step 1: Reload config (TTL cache, per-underlying override)
+            # regime_config.load_config uses the *sync* session API. Passing an
+            # AsyncSession would create an un-awaited coroutine, so only sync
+            # sessions are forwarded; async callers get the cached defaults.
             config: RegimeConfig = reload_config_if_stale(
-                underlying, db_session=db_session
+                underlying,
+                db_session=None if isinstance(db_session, AsyncSession) else db_session,
             )
 
             # Step 2: Build regime-specific indicators
@@ -213,28 +219,31 @@ class RegimeDetector:
         transition_window: int = 2,
     ) -> bool:
         """
-        Return True if any of the last ``transition_window`` states in history
-        differs from ``current_regime``.
+        Return True when ``current_regime`` differs from the most recent
+        *stable* (non-``REGIME_TRANSITION``) regime in history.
 
-        Returns False when history has fewer than ``transition_window`` entries
-        (not enough data to declare instability).
+        The detector's own ``REGIME_TRANSITION`` entries are ignored: comparing
+        against them made every candle after a cooldown look like a new flip,
+        which locked the state machine into a TRANSITION x3 / normal x1 loop.
+        Because the cooldown branch in ``detect_regime`` adopts the classified
+        regime when the cooldown expires, a real A -> B flip is flagged once.
+
+        Returns False when history has fewer than ``transition_window`` stable
+        entries (not enough data to declare instability). ``transition_window``
+        is kept for signature / config compatibility.
 
         Args:
             current_regime:    The newly classified regime name.
             regime_history:    Ordered list of past RegimeState objects (newest last).
-            transition_window: How many recent states to inspect (default 2).
+            transition_window: Minimum number of stable states required (default 2).
 
         Returns:
             True if a transition is detected, False otherwise.
         """
-        if len(regime_history) < transition_window:
+        stable = [s.regime for s in regime_history if s.regime != "REGIME_TRANSITION"]
+        if len(stable) < transition_window:
             return False
-
-        for state in regime_history[-transition_window:]:
-            if state.regime != current_regime:
-                return True
-
-        return False
+        return current_regime != stable[-1]
 
     # ── Query helpers ─────────────────────────────────────────────────────────
 

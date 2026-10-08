@@ -37,10 +37,14 @@ export interface Position {
   entry:        number;
   sl?:          number;
   target?:      number;
+  /** Stop at entry; never moved by trailing (backend `initial_stop_loss`). */
+  initial_sl?:  number | null;
   trailing_sl?: number;
   exit?:        number;
   exit_reason?: string;
   gross_pnl?:   number;
+  /** Statutory charges deducted from gross (backend `statutory_charges`). */
+  charges?:     number | null;
   net_pnl?:     number;
   capital_used?: number;
   is_open:      boolean;
@@ -124,6 +128,8 @@ export interface TradingConfig {
   study_phase:         boolean;
   max_trades_per_day:  number;
   daily_trades_count:  number;
+  /** Persisted kill-switch halt (GET /trading/kill-switch for the reason). */
+  trading_halted?:     boolean;
 }
 
 export interface CapitalSummary {

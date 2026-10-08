@@ -43,8 +43,9 @@ _ALL_STRATEGIES: tuple[str, ...] = (
     "GAP_FILL",
 )
 
-# Default cooldown length when no config is available
-_DEFAULT_COOLDOWN_CANDLES = 3
+# NOTE: the REGIME_TRANSITION cooldown length is owned by RegimeDetector
+# (RegimeConfig.TRANSITION_COOLDOWN_CANDLES). The orchestrator only mirrors
+# the detector's state; it does not run a second, independent counter.
 
 
 class StrategyOrchestrator:
@@ -90,33 +91,25 @@ class StrategyOrchestrator:
         }
 
         # ── Transition cooldown bookkeeping ───────────────────────────────────
+        # The detector owns the cooldown (TRANSITION_COOLDOWN_CANDLES). The
+        # orchestrator mirrors it: in cooldown iff the current state is
+        # REGIME_TRANSITION. Re-arming a second counter on every TRANSITION
+        # candle (old behaviour) suppressed the first normal candles after
+        # each flip and, together with the detector bug, locked trading out.
         if regime == "REGIME_TRANSITION":
-            # Entering / staying in REGIME_TRANSITION → (re)start cooldown
-            self._transition_cooldown[underlying] = _DEFAULT_COOLDOWN_CANDLES
+            remaining = max(int(regime_state.transition_cooldown_remaining or 0), 1)
+            self._transition_cooldown[underlying] = remaining
             logger.debug(
                 "[StrategyOrchestrator] underlying=%s REGIME_TRANSITION — "
-                "cooldown set to %d candles",
-                underlying, _DEFAULT_COOLDOWN_CANDLES,
+                "%d cooldown candle(s) remaining (detector-owned)",
+                underlying, remaining,
             )
-        elif self.is_in_cooldown(underlying):
-            # Cooldown still ticking in the new regime — override all flags
-            remaining = self._transition_cooldown[underlying]
+        elif self._transition_cooldown.pop(underlying, None) is not None:
             logger.info(
-                "[StrategyOrchestrator] underlying=%s regime=%s "
-                "transition cooldown active — %d candle(s) remaining; "
-                "all strategies suppressed",
-                underlying, regime, remaining,
+                "[StrategyOrchestrator] underlying=%s cooldown expired — "
+                "regime=%s strategies evaluated from this candle",
+                underlying, regime,
             )
-            flags = {name: False for name in _ALL_STRATEGIES}
-            # Decrement
-            self._transition_cooldown[underlying] = remaining - 1
-            if self._transition_cooldown[underlying] <= 0:
-                del self._transition_cooldown[underlying]
-                logger.info(
-                    "[StrategyOrchestrator] underlying=%s cooldown expired — "
-                    "strategies will be evaluated from next candle",
-                    underlying,
-                )
 
         # ── Log per-strategy state changes ────────────────────────────────────
         # Req 15.2, 15.3: log every enable/disable with regime/underlying/ts

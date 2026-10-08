@@ -74,11 +74,25 @@ async def test_happy_path_persists_and_commits(monkeypatch):
 
 
 def test_gating_block_does_not_reference_persistence():
-    """The regime-gating try body stays free of DB calls (structural guard)."""
+    """The regime-gating path stays free of DB calls (structural guard).
+
+    After the fix/live-system-p0-p1 merge the gating try body delegates to
+    _detect_and_merge_regime, so both the try body and that helper's code
+    (docstring excluded) are checked.
+    """
+    import ast
     import inspect
+    import textwrap
     src = inspect.getsource(StrategyRunner._run_underlying)
-    gate = src[src.index("regime_state = await regime_detector.detect_regime("):src.index("except Exception as _regime_err")]
+    gate = src[src.index("await self._detect_and_merge_regime("):src.index("except Exception as _regime_err")]
     assert "AsyncSessionLocal" not in gate and "persist" not in gate and "db_session" not in gate
+
+    fn = ast.parse(textwrap.dedent(inspect.getsource(StrategyRunner._detect_and_merge_regime))).body[0]
+    body = fn.body[1:] if ast.get_docstring(fn) else fn.body
+    helper = "\n".join(ast.unparse(node) for node in body)
+    assert "AsyncSessionLocal" not in helper and "persist" not in helper
+    assert "db_session=None" in helper
+
     after = src[src.index("except Exception as _regime_err"):]
     assert after.index("final_flags = flags") < after.index("_persist_regime_state")
 

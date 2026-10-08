@@ -20,6 +20,7 @@ from app.services.trading.mode_manager import mode_manager
 from app.core.config import settings
 from app.services.trading.regime_detector import regime_detector
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
+from app.services.trading.session_times import entry_cutoff, parse_square_off
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class StrategyRunner:
         self._run_task:    Optional[asyncio.Task] = None
         self._eod_task:    Optional[asyncio.Task] = None
         self._strategies:  dict[str, list] = {}   # underlying → [strategy list]
+        self._eod_done_date: Optional[date] = None   # IST date EOD square-off last ran
 
     async def start(self):
         self._running = True
@@ -95,8 +97,9 @@ class StrategyRunner:
         Fetch previous day OHLC and set PDH/PDL, CPR, prev_close on strategies.
         Called on startup and at 9:00 daily. Also resets the daily trade counter.
         """
-        # Reset daily counter so yesterday's count doesn't block today's trades
-        await mode_manager.reset_daily_counter()
+        # Reset the daily counter only when the IST trading date changed, so a
+        # mid-day restart (or uvicorn --reload) does not wipe today's count.
+        await mode_manager.reset_daily_counter_if_new_day()
         # Also reconcile used_capital against actual open positions to fix any
         # drift caused by server restarts mid-session.
         await mode_manager.reconcile_used_capital()
@@ -107,7 +110,7 @@ class StrategyRunner:
         # but must not carry across calendar days).
         from app.strategies.base import signal_aggregator
         signal_aggregator.reset()
-        logger.info("Daily trades counter reset and signal aggregator cleared for new session.")
+        logger.info("Daily trades counter checked (date-based) and signal aggregator cleared for new session.")
         from app.db.base import AsyncSessionLocal
         from app.db.models.market_study import MarketDailySnapshot
         from sqlalchemy import select, desc
@@ -170,15 +173,21 @@ class StrategyRunner:
         while self._running:
             try:
                 await asyncio.sleep(CANDLE_CHECK_INTERVAL)
-                ist      = self._ist_now()
-                ist_mins = ist.hour * 60 + ist.minute
+                ist   = self._ist_now()
+                ist_t = ist.time().replace(tzinfo=None)
 
-                # Only run during the signal window (settings.SESSION_*_IST, 9:15 – 15:25)
+                cfg = await mode_manager.get_config()
+                # Only run during the signal window (settings.SESSION_*_IST,
+                # 9:15 – 15:25) and stop evaluating strategies at the entry
+                # cutoff (configured square-off − 10 min).
+                # paper_engine.handle_signal enforces the same cutoff as the
+                # authoritative gate.
                 start_t, end_t = settings.SESSION_START_IST, settings.SESSION_END_IST
-                if not (start_t.hour * 60 + start_t.minute <= ist_mins <= end_t.hour * 60 + end_t.minute):
+                cutoff = entry_cutoff(cfg.square_off_time if cfg else None)
+                if ist_t < start_t or ist_t > end_t or ist_t >= cutoff:
                     continue
 
-                flags = await self._get_enabled_flags()
+                flags = (cfg.strategy_flags or {}) if cfg else {}
 
                 for underlying in ["NIFTY", "BANKNIFTY"]:
                     await self._run_underlying(underlying, flags)
@@ -318,18 +327,9 @@ class StrategyRunner:
         # user-disable takes precedence: a user-disabled strategy stays disabled
         # regardless of what regime says.
         try:
-            regime_state = await regime_detector.detect_regime(
-                candles=candles,
-                indicators=indicators,
-                underlying=underlying,
-                is_expiry_day=is_expiry_day,
+            final_flags, regime_state = await self._detect_and_merge_regime(
+                underlying, candles, indicators, is_expiry_day, flags,
             )
-            regime_flags = await strategy_orchestrator.on_regime_detected(regime_state)
-            # Merge: user flag AND regime flag must both be True to enable
-            final_flags = {
-                name: regime_flags.get(name, True) and flags.get(name, True)
-                for name in set(list(flags.keys()) + list(regime_flags.keys()))
-            }
         except Exception as _regime_err:
             logger.warning("[%s] Regime detection error: %s — falling back to user flags", underlying, _regime_err)
             final_flags = flags
@@ -372,6 +372,36 @@ class StrategyRunner:
                 await db.commit()
         except Exception as exc:
             logger.warning("[%s] regime persist failed (non-fatal): %s", underlying, exc)
+
+    async def _detect_and_merge_regime(
+        self,
+        underlying: str,
+        candles: list[dict],
+        indicators: dict,
+        is_expiry_day: bool,
+        flags: dict,
+    ) -> tuple[dict, object]:
+        """
+        Detect the regime, then merge regime flags with user flags.
+        Pure gating: no DB session is touched here, so a DB outage can never
+        alter the flags. The regime_states row is written once per candle by
+        _persist_regime_state, which the caller runs after gating.
+        """
+        regime_state = await regime_detector.detect_regime(
+            candles=candles,
+            indicators=indicators,
+            underlying=underlying,
+            is_expiry_day=is_expiry_day,
+            db_session=None,
+        )
+
+        regime_flags = await strategy_orchestrator.on_regime_detected(regime_state)
+        # Merge: user flag AND regime flag must both be True to enable
+        final_flags = {
+            name: regime_flags.get(name, True) and flags.get(name, True)
+            for name in set(list(flags.keys()) + list(regime_flags.keys()))
+        }
+        return final_flags, regime_state
 
     async def _inject_oi_iv(self, underlying: str, indicators: dict, is_expiry_day: bool = False):
         """Update OI/IV context in OISpikeStrategy and IVCrushStrategy."""
@@ -466,18 +496,25 @@ class StrategyRunner:
     # ── EOD monitor ───────────────────────────────────────────────────────────
 
     async def _eod_monitor(self):
-        """At 15:15 IST, force-close all open positions and do pre-market setup for next day."""
+        """At the configured square_off_time (default 15:15 IST), force-close all
+        open positions once per day; at 9:00 do pre-market setup."""
         while self._running:
             try:
                 ist   = self._ist_now()
                 ist_h = ist.hour
                 ist_m = ist.minute
 
-                # 15:15 IST = 09:45 UTC
-                if ist_h == 15 and ist_m == 15:
-                    logger.info("EOD: Force-closing all open positions at 15:15 IST")
+                cfg = await mode_manager.get_config()
+                square_off = parse_square_off(cfg.square_off_time if cfg else None)
+                if (ist.weekday() < 5
+                        and ist.time().replace(tzinfo=None) >= square_off
+                        and self._eod_done_date != ist.date()):
+                    logger.info(
+                        "EOD: Force-closing all open positions at %s IST",
+                        square_off.strftime("%H:%M"),
+                    )
                     await self._eod_square_off()
-                    await asyncio.sleep(120)   # avoid double trigger
+                    self._eod_done_date = ist.date()
 
                 # 9:00 IST pre-market setup
                 if ist_h == 9 and ist_m == 0:
@@ -492,42 +529,16 @@ class StrategyRunner:
                 await asyncio.sleep(30)
 
     async def _eod_square_off(self):
-        from app.db.base import AsyncSessionLocal
-        from app.db.models.paper_trade import PaperPosition
-        from sqlalchemy import select
-
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(PaperPosition).where(PaperPosition.is_open == True)
-            )
-            open_positions = result.scalars().all()
-
-        for pos in open_positions:
-            try:
-                ltp = await redis_cache.get_ltp(pos.token)
-                if not ltp:
-                    # No live price — fall back to entry price so the position
-                    # is still closed (avoids permanent capital lock on restart).
-                    # Log a warning so the P&L impact is visible.
-                    fallback = pos.entry_price or pos.actual_entry
-                    if fallback:
-                        logger.warning(
-                            "EOD: No live LTP for pos %d token %s — "
-                            "closing at entry price %.2f to release capital",
-                            pos.id, pos.token, fallback,
-                        )
-                        ltp = fallback
-                    else:
-                        logger.error(
-                            "EOD: Cannot close pos %d — no LTP and no entry price available",
-                            pos.id,
-                        )
-                        continue
-                await paper_engine._close_position(pos.id, ltp, "EOD")
-            except Exception as e:
-                logger.error("EOD close error for pos %d: %s", pos.id, e)
-
-        logger.info("EOD square-off complete. Closed %d positions", len(open_positions))
+        """
+        Close all open positions at the best available price: fresh LTP, else
+        the last known price (exit reason EOD_STALE). Entry price is only the
+        last resort and is logged at ERROR by paper_engine.
+        """
+        result = await paper_engine.square_off_all("EOD")
+        logger.info(
+            "EOD square-off complete. closed=%d stale=%s failed=%s",
+            result["closed"], result["stale"], result["failed"],
+        )
 
 
 # Singleton
