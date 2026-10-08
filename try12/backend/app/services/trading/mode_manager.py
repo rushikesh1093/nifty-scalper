@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 
 from sqlalchemy import select, update, func
 
-from app.runtime.context import market, now_utc, sessions, trading_day
+from app.runtime.context import ctx, market, now_utc, sessions, trading_day
 from app.db.models.paper_trade import (
     TradingConfig, TradingMode, PaperPosition, DailyPnLSummary, StrategyPerf,
 )
@@ -24,6 +24,17 @@ KELLY_MIN_FRACTION  = 0.10   # floor: never bet less than 10% of capital per tra
 KELLY_MAX_FRACTION  = 0.30   # cap:   never bet more than 30% of capital on one trade
 # Both are fractions of live capital so they scale correctly from ₹15k to ₹10L.
 # Absolute amounts are computed at call-time: min = KELLY_MIN_FRACTION × capital
+
+
+def per_trade_budget(cfg) -> float:
+    """The legacy fixed per-trade amount: the stored trade_amount display cache
+    when set, else fixed_fraction_pct × capital. Since migration 0013 the column
+    is NULL by default (design §9.5); risk_gate replaces this in FEAT-005."""
+    stored = getattr(cfg, "trade_amount", None)
+    if stored:
+        return float(stored)
+    pct = getattr(cfg, "fixed_fraction_pct", None) or 10.0
+    return float(cfg.capital or 0.0) * float(pct) / 100.0
 
 
 class ModeManager:
@@ -66,6 +77,30 @@ class ModeManager:
         except Exception as exc:
             logger.error("%s halt DB write failed (in-memory halt holds): %s", code, exc)
 
+        # The risk_halts row (design §11): one per (run, day, type, scope);
+        # a repeat on the same day is the same halt. Runs before bind(), so
+        # the live run id and the wall clock are used explicitly.
+        from app.db.models.risk import RiskHalt
+        from app.runtime.live import LIVE_RUN_ID, LiveClock
+        clock = LiveClock()
+        try:
+            async with session_factory() as db:
+                exists = (await db.execute(select(RiskHalt.id).where(
+                    RiskHalt.run_id == LIVE_RUN_ID,
+                    RiskHalt.trading_day == clock.trading_day(),
+                    RiskHalt.halt_type == halt_type,
+                    RiskHalt.scope.is_(None),
+                ))).first()
+                if exists is None:
+                    db.add(RiskHalt(
+                        run_id=LIVE_RUN_ID, trading_day=clock.trading_day(),
+                        halt_type=halt_type, scope=None, reason=f"{code}: {reason}",
+                        context={"code": code}, engaged_at=clock.now_utc(),
+                    ))
+                    await db.commit()
+        except Exception as exc:
+            logger.error("%s risk_halts write failed (in-memory halt holds): %s", code, exc)
+
     async def ensure_config(self, *, session_factory) -> TradingConfig:
         """
         Guarantee that the single TradingConfig row (id=1) exists.
@@ -97,7 +132,7 @@ class ModeManager:
             cfg = result.scalar_one_or_none()
             if not cfg:
                 capital      = 100_000.0
-                trade_amount = round(capital * 0.20 / 500) * 500   # 20% fallback
+                trade_amount = round(capital * 0.20 / 500) * 500   # 20% — sizes max_pos only
                 max_pos      = max(2, int(capital / trade_amount * 0.6))
                 cfg = TradingConfig(
                     id=1,
@@ -105,7 +140,9 @@ class ModeManager:
                     live_mode_confirmed=False,
                     study_phase=False,
                     capital=capital,
-                    trade_amount=trade_amount,
+                    # trade_amount is a nullable display cache since 0013 (§9.5);
+                    # the per-trade budget is fixed_fraction_pct × capital.
+                    trade_amount=None,
                     max_lots_per_trade=5,
                     max_open_positions=max_pos,
                     max_daily_loss=round(capital * 0.05),
@@ -145,18 +182,11 @@ class ModeManager:
                 capital = 100_000.0
                 logger.warning("capital was ₹%.0f (too low) — reset to ₹1,00,000.", cfg.capital)
 
-            # trade_amount: should be ~20% of capital as a sane fallback
-            # If it's > 40% of capital it will block after 2 positions — fix it
-            if (cfg.trade_amount or 0) > capital * 0.40 or (cfg.trade_amount or 0) < 500:
-                new_ta = round(capital * 0.20 / 500) * 500
-                patches["trade_amount"] = new_ta
-                logger.warning(
-                    "trade_amount was ₹%.0f (out of range for capital ₹%.0f) — "
-                    "reset to ₹%.0f (20%% of capital).",
-                    cfg.trade_amount or 0, capital, new_ta,
-                )
-
-            trade_amount = patches.get("trade_amount", cfg.trade_amount) or capital * 0.20
+            # trade_amount is no longer patched: since 0013 it is a nullable
+            # display cache (NULL = derived), and a stored value that diverges
+            # from fixed_fraction_pct × capital is refused by startup check 6
+            # rather than silently rewritten (design §9.5, §11).
+            trade_amount = cfg.trade_amount or capital * 0.20
 
             if cfg.max_lots_per_trade < 1:
                 patches["max_lots_per_trade"] = max(1, min(5, int(capital / 10_000)))
@@ -405,7 +435,8 @@ class ModeManager:
             async with sessions()() as db:
                 result = await db.execute(
                     select(StrategyPerf).where(
-                        StrategyPerf.strategy_name == strategy_name
+                        StrategyPerf.strategy_name == strategy_name,
+                        StrategyPerf.run_id == ctx().run_id,
                     )
                 )
                 perf = result.scalar_one_or_none()
@@ -418,7 +449,7 @@ class ModeManager:
                 or perf.avg_rr <= 0
             ):
                 # Not enough history — use configured fixed sizing, clamped to capital
-                fallback = min(cfg.trade_amount, kelly_max_amount)
+                fallback = min(per_trade_budget(cfg), kelly_max_amount)
                 fallback = max(fallback, kelly_min_amount)
                 return round(fallback / 500) * 500
 
@@ -455,7 +486,7 @@ class ModeManager:
                 "[Kelly] Error computing trade amount for %s: %s — using fallback",
                 strategy_name, exc,
             )
-            fallback = min(cfg.trade_amount, kelly_max_amount)
+            fallback = min(per_trade_budget(cfg), kelly_max_amount)
             return max(fallback, kelly_min_amount)
 
     async def update_strategy_perf(
@@ -475,13 +506,15 @@ class ModeManager:
             async with sessions()() as db:
                 result = await db.execute(
                     select(StrategyPerf).where(
-                        StrategyPerf.strategy_name == strategy_name
+                        StrategyPerf.strategy_name == strategy_name,
+                        StrategyPerf.run_id == ctx().run_id,
                     )
                 )
                 perf = result.scalar_one_or_none()
 
                 if perf is None:
                     perf = StrategyPerf(
+                        run_id         = ctx().run_id,
                         strategy_name  = strategy_name,
                         total_trades   = 0,
                         winning_trades = 0,
@@ -643,10 +676,10 @@ class ModeManager:
 
         # 4. Sufficient capital for at least 1 lot
         available = cfg.capital - (cfg.used_capital or 0.0)
-        if available < cfg.trade_amount * 0.5:
+        if available < per_trade_budget(cfg) * 0.5:
             return False, (
                 f"Available capital ₹{available:.0f} is too low "
-                f"(trade amount ₹{cfg.trade_amount:.0f})."
+                f"(trade amount ₹{per_trade_budget(cfg):.0f})."
             )
 
         return True, ""
@@ -748,7 +781,7 @@ class ModeManager:
             "capital":            capital,
             "used_capital":       used,
             "available_capital":  available,
-            "trade_amount":       round(cfg.trade_amount, 2),
+            "trade_amount":       round(per_trade_budget(cfg), 2),
             "realised_pnl":       realised_pnl,
             "net_capital":        round(capital + realised_pnl, 2),
             "utilisation_pct":    round(used / capital * 100, 1) if capital else 0,

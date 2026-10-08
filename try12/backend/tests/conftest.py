@@ -83,6 +83,9 @@ def _reset_singletons():
         strategy_orchestrator._transition_cooldown.clear()
         strategy_orchestrator._current_regime.clear()
         strategy_runner._oi_iv_warned.clear()
+        strategy_runner._seen.clear()
+        strategy_runner._seen_day = None
+        strategy_runner._strategy_gate_last.clear()
         signal_aggregator.reset()
         fastapi_app.state.runtime_context = None    # a lifespan test must not leak its context
 
@@ -143,6 +146,8 @@ def sqlite_db(tmp_path, monkeypatch):
         DailyPnLSummary, PaperPosition, StrategyPerf, StrategySignal, TradingConfig,
     )
     from app.db.models.regime import RegimePerformanceModel, RegimeStateModel
+    from app.db.models.replay import ReplayRun
+    from app.db.models.risk import CycleStats, NoTradeDecision, PositionEvent, RiskHalt
 
     db_file = tmp_path / "t.db"
     sync_engine = create_engine(f"sqlite:///{db_file}")
@@ -151,6 +156,7 @@ def sqlite_db(tmp_path, monkeypatch):
         tables=[m.__table__ for m in (
             TradingConfig, PaperPosition, StrategySignal, DailyPnLSummary,
             StrategyPerf, RegimeStateModel, RegimePerformanceModel,
+            NoTradeDecision, RiskHalt, PositionEvent, CycleStats, ReplayRun,
         )],
     )
     sync_engine.dispose()

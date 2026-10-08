@@ -16,7 +16,12 @@ CFG_DEFAULTS: dict = dict(
     id=1,
     mode=TradingMode.PAPER,
     capital=10000.0,
-    trade_amount=3000.0,
+    # Nullable display cache since migration 0013 (design §9.5): None means
+    # "derive from fixed_fraction_pct × capital". A stored non-null value that
+    # diverges from that derivation by more than ₹500 fails startup check 6,
+    # so tests that want a specific legacy trade_amount must pass it explicitly
+    # together with a consistent fixed_fraction_pct.
+    trade_amount=None,
     max_lots_per_trade=1,
     max_open_positions=2,
     max_daily_loss=500.0,

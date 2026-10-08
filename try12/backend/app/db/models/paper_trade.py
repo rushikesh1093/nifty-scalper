@@ -4,7 +4,7 @@ Identical schema to live trading so switching modes is seamless.
 """
 from sqlalchemy import (
     Column, BigInteger, Integer, String, Float, Boolean,
-    DateTime, Date, Index, Enum as SAEnum, JSON,
+    DateTime, Date, Index, Enum as SAEnum, JSON, UniqueConstraint,
 )
 from sqlalchemy.sql import func, false
 import enum
@@ -70,6 +70,14 @@ class StrategySignal(Base):
 
     mode             = Column(SAEnum(TradingMode), nullable=False, default=TradingMode.PAPER)
     trade_id         = Column(BigInteger, nullable=True)   # FK to paper_positions.id
+
+    # ── migration 0011 ──────────────────────────────────────────────────────
+    run_id               = Column(String(32), nullable=False, default="PAPER", server_default="PAPER")
+    expiry_band          = Column(String(16),  nullable=True)
+    expiry_reason        = Column(String(200), nullable=True)
+    selection_rejections = Column(JSON,        nullable=True)   # {ReasonCode value: count}
+    score_breakdown      = Column(JSON,        nullable=True)
+    no_trade_decision_id = Column(BigInteger,  nullable=True)   # → no_trade_decisions.id
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -155,10 +163,33 @@ class PaperPosition(Base):
     exit_time        = Column(DateTime(timezone=True), nullable=True)
     created_at       = Column(DateTime(timezone=True), server_default=func.now())
 
+    # ── migration 0011: run scoping and R accounting (design §8.4, §11) ─────
+    run_id                  = Column(String(32), nullable=False, default="PAPER", server_default="PAPER")
+    original_quantity       = Column(Integer, nullable=True)   # survives partial close
+    original_lots           = Column(Integer, nullable=True)
+    initial_risk            = Column(Float,   nullable=True)   # actual_entry − initial_stop_loss
+    # 'ENTRY' when written at insert; 'BACKFILL_UNVERIFIED' for pre-0011 rows.
+    # Anything but 'ENTRY' is excluded from R statistics (R6.7, R15.7).
+    r_source                = Column(String(20), nullable=True)
+    exit_value_weighted     = Column(Float,   nullable=True)
+    r_multiple              = Column(Float,   nullable=True)   # gross of costs
+    r_multiple_net          = Column(Float,   nullable=True)   # net of brokerage + charges
+    target_stretched        = Column(Boolean, nullable=False, default=False, server_default=false())
+    entry_fill_source       = Column(String(16), nullable=True)   # ASK / LTP_FALLBACK
+    exit_fill_source        = Column(String(16), nullable=True)   # BID / TRIGGER_SLIPPED / LAST_KNOWN / LTP_GAP
+    dte_at_entry            = Column(Integer, nullable=True)
+    expiry_band             = Column(String(16), nullable=True)
+    entry_regime_multiplier = Column(Float,   nullable=True)
+    partial_skipped         = Column(Boolean, nullable=False, default=False, server_default=false())
+    hold_minutes            = Column(Float,   nullable=True)
+    sizing_detail           = Column(JSON,    nullable=True)   # SizingDecision record
+    entry_indicators        = Column(JSON,    nullable=True)   # indicator snapshot at entry
+
     __table_args__ = (
         Index("ix_pp_strategy_open",   "strategy_name", "is_open"),
         Index("ix_pp_token_open",      "token", "is_open"),
         Index("ix_pp_underlying_date", "underlying", "entry_time"),
+        Index("ix_pp_run_entry",       "run_id", "entry_time"),
     )
 
 
@@ -180,14 +211,30 @@ class DailyPnLSummary(Base):
     brokerage      = Column(Float,   nullable=False, default=0.0)
     net_pnl        = Column(Float,   nullable=False, default=0.0)
 
-    max_drawdown   = Column(Float,   nullable=True)
-    avg_rr         = Column(Float,   nullable=True)   # Average risk:reward achieved
+    # Largest single-trade net loss that day, stored positive. Renamed from
+    # max_drawdown in migration 0013 (R15.4): it was never an equity drawdown.
+    worst_trade_loss = Column(Float, nullable=True)
+    avg_rr         = Column(Float,   nullable=True)   # sum_r / r_sample_size (legacy name)
     total_lots     = Column(Integer, nullable=True)
+
+    # ── migration 0011 ──────────────────────────────────────────────────────
+    run_id              = Column(String(32), nullable=False, default="PAPER", server_default="PAPER")
+    statutory_charges   = Column(Float,   nullable=False, default=0.0, server_default="0")
+    flat_trades         = Column(Integer, nullable=False, default=0, server_default="0")
+    sum_r               = Column(Float,   nullable=False, default=0.0, server_default="0")
+    sum_r_win           = Column(Float,   nullable=False, default=0.0, server_default="0")
+    sum_r_loss          = Column(Float,   nullable=False, default=0.0, server_default="0")
+    r_sample_size       = Column(Integer, nullable=False, default=0, server_default="0")
+    expectancy_r        = Column(Float,   nullable=True)
+    expectancy_inr      = Column(Float,   nullable=True)
+    gross_profit        = Column(Float,   nullable=False, default=0.0, server_default="0")
+    gross_loss          = Column(Float,   nullable=False, default=0.0, server_default="0")
+    max_equity_drawdown = Column(Float,   nullable=True)   # peak-to-trough of the day's cumulative net
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        Index("ix_dpnl_date_strategy", "date", "strategy_name", "mode", unique=True),
+        Index("ix_dpnl_date_strategy", "date", "strategy_name", "mode", "run_id", unique=True),
     )
 
 
@@ -212,8 +259,10 @@ class TradingConfig(Base):
     slippage_pct          = Column(Float,   nullable=False, default=0.2)    # 0.2% of LTP
 
     # ── Capital / trade sizing ──────────────────────────────────────────────
-    # Amount in ₹ to deploy per trade (lots calculated from this)
-    trade_amount          = Column(Float,   nullable=False, default=10000.0)
+    # Demoted to a nullable display cache in migration 0013 (design §9.5):
+    # the per-trade budget is fixed_fraction_pct × capital. A stored value
+    # that diverges from that by more than ₹500 fails startup check 6.
+    trade_amount          = Column(Float,   nullable=True)
     # Running total of capital currently locked in open positions
     used_capital          = Column(Float,   nullable=False, default=0.0)
     # Hard cap on trades per day (resets midnight)
@@ -242,6 +291,19 @@ class TradingConfig(Base):
     # IST trading date that daily_trades_count belongs to (migration 0010)
     daily_trades_date     = Column(Date, nullable=True)
 
+    # ── migration 0013: operator-facing risk numbers (overlay TradingParams) ─
+    open_exposure_cap_pct      = Column(Float,   nullable=False, default=40.0, server_default="40.0")
+    fixed_fraction_pct         = Column(Float,   nullable=False, default=10.0, server_default="10.0")
+    kelly_multiplier           = Column(Float,   nullable=False, default=0.25, server_default="0.25")
+    kelly_fraction_cap_pct     = Column(Float,   nullable=False, default=15.0, server_default="15.0")
+    kelly_min_trades           = Column(Integer, nullable=False, default=30, server_default="30")
+    losing_streak_halt_n       = Column(Integer, nullable=False, default=3, server_default="3")
+    strategy_streak_halt_n     = Column(Integer, nullable=False, default=2, server_default="2")
+    post_loss_cooldown_minutes = Column(Integer, nullable=False, default=15, server_default="15")
+    min_rr                     = Column(Float,   nullable=False, default=2.0, server_default="2.0")
+    stale_tick_seconds         = Column(Integer, nullable=False, default=60, server_default="60")
+    entry_cutoff_buffer_min    = Column(Integer, nullable=False, default=10, server_default="10")
+
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
 
 
@@ -268,7 +330,7 @@ class StrategyPerf(Base):
     __tablename__ = "strategy_perf"
 
     id            = Column(Integer,     primary_key=True, autoincrement=True)
-    strategy_name = Column(String(50),  nullable=False, unique=True, index=True)
+    strategy_name = Column(String(50),  nullable=False)
 
     # Rolling counters (all-time, not daily)
     total_trades   = Column(Integer, nullable=False, default=0)
@@ -281,4 +343,27 @@ class StrategyPerf(Base):
     # Computed half-Kelly fraction (cached — avoids recomputing on every signal)
     kelly_fraction = Column(Float, nullable=True)   # 0.0–0.25 (half-Kelly, capped)
 
+    # ── migration 0011: exact sums (design §7, §9.5) ────────────────────────
+    run_id          = Column(String(32), nullable=False, default="PAPER", server_default="PAPER")
+    losing_trades   = Column(Integer, nullable=False, default=0, server_default="0")
+    flat_trades     = Column(Integer, nullable=False, default=0, server_default="0")
+    sum_r           = Column(Float,   nullable=False, default=0.0, server_default="0")
+    sum_r_win       = Column(Float,   nullable=False, default=0.0, server_default="0")
+    sum_r_loss      = Column(Float,   nullable=False, default=0.0, server_default="0")
+    r_sample_size   = Column(Integer, nullable=False, default=0, server_default="0")
+    # R-valid outcome counts keyed on sign(r_multiple): the only Kelly denominators
+    winning_trades_r = Column(Integer, nullable=False, default=0, server_default="0")
+    losing_trades_r  = Column(Integer, nullable=False, default=0, server_default="0")
+    avg_win_r       = Column(Float,   nullable=True)
+    avg_loss_r      = Column(Float,   nullable=True)   # mean magnitude of negative R
+    expectancy_r    = Column(Float,   nullable=True)
+    expectancy_inr  = Column(Float,   nullable=True)
+    gross_profit    = Column(Float,   nullable=False, default=0.0, server_default="0")
+    gross_loss      = Column(Float,   nullable=False, default=0.0, server_default="0")
+
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("strategy_name", "run_id", name="uq_strategy_perf_name_run"),
+        Index("ix_strategy_perf_name", "strategy_name"),
+    )

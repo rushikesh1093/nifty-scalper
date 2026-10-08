@@ -25,18 +25,14 @@ logger = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 LIVE_RUN_ID = "PAPER"
 
-# trading_config columns that overlay TradingParams defaults. Computed from the
-# ORM so the 0013 columns join automatically once they exist. trade_amount is
-# excluded until migration 0013 demotes it to a nullable display cache: today
-# it still holds the legacy per-trade amount, which check 6's tolerance rule
-# would (correctly) reject for every pre-migration row.
-_OVERLAY_EXCLUDED = frozenset({"trade_amount"})
-
-
+# trading_config columns that overlay TradingParams defaults, computed from the
+# ORM. Since migration 0013 trade_amount is a nullable display cache (NULL =
+# derived from fixed_fraction_pct × capital), so it overlays like any other
+# column: a stored value that diverges by more than ₹500 fails check 6.
 def _overlay_columns() -> tuple[str, ...]:
     from app.db.models.paper_trade import TradingConfig
     cols = {c.key for c in TradingConfig.__table__.columns}
-    return tuple(sorted((cols & TradingParams.field_names()) - _OVERLAY_EXCLUDED))
+    return tuple(sorted(cols & TradingParams.field_names()))
 
 
 def params_from_row(row) -> TradingParams:

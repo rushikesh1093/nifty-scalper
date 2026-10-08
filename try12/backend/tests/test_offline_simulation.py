@@ -44,7 +44,11 @@ def _synthetic_candles(n=60, seed=7):
 
 
 def test_offline_signal_to_closed_position(sqlite_db, fake_redis, monkeypatch, capsys):
-    run(seed_config(sqlite_db))
+    # trade_amount is a nullable display cache since migration 0013 (§9.5);
+    # CFG_DEFAULTS now leaves it None (derive from fixed_fraction_pct × capital,
+    # which would be too small for this fixture's lot). Set it explicitly, as
+    # this fixture did before the schema change.
+    run(seed_config(sqlite_db, trade_amount=3000.0))
     monkeypatch.setattr(pe_mod, "_ist_time", lambda: dtime(11, 0))
     monkeypatch.setattr(SignalBus, "_handlers", [paper_engine.handle_signal])
     monkeypatch.setattr(strategy_orchestrator, "get_current_regime",

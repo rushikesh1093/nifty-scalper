@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional, TYPE_CHECKING
 
-from app.runtime.context import market, now_utc
+from app.runtime.context import ctx, market, now_utc
 from app.services.trading.regime_indicators import RegimeIndicators
 
 logger = logging.getLogger(__name__)
@@ -95,8 +95,9 @@ class RegimePersistence:
     Persistence layer for regime state.
 
     All public methods are async.  Redis errors are caught and logged at
-    WARNING level — they never propagate to callers.  DB errors are also
-    caught and logged at WARNING.
+    WARNING level — they never propagate to callers.  In persist_to_db only a
+    duplicate key is caught (savepoint + DATA_GAP); other DB errors propagate
+    to the caller, which isolates them (design §11).
 
     Cache contract (design §14.1): this class passes Python objects to
     ``market().set(key, obj, ttl=...)`` and receives Python objects from
@@ -230,42 +231,62 @@ class RegimePersistence:
         object and flushes (so the PK is populated) but does NOT commit, to
         allow the caller to batch multiple writes in one transaction.
 
-        All exceptions are caught and logged at WARNING; the method never
-        raises.
+        The insert runs inside a savepoint (design §11, R2 finding 4). A
+        duplicate (run_id, underlying, timestamp) raises IntegrityError, which
+        is caught: the savepoint rolls back, a DATA_GAP degradation row naming
+        the key is written on the same session, and the caller's transaction
+        stays usable. Any other exception is re-raised; the caller
+        (strategy_runner._persist_regime_state) isolates it from gating.
 
         Requirements: 13.5, 13.6
         """
-        try:
-            from app.db.models.regime import RegimeStateModel
+        from sqlalchemy.exc import IntegrityError
 
-            ind = state.indicators
-            row = RegimeStateModel(
-                underlying=state.underlying,
-                regime=state.regime,
-                timestamp=state.timestamp,
-                adx=float(ind.adx) if ind.adx is not None else None,
-                atr=float(ind.atr),
-                atr_percentile=float(ind.atr_percentile),
-                vwap=float(ind.vwap),
-                price=float(ind.price),
-                vwap_cross_count=int(ind.vwap_cross_count),
-                volume=int(ind.volume) if ind.volume is not None else None,
-                avg_volume=float(ind.avg_volume) if ind.avg_volume is not None else None,
-                previous_regime=state.previous_regime,
-                transition_detected=state.previous_regime is not None
-                    and state.previous_regime != state.regime,
-            )
-            db_session.add(row)
-            await db_session.flush()
-            logger.debug(
-                "[RegimePersistence] Persisted regime row id=%s for %s: %s",
-                row.id, state.underlying, state.regime,
-            )
-        except Exception as exc:
+        from app.db.models.regime import RegimeStateModel
+        from app.services.trading import no_trade
+
+        rc = ctx()
+        ind = state.indicators
+        row = RegimeStateModel(
+            run_id=rc.run_id,
+            underlying=state.underlying,
+            regime=state.regime,
+            timestamp=state.timestamp,
+            adx=float(ind.adx) if ind.adx is not None else None,
+            atr=float(ind.atr),
+            atr_percentile=float(ind.atr_percentile),
+            vwap=float(ind.vwap),
+            price=float(ind.price),
+            vwap_cross_count=int(ind.vwap_cross_count),
+            volume=int(ind.volume) if ind.volume is not None else None,
+            avg_volume=float(ind.avg_volume) if ind.avg_volume is not None else None,
+            previous_regime=state.previous_regime,
+            transition_detected=state.previous_regime is not None
+                and state.previous_regime != state.regime,
+        )
+        try:
+            async with db_session.begin_nested():
+                db_session.add(row)
+                await db_session.flush()
+        except IntegrityError as exc:
+            key = {"run_id": rc.run_id, "underlying": state.underlying,
+                   "timestamp": state.timestamp.isoformat()}
             logger.warning(
-                "[RegimePersistence] DB persist failed for %s (%s): %s",
-                state.underlying, state.regime, exc,
+                "[RegimePersistence] duplicate regime_states key %s — recorded as DATA_GAP",
+                key,
             )
+            await no_trade.record(
+                db_session, rc, stage=no_trade.Stage.DEGRADATION,
+                code=no_trade.ReasonCode.DATA_GAP,
+                reason=f"regime_states duplicate key {key}: {type(exc).__name__}",
+                context={"what": "regime_states_duplicate", **key},
+                underlying=state.underlying,
+            )
+            return
+        logger.debug(
+            "[RegimePersistence] Persisted regime row id=%s for %s: %s",
+            row.id, state.underlying, state.regime,
+        )
 
 
 # App-level singleton

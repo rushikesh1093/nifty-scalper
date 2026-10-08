@@ -751,7 +751,9 @@ async def get_pnl_today(db: AsyncSession = Depends(get_db)):
                 "gross_pnl":     r.gross_pnl,
                 "net_pnl":       r.net_pnl,
                 "brokerage":     r.brokerage,
-                "max_drawdown":  r.max_drawdown,
+                # renamed from max_drawdown (R15.4): largest single-trade loss
+                "worst_trade_loss":    r.worst_trade_loss,
+                "max_equity_drawdown": r.max_equity_drawdown,
                 "avg_rr":        r.avg_rr,
             }
             for r in rows
@@ -776,10 +778,18 @@ async def get_pnl_history(
     for r in rows:
         d = str(r.date)
         if d not in by_date:
-            by_date[d] = {"date": d, "net_pnl": 0, "trades": 0, "wins": 0}
+            by_date[d] = {"date": d, "net_pnl": 0, "trades": 0, "wins": 0,
+                          "worst_trade_loss": None, "max_equity_drawdown": None}
         by_date[d]["net_pnl"]  = round(by_date[d]["net_pnl"] + r.net_pnl, 2)
         by_date[d]["trades"]  += r.total_trades
         by_date[d]["wins"]    += r.winning_trades
+        # per-strategy maxima for the day (R15.4: worst_trade_loss is the
+        # largest single-trade loss; max_equity_drawdown the deepest intraday fall)
+        for key in ("worst_trade_loss", "max_equity_drawdown"):
+            v = getattr(r, key)
+            if v is not None:
+                prev = by_date[d][key]
+                by_date[d][key] = round(max(prev, v) if prev is not None else v, 2)
 
     # Cumulative P&L
     cum = 0.0

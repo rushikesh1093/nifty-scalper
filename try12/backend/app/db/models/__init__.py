@@ -10,6 +10,8 @@ from app.db.models.paper_trade import (
     TradingConfig, TradingMode, SignalDirection, SignalStatus, StrategyPerf,
 )
 from app.db.models.regime import RegimeStateModel, RegimePerformanceModel, RegimeConfigModel
+from app.db.models.risk import NoTradeDecision, RiskHalt, PositionEvent, CycleStats
+from app.db.models.replay import ReplayRun
 
 __all__ = [
     "Instrument", "InstrumentType", "OptionType",
@@ -21,4 +23,6 @@ __all__ = [
     "StrategySignal", "PaperPosition", "DailyPnLSummary",
     "TradingConfig", "TradingMode", "SignalDirection", "SignalStatus", "StrategyPerf",
     "RegimeStateModel", "RegimePerformanceModel", "RegimeConfigModel",
+    "NoTradeDecision", "RiskHalt", "PositionEvent", "CycleStats",
+    "ReplayRun",
 ]
