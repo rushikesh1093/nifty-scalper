@@ -18,6 +18,7 @@ from app.services.broker.angel_client import angel_client
 from app.services.cache.redis_client import redis_cache
 from app.strategies.indicators import compute_all, cpr
 from app.core.config import settings
+from app.runtime.context import trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,7 @@ class StudyCollector:
             async with AsyncSessionLocal() as db:
                 # Nearest expiry
                 from app.services.broker.instrument_sync import get_active_expiries
-                expiries = await get_active_expiries(db, underlying)
+                expiries = await get_active_expiries(db, underlying, as_of=trading_day())
                 if not expiries:
                     return
                 expiry = expiries[0]
@@ -331,7 +332,7 @@ class StudyCollector:
 
         # Get nearest expiry from DB
         async with AsyncSessionLocal() as db:
-            expiries = await get_active_expiries(db, underlying)
+            expiries = await get_active_expiries(db, underlying, as_of=trading_day())
         if not expiries:
             logger.debug("_fetch_option_chain: no expiries for %s", underlying)
             return
@@ -536,7 +537,7 @@ class StudyCollector:
 
                 # Expiry info
                 from app.services.broker.instrument_sync import get_active_expiries
-                expiries = await get_active_expiries(db, underlying)
+                expiries = await get_active_expiries(db, underlying, as_of=trading_day())
                 nearest_expiry = expiries[0] if expiries else None
                 dte = (nearest_expiry - today).days if nearest_expiry else None
 

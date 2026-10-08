@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from typing import Optional, Callable, Awaitable
 from enum import Enum
 
+from app.runtime.context import now_utc
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +70,7 @@ class SignalAggregator:
         self._last_acted: dict[tuple, datetime] = {}
 
     def should_act(self, signal: SignalEvent) -> tuple[bool, str]:
-        now = datetime.now(timezone.utc)
+        now = now_utc()
         key_same = (signal.underlying, signal.direction)
         key_opp  = (
             signal.underlying,
@@ -104,7 +106,7 @@ class SignalAggregator:
 
     def record_acted(self, signal: SignalEvent):
         key = (signal.underlying, signal.direction)
-        self._last_acted[key] = datetime.now(timezone.utc)
+        self._last_acted[key] = now_utc()
 
     def clear_acted(self, signal: SignalEvent):
         """Remove an optimistic cooldown entry when no position was opened."""
@@ -129,6 +131,11 @@ class SignalBus:
     @classmethod
     def subscribe(cls, handler: SignalHandler):
         cls._handlers.append(handler)
+
+    @classmethod
+    def reset_handlers(cls):
+        """Drop every subscriber (used by wiring.wire_signal_handlers)."""
+        cls._handlers.clear()
 
     @classmethod
     async def publish(cls, signal: SignalEvent) -> bool:
@@ -225,7 +232,7 @@ class BaseStrategy(ABC):
         last_time = self._last_signal_time
         if last_time.tzinfo is None:
             last_time = last_time.replace(tzinfo=timezone.utc)
-        elapsed = (datetime.now(timezone.utc) - last_time).total_seconds() / 60
+        elapsed = (now_utc() - last_time).total_seconds() / 60
         return elapsed >= self._cooldown_minutes
 
     def _make_signal(self, direction: Direction, spot: float,
@@ -235,7 +242,7 @@ class BaseStrategy(ABC):
             underlying=self.underlying,
             direction=direction,
             spot_price=spot,
-            signal_time=datetime.now(timezone.utc),
+            signal_time=now_utc(),
             vwap=indicators.get("vwap"),
             indicators=indicators,
             sl_pct=self.sl_pct,

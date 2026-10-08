@@ -10,6 +10,8 @@ from app.db.models.paper_trade import (
 )
 from app.strategies.base import Direction, SignalEvent
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
 CFG_DEFAULTS: dict = dict(
     id=1,
     mode=TradingMode.PAPER,
@@ -123,6 +125,75 @@ def fake_candidate(ltp=40.0, lot_size=65, bid=0.0, ask=0.0, token="OPT1") -> Sim
     )
 
 
+class FrozenClock:
+    """Clock port for tests: time only moves when the test moves it."""
+
+    def __init__(self, at: datetime):
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        self._now = at.astimezone(timezone.utc)
+
+    def now_utc(self) -> datetime:
+        return self._now
+
+    def now_ist(self) -> datetime:
+        return self._now.astimezone(IST)
+
+    def trading_day(self) -> date:
+        return self.now_ist().date()
+
+    def advance(self, seconds: float = 0.0, **kw) -> None:
+        self._now = self._now + timedelta(seconds=seconds, **kw)
+
+    def set(self, at: datetime) -> None:
+        self._now = (at if at.tzinfo else at.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
+class _LazySessions:
+    """Session factory resolved at call time from app.db.base, so the conftest
+    blocking factory and the sqlite_db fixture both apply to ctx().sessions."""
+
+    def __call__(self):
+        import app.db.base as base
+        return base.AsyncSessionLocal()
+
+
+def make_test_context(*, clock=None, market=None, sessions=None, params=None,
+                      user_flags=None, mode: str = "PAPER", run_id: str = "PAPER",
+                      instruments=None, cfg=None):
+    """A live-shaped RuntimeContext for tests. Defaults: wall clock, the (patchable)
+    redis_cache, the (patchable) AsyncSessionLocal, default TradingParams, no
+    user flag overrides."""
+    from app.core.trading_params import TradingParams
+    from app.runtime.context import RunConfig, RuntimeContext
+    from app.runtime.live import (
+        DbRegimeConfig, FrozenUserFlags, LiveClock, LiveInstruments, RedisMarketData, StaticParams,
+    )
+    from app.services.cache.redis_client import redis_cache
+
+    p = params or TradingParams()
+    if cfg is None:
+        cfg = RunConfig(
+            mode=mode, capital=p.capital, max_trades_per_day=p.max_trades_per_day,
+            max_open_positions=p.max_open_positions, max_lots_per_trade=p.max_lots_per_trade,
+            max_daily_loss=p.max_daily_loss, max_daily_loss_pct=p.max_daily_loss_pct,
+            open_exposure_cap_pct=p.open_exposure_cap_pct, square_off_time="15:15",
+            entry_cutoff_buffer_min=p.entry_cutoff_buffer_min,
+        )
+    return RuntimeContext(
+        run_id=run_id,
+        clock=clock or LiveClock(),
+        market=market or RedisMarketData(redis_cache),
+        sessions=sessions or _LazySessions(),
+        regime_config=DbRegimeConfig(),
+        params=StaticParams(p),
+        cfg=cfg,
+        user_flags=user_flags or FrozenUserFlags({}),
+        instruments=instruments or LiveInstruments(),
+        is_replay=False,
+    )
+
+
 class FakeRedis:
     """In-memory stand-in for the redis_cache methods the trading code uses."""
 
@@ -130,11 +201,13 @@ class FakeRedis:
         self.kv: dict[str, Any] = {}
         self.published: list[tuple[str, dict]] = []
         self.fail_ltp = False
+        self.clock = None          # set by runtime_ctx so tick ages follow the FrozenClock
 
     # helpers for tests
     def put_tick(self, token: str, ltp: Optional[float], bid: float = 0.0, ask: float = 0.0,
                  age_s: float = 0.0, open_: Optional[float] = None) -> None:
-        ts = (datetime.now(timezone.utc) - timedelta(seconds=age_s)).replace(tzinfo=None)
+        now = self.clock.now_utc() if self.clock is not None else datetime.now(timezone.utc)
+        ts = (now - timedelta(seconds=age_s)).replace(tzinfo=None)
         if ltp is None:
             self.kv.pop(f"ltp:{token}", None)
         else:

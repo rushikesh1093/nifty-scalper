@@ -38,14 +38,15 @@ def test_exit_fill():
     assert _exit_fill(70.0, 0, 0, None, "KILL_SWITCH") == 69.93
 
 
-def test_tick_age():
-    from datetime import datetime, timedelta, timezone
-    now = datetime(2026, 10, 6, 5, 0, 0, tzinfo=timezone.utc)
+def test_tick_age(runtime_ctx):
+    # the age is measured against the ctx clock (no `now` parameter, design §14.2)
+    from datetime import timedelta
+    now = runtime_ctx.clock.now_utc()
     tick = {"ts": (now - timedelta(seconds=90)).replace(tzinfo=None).isoformat()}
-    assert _tick_age_seconds(tick, now) == pytest.approx(90)
-    assert _tick_age_seconds({}, now) is None
-    assert _tick_age_seconds(None, now) is None
-    assert _tick_age_seconds({"ts": "garbage"}, now) is None
+    assert _tick_age_seconds(tick) == pytest.approx(90)
+    assert _tick_age_seconds({}) is None
+    assert _tick_age_seconds(None) is None
+    assert _tick_age_seconds({"ts": "garbage"}) is None
 
 
 def test_close_position_books_charges(sqlite_db, fake_redis):

@@ -10,6 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.db.base import AsyncSessionLocal
+from app.runtime.context import bind
+from app.runtime.live import live_context
+from app.runtime.middleware import RuntimeContextMiddleware
 from app.services.cache.redis_client import redis_cache
 from app.services.trading.startup_checks import (
     StartupAssertionError, assert_paper_mode, run_startup_checks,
@@ -43,9 +46,14 @@ async def lifespan(app: FastAPI):
         v = await assert_paper_mode(AsyncSessionLocal, allow_absent=True)
         if v:
             raise StartupAssertionError(v)
-        await mode_manager.ensure_config(session_factory=AsyncSessionLocal)   # creates the row if absent
+        cfg_row = await mode_manager.ensure_config(session_factory=AsyncSessionLocal)  # creates the row if absent
         await mode_manager.reconcile_used_capital(session_factory=AsyncSessionLocal)
+        live = live_context(cfg_row, AsyncSessionLocal)   # builds RunConfig incl. mode
+        bind(live)                                     # for tasks created below IN THIS TASK (loops, feed)
         await run_startup_checks(require_config_row=True)   # raises on violation
+        app.state.runtime_context = live               # for request tasks, which do NOT inherit the
+                                                       # lifespan task's context (R5 finding 1); set only
+                                                       # after every check has passed
     except StartupAssertionError:
         logger.critical("Startup assertions failed -- refusing to start")  # violations already logged at ERROR
         await redis_cache.disconnect()
@@ -122,6 +130,7 @@ async def lifespan(app: FastAPI):
     await study_collector.stop()
     await market_manager.shutdown()
     await redis_cache.disconnect()
+    app.state.runtime_context = None    # nothing may run against a shut-down context
 
 
 app = FastAPI(
@@ -140,6 +149,10 @@ _LOCALHOST_ORIGINS = [
 ] + [
     f"http://127.0.0.1:{p}" for p in range(3000, 3011)
 ]
+
+# Registered BEFORE CORS: Starlette makes the last-added middleware outermost,
+# so CORS wraps this one and its 503 still carries CORS headers (design §6.6).
+app.add_middleware(RuntimeContextMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

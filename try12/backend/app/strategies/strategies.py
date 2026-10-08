@@ -10,6 +10,7 @@ import numpy as np
 from app.strategies.base import BaseStrategy, Direction, SignalEvent
 from app.strategies.indicators import ema, rsi, bollinger, supertrend, atr
 from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
+from app.runtime.context import now_ist, trading_day
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,8 @@ def _market_time(candles) -> dtime:
             dt = dt.astimezone(IST)
         return dt.time().replace(tzinfo=None)
     except Exception:
-        # Fallback: current IST time
-        from datetime import timezone, timedelta as td
-        IST = timezone(td(hours=5, minutes=30))
-        return datetime.now(IST).time().replace(tzinfo=None)
+        # Fallback: current IST time (ctx clock)
+        return now_ist().time().replace(tzinfo=None)
 
 def _avg_volume(candles, n=10) -> float:
     vols = [float(c.get("volume", 0)) for c in candles[-n-1:-1]]
@@ -140,9 +139,7 @@ class VWAPPullbackStrategy(BaseStrategy):
         # Candles are filtered to today at the strategy_runner level, but the
         # guard here is a safety net in case the fallback path supplies
         # multi-day data (e.g. during pre-market startup).
-        from datetime import timezone as _tz, timedelta as _td
-        _IST = _tz(_td(hours=5, minutes=30))
-        today_str = str(datetime.now(_IST).date())
+        today_str = str(trading_day())
         today_window = [
             c for c in candles[-7:-1]
             if str(c.get("timestamp", "")).startswith(today_str)
@@ -720,10 +717,8 @@ class GapVWAPFillStrategy(BaseStrategy):
         # Safety: only use candles that are confirmed to be today's session.
         # If the list contains yesterday's candles (fallback path in strategy_runner),
         # candles[0] is not today's open and gap_pct would be wrong.
-        # Use IST date — server may run UTC, so _date.today() would be wrong before 5:30 AM IST.
-        from datetime import timezone as _tz, timedelta as _td
-        _IST = _tz(_td(hours=5, minutes=30))
-        today_str = str(datetime.now(_IST).date())
+        # Use the ctx clock's IST trading day — server may run UTC.
+        today_str = str(trading_day())
         if not str(candles[0].get("timestamp", "")).startswith(today_str):
             return None
 

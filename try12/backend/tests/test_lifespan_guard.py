@@ -19,36 +19,7 @@ MAIN = Path(__file__).resolve().parents[1] / "app" / "main.py"
 GUARD_CALLS = {"assert_paper_mode", "run_startup_checks"}
 
 
-@pytest.fixture
-def lifespan_spies(monkeypatch):
-    """Patch every side-effecting startup/shutdown call to record instead."""
-    from app.services.cache.redis_client import redis_cache
-    from app.services.market_data.market_manager import market_manager
-    from app.services.market_data.study_collector import study_collector
-    from app.services.trading.strategy_runner import strategy_runner
-
-    class _Calls(list):
-        rec = None
-
-    calls = _Calls()
-
-    def _rec(name, exc=None):
-        async def _f(*a, **k):
-            calls.append(name)
-            if exc is not None:
-                raise exc
-        return _f
-
-    monkeypatch.setattr(redis_cache, "connect", _rec("redis.connect"))
-    monkeypatch.setattr(redis_cache, "disconnect", _rec("redis.disconnect"))
-    monkeypatch.setattr(market_manager, "startup", _rec("market.startup"))
-    monkeypatch.setattr(market_manager, "shutdown", _rec("market.shutdown"))
-    monkeypatch.setattr(strategy_runner, "start", _rec("runner.start"))
-    monkeypatch.setattr(strategy_runner, "stop", _rec("runner.stop"))
-    monkeypatch.setattr(study_collector, "start", _rec("study.start"))
-    monkeypatch.setattr(study_collector, "stop", _rec("study.stop"))
-    calls.rec = _rec
-    return calls
+# `lifespan_spies` lives in conftest.py (shared with test_request_context.py).
 
 
 async def _enter_lifespan():

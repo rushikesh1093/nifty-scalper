@@ -8,7 +8,7 @@ from datetime import datetime, date
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.services.broker.angel_client import angel_client
@@ -128,7 +128,7 @@ async def sync_instruments(db: AsyncSession) -> int:
                 "lot_size":        stmt.excluded.lot_size,
                 "tick_size":       stmt.excluded.tick_size,
                 "is_active":       True,
-                "updated_at":      datetime.utcnow(),
+                "updated_at":      func.now(),
             },
         )
         await db.execute(stmt)
@@ -139,15 +139,18 @@ async def sync_instruments(db: AsyncSession) -> int:
     return total
 
 
-async def get_active_expiries(db: AsyncSession, name: str) -> list[date]:
-    """Return sorted list of active expiry dates for an underlying."""
+async def get_active_expiries(db: AsyncSession, name: str, *, as_of: date) -> list[date]:
+    """Sorted active expiry dates on or after *as_of* (required: the caller's
+    ctx trading day — there is no wall-clock default, design §10.4/§14.2).
+    Trading decision code does not call this; it resolves the universe
+    through InstrumentPort."""
     result = await db.execute(
         select(Instrument.expiry)
         .where(
             Instrument.name == name.upper(),
             Instrument.instrument_type == InstrumentType.OPTIDX,
             Instrument.is_active == True,
-            Instrument.expiry >= date.today(),
+            Instrument.expiry >= as_of,
         )
         .distinct()
         .order_by(Instrument.expiry)

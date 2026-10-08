@@ -8,6 +8,7 @@ from app.db.base import get_db
 from app.db.models.instrument import Instrument, InstrumentType, OptionType
 from app.schemas.instrument import InstrumentResponse, InstrumentSearchRequest
 from app.services.broker.instrument_sync import sync_instruments, get_active_expiries
+from app.runtime.context import ctx, trading_day
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
 
@@ -49,7 +50,7 @@ async def list_instruments(
 @router.get("/expiries/{underlying}", response_model=list[str])
 async def get_expiries(underlying: str, db: AsyncSession = Depends(get_db)):
     """Get all active expiry dates for an underlying (NIFTY, BANKNIFTY)."""
-    expiries = await get_active_expiries(db, underlying)
+    expiries = await get_active_expiries(db, underlying, as_of=trading_day())
     return [e.isoformat() for e in expiries]
 
 
@@ -87,4 +88,5 @@ async def get_instrument_by_token(token: str, db: AsyncSession = Depends(get_db)
 async def trigger_instrument_sync(db: AsyncSession = Depends(get_db)):
     """Manually trigger instrument sync from AngelOne scrip master."""
     count = await sync_instruments(db)
+    ctx().instruments.invalidate()      # next universe read sees the new master
     return {"status": "ok", "synced": count}

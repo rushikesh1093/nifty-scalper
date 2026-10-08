@@ -343,7 +343,7 @@ async def main():
             )
             count = inst_r.scalar() or 0
 
-            expiries = await get_active_expiries(db, underlying)
+            expiries = await get_active_expiries(db, underlying, as_of=datetime.now(IST).date())
 
             if count == 0:
                 fail(f"{underlying}: 0 active option instruments in DB",

@@ -56,7 +56,8 @@ def wired(monkeypatch, fake_redis):
             return False
 
     monkeypatch.setattr(pe_mod, "_ist_time", lambda: __import__("datetime").time(10, 30))
-    monkeypatch.setattr(pe_mod, "AsyncSessionLocal", lambda: _NoDB())
+    import app.db.base as db_base     # ctx().sessions resolves this at call time
+    monkeypatch.setattr(db_base, "AsyncSessionLocal", lambda: _NoDB())
     monkeypatch.setattr(mode_manager, "get_config", _get_config)
     monkeypatch.setattr(mode_manager, "pre_trade_check", _Spy((True, "")))
     monkeypatch.setattr(mode_manager, "kelly_trade_amount", _Spy(3000.0))

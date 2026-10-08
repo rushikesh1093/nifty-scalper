@@ -1,0 +1,51 @@
+"""
+Ports — the complete surface trading code may use for time, market data,
+configuration and the instrument universe (design §14.1).
+
+After the §14.2 conversion no module under app/services/trading/ or
+app/strategies/ references ``redis_cache`` or ``._r(`` at all; MarketDataPort
+is the whole cache surface (tests/test_market_port_scan.py).
+"""
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from app.core.trading_params import TradingParams
+    from app.db.models.instrument import Instrument
+    from app.services.trading.regime_config import RegimeConfig
+
+
+class Clock(Protocol):
+    def now_utc(self) -> datetime: ...
+    def now_ist(self) -> datetime: ...
+    def trading_day(self) -> date: ...
+
+
+class MarketDataPort(Protocol):           # THE COMPLETE cache surface for trading code
+    async def get_ltp(self, token: str) -> float | None: ...
+    async def get_tick(self, token: str) -> dict | None: ...
+    async def get_candles(self, token: str, interval: str, count: int) -> list[dict]: ...
+    async def get_option_chain(self, underlying: str, expiry: str) -> dict | None: ...
+    async def get(self, key: str) -> Any | None: ...
+    async def set(self, key: str, value: Any, ttl: int = 60) -> None: ...
+    async def delete(self, key: str) -> None: ...
+    async def publish_signal(self, strategy: str, signal: dict) -> None: ...   # matches redis_client
+
+
+class RegimeConfigPort(Protocol):
+    def for_underlying(self, underlying: str) -> "RegimeConfig": ...
+
+
+class ParamsPort(Protocol):
+    def current(self) -> "TradingParams": ...      # live: TTL-cached DB overlay. replay: frozen
+
+
+class UserFlagsPort(Protocol):
+    def current(self) -> dict[str, bool]: ...      # live: TTL-cached strategy_flags. replay: frozen
+
+
+class InstrumentPort(Protocol):                    # §10.4: universe resolution, no wall clock
+    async def instruments_for(self, db, underlying: str) -> list["Instrument"]: ...
+    def invalidate(self) -> None: ...

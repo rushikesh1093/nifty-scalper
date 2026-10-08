@@ -8,6 +8,7 @@ Broker credentials are blanked so nothing can log in to AngelOne.
 """
 import os
 import sys
+from datetime import datetime, timezone
 
 os.environ.update({
     "POSTGRES_HOST": "127.0.0.1",
@@ -63,10 +64,12 @@ def _block_db(monkeypatch):
 @pytest.fixture(autouse=True)
 def _reset_singletons():
     """Singletons keep in-memory state; reset it around every test."""
+    from app.main import app as fastapi_app
     from app.services.trading.mode_manager import mode_manager
     from app.services.trading.paper_engine import paper_engine
     from app.services.trading.regime_detector import regime_detector
     from app.services.trading.strategy_orchestrator import strategy_orchestrator
+    from app.services.trading.strategy_runner import strategy_runner
     from app.strategies.base import signal_aggregator
 
     def _reset():
@@ -79,11 +82,51 @@ def _reset_singletons():
         regime_detector._last_log_time.clear()
         strategy_orchestrator._transition_cooldown.clear()
         strategy_orchestrator._current_regime.clear()
+        strategy_runner._oi_iv_warned.clear()
         signal_aggregator.reset()
+        fastapi_app.state.runtime_context = None    # a lifespan test must not leak its context
 
     _reset()
     yield
     _reset()
+
+
+@pytest.fixture(autouse=True)
+def _default_runtime_ctx():
+    """Every test runs under a live-shaped RuntimeContext (wall clock, the patchable
+    redis_cache and AsyncSessionLocal), so pre-existing tests keep their intent.
+    Tests that need a frozen clock use `runtime_ctx`; tests that need NO binding
+    (request-context / lifespan topology) use `no_ctx`."""
+    from app.runtime.context import using
+    from tests.helpers import make_test_context
+
+    with using(make_test_context()) as rc:
+        yield rc
+
+
+@pytest.fixture
+def no_ctx():
+    """Explicitly unbound for the duration of the test."""
+    from app.runtime.context import using
+    with using(None):
+        yield
+
+
+# 2026-09-01 is a Tuesday; 10:00 IST is inside the session.
+FROZEN_START = datetime(2026, 9, 1, 4, 30, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def runtime_ctx(sqlite_db, fake_redis):
+    """RuntimeContext over FakeRedis + the SQLite session factory + a FrozenClock."""
+    from app.runtime.context import using
+    from tests.helpers import FrozenClock, make_test_context
+
+    clock = FrozenClock(FROZEN_START)
+    fake_redis.clock = clock
+    rc = make_test_context(clock=clock, market=fake_redis, sessions=sqlite_db)
+    with using(rc):
+        yield rc
 
 
 @pytest.fixture
@@ -116,6 +159,38 @@ def sqlite_db(tmp_path, monkeypatch):
     Session = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     _patch_session_factory(monkeypatch, Session)
     yield Session
+
+
+@pytest.fixture
+def lifespan_spies(monkeypatch):
+    """Patch every side-effecting lifespan startup/shutdown call to record instead."""
+    from app.services.cache.redis_client import redis_cache
+    from app.services.market_data.market_manager import market_manager
+    from app.services.market_data.study_collector import study_collector
+    from app.services.trading.strategy_runner import strategy_runner
+
+    class _Calls(list):
+        rec = None
+
+    calls = _Calls()
+
+    def _rec(name, exc=None):
+        async def _f(*a, **k):
+            calls.append(name)
+            if exc is not None:
+                raise exc
+        return _f
+
+    monkeypatch.setattr(redis_cache, "connect", _rec("redis.connect"))
+    monkeypatch.setattr(redis_cache, "disconnect", _rec("redis.disconnect"))
+    monkeypatch.setattr(market_manager, "startup", _rec("market.startup"))
+    monkeypatch.setattr(market_manager, "shutdown", _rec("market.shutdown"))
+    monkeypatch.setattr(strategy_runner, "start", _rec("runner.start"))
+    monkeypatch.setattr(strategy_runner, "stop", _rec("runner.stop"))
+    monkeypatch.setattr(study_collector, "start", _rec("study.start"))
+    monkeypatch.setattr(study_collector, "stop", _rec("study.stop"))
+    calls.rec = _rec
+    return calls
 
 
 @pytest.fixture

@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 
 from sqlalchemy import select, update, func
 
-from app.db.base import AsyncSessionLocal
+from app.runtime.context import market, now_utc, sessions, trading_day
 from app.db.models.paper_trade import (
     TradingConfig, TradingMode, PaperPosition, DailyPnLSummary, StrategyPerf,
 )
@@ -36,7 +36,7 @@ class ModeManager:
     # ── Config ────────────────────────────────────────────────────────────────
 
     async def get_config(self) -> Optional[TradingConfig]:
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(TradingConfig).where(TradingConfig.id == 1)
             )
@@ -59,7 +59,7 @@ class ModeManager:
                     .values(
                         trading_halted=True,
                         halted_reason=f"{code}: {reason}"[:200],
-                        halted_at=datetime.now(timezone.utc),
+                        halted_at=func.now(),   # runs before bind(): DB clock, not ctx
                     )
                 )
                 await db.commit()
@@ -199,7 +199,7 @@ class ModeManager:
 
     async def update_config(self, **kwargs) -> TradingConfig:
         if "capital" in kwargs:
-            async with AsyncSessionLocal() as db:
+            async with sessions()() as db:
                 result = await db.execute(
                     select(func.count(PaperPosition.id)).where(PaperPosition.is_open == True)
                 )
@@ -208,7 +208,7 @@ class ModeManager:
 
         kwargs["mode"] = TradingMode.PAPER
         kwargs["live_mode_confirmed"] = False
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             await db.execute(
                 update(TradingConfig).where(TradingConfig.id == 1).values(**kwargs)
             )
@@ -248,7 +248,7 @@ class ModeManager:
             await self.update_config(
                 trading_halted=halted,
                 halted_reason=(reason or "manual halt")[:200] if halted else None,
-                halted_at=datetime.now(timezone.utc) if halted else None,
+                halted_at=now_utc() if halted else None,
             )
             logger.warning(
                 "KILL SWITCH %s%s", "ENGAGED" if halted else "RELEASED",
@@ -261,7 +261,7 @@ class ModeManager:
 
     async def get_halt_status(self) -> dict:
         cfg = await self.get_config()
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(func.count(PaperPosition.id)).where(PaperPosition.is_open == True)
             )
@@ -278,7 +278,7 @@ class ModeManager:
         """Atomically reserve capital so concurrent signals cannot overspend."""
         if capital_used <= 0:
             return False
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 update(TradingConfig)
                 .where(
@@ -304,7 +304,7 @@ class ModeManager:
         Lock capital when a new position is opened.
         Also increment daily_trades_count.
         """
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             await db.execute(
                 update(TradingConfig)
                 .where(TradingConfig.id == 1)
@@ -321,7 +321,7 @@ class ModeManager:
         Release capital when a position is closed.
         Never let used_capital go below 0.
         """
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             # Fetch current used_capital first to avoid going negative
             result = await db.execute(
                 select(TradingConfig.used_capital).where(TradingConfig.id == 1)
@@ -345,7 +345,7 @@ class ModeManager:
         """
         if capital_reserved <= 0:
             return
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(TradingConfig.used_capital, TradingConfig.daily_trades_count)
                 .where(TradingConfig.id == 1)
@@ -402,7 +402,7 @@ class ModeManager:
         kelly_max_amount = KELLY_MAX_FRACTION * capital   # e.g. ₹4,500 at ₹15k cap
 
         try:
-            async with AsyncSessionLocal() as db:
+            async with sessions()() as db:
                 result = await db.execute(
                     select(StrategyPerf).where(
                         StrategyPerf.strategy_name == strategy_name
@@ -472,7 +472,7 @@ class ModeManager:
         can read it cheaply without recalculating every time.
         """
         try:
-            async with AsyncSessionLocal() as db:
+            async with sessions()() as db:
                 result = await db.execute(
                     select(StrategyPerf).where(
                         StrategyPerf.strategy_name == strategy_name
@@ -536,7 +536,7 @@ class ModeManager:
     async def reset_daily_counter(self):
         """Manual reset of daily_trades_count (stamps today's IST date)."""
         await self.update_config(
-            daily_trades_count=0, daily_trades_date=datetime.now(IST).date(),
+            daily_trades_count=0, daily_trades_date=trading_day(),
         )
         logger.info("Daily trades counter reset.")
 
@@ -551,7 +551,7 @@ class ModeManager:
         cfg = await self.get_config()
         if not cfg:
             return False
-        today = datetime.now(IST).date()
+        today = trading_day()
         if cfg.daily_trades_date == today:
             logger.debug(
                 "Daily trades counter kept (%d) — already stamped for %s",
@@ -561,7 +561,7 @@ class ModeManager:
 
         day_start_utc = datetime.combine(today, datetime.min.time(), tzinfo=IST) \
             .astimezone(timezone.utc)
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(func.count(PaperPosition.id))
                 .where(PaperPosition.entry_time >= day_start_utc)
@@ -622,7 +622,7 @@ class ModeManager:
             return False, reason
 
         # 2. Max open positions
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(func.count(PaperPosition.id))
                 .where(PaperPosition.is_open == True)
@@ -659,8 +659,8 @@ class ModeManager:
         if not cfg:
             return False, ""
 
-        today = datetime.now(IST).date()
-        async with AsyncSessionLocal() as db:
+        today = trading_day()
+        async with sessions()() as db:
             result = await db.execute(
                 select(func.sum(DailyPnLSummary.net_pnl)).where(
                     DailyPnLSummary.date == today,
@@ -673,8 +673,7 @@ class ModeManager:
         # P&L already booked on them (not yet in daily_pnl_summary).
         unrealised = 0.0
         try:
-            from app.services.cache.redis_client import redis_cache
-            async with AsyncSessionLocal() as db:
+            async with sessions()() as db:
                 result = await db.execute(
                     select(PaperPosition).where(
                         PaperPosition.is_open == True,
@@ -683,7 +682,7 @@ class ModeManager:
                 )
                 open_positions = result.scalars().all()
             for pos in open_positions:
-                ltp = await redis_cache.get_ltp(pos.token)
+                ltp = await market().get_ltp(pos.token)
                 if ltp:
                     unrealised += (ltp - (pos.actual_entry or 0.0)) * (pos.quantity or 0)
                 if pos.partial_closed:
@@ -726,8 +725,8 @@ class ModeManager:
         available = round(max(capital - used, 0.0), 2)
 
         # Today's realised P&L
-        today = datetime.now(IST).date()
-        async with AsyncSessionLocal() as db:
+        today = trading_day()
+        async with sessions()() as db:
             result = await db.execute(
                 select(func.sum(DailyPnLSummary.net_pnl)).where(
                     DailyPnLSummary.date == today,
@@ -767,11 +766,11 @@ class ModeManager:
     # ── Daily stats (full) ────────────────────────────────────────────────────
 
     async def get_daily_stats(self) -> dict:
-        today = datetime.now(IST).date()
+        today = trading_day()
         cfg   = await self.get_config()
         mode  = cfg.mode if cfg else "PAPER"
 
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(DailyPnLSummary).where(
                     DailyPnLSummary.date == today,

@@ -13,9 +13,11 @@ def test_settings_point_at_blocked_ports():
 
 def test_async_session_is_blocked():
     import app.db.base as base
-    from app.services.trading import mode_manager as mm, paper_engine as pe
+    import app.main as main
+    from app.runtime.context import sessions
 
-    for factory in (base.AsyncSessionLocal, mm.AsyncSessionLocal, pe.AsyncSessionLocal):
+    # trading modules reach the DB only through ctx().sessions (design §14.2)
+    for factory in (base.AsyncSessionLocal, main.AsyncSessionLocal, sessions()):
         with pytest.raises(RuntimeError, match="DB access blocked"):
             factory()
 

@@ -471,4 +471,7 @@ async def _run_paper_trade(cfg, selected, spot):
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    from app.runtime.context import using
+    from app.runtime.live import script_context
+    with using(script_context()):          # trading code reads ctx() (design §14.1)
+        asyncio.run(run())

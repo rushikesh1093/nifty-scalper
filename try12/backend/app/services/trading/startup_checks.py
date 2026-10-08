@@ -17,6 +17,7 @@ import logging
 from sqlalchemy import text
 
 from app.db.models.paper_trade import TradingMode
+from app.runtime.context import ctx, params
 
 logger = logging.getLogger(__name__)
 
@@ -70,25 +71,27 @@ async def assert_paper_mode(session_factory, *, allow_absent: bool) -> list[str]
 
 
 def _check_params() -> list[str]:
-    """Check 6: the resolved TradingParams validate."""
-    from app.core.trading_params import TradingParams
-    return [f"params: {v}" for v in TradingParams().validate()]
+    """Check 6: the resolved TradingParams (through the bound ParamsPort) validate."""
+    return [f"params: {v}" for v in params().validate()]
 
 
 async def run_startup_checks(*, require_config_row: bool) -> None:
-    """Run every implemented startup check; raise StartupAssertionError listing
-    every violation. Never swallows.
+    """Run every implemented startup check against the bound ctx(); raise
+    StartupAssertionError listing every violation. Never swallows.
 
     ``require_config_row`` is True for live (ensure_config has just created the
     row) and False for replay (a replay database may have no row). It is a
     parameter, not an is_replay branch.
     """
-    from app.db import base as db_base
-
     violations: list[str] = []
-    # 1. paper guard, DB half
-    violations += await assert_paper_mode(db_base.AsyncSessionLocal,
+    # 1. paper guard — DB half (raw read, its own session) ...
+    violations += await assert_paper_mode(ctx().sessions,
                                           allow_absent=not require_config_row)
+    # ... and the in-process half: the frozen RunConfig.mode gate check 1 reads
+    if ctx().cfg.mode != TradingMode.PAPER.value:
+        v = f"ctx().cfg.mode is {ctx().cfg.mode!r}, expected 'PAPER'"
+        logger.error("Startup paper guard: %s", v)
+        violations.append(v)
     # 6. params
     params_v = _check_params()
     for v in params_v:

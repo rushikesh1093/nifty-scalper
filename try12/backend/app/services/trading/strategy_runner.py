@@ -8,19 +8,20 @@ Also handles:
 """
 import asyncio
 import logging
+import time as _time
 from datetime import datetime, date, time as dtime, timezone, timedelta
 from typing import Optional
 
 from app.strategies.strategies import build_strategies, OISpikeStrategy, IVCrushStrategy, PDHPDLStrategy, CPRVWAPStrategy, GapVWAPFillStrategy
 from app.strategies.indicators import compute_all, cpr as calc_cpr
-from app.strategies.base import SignalBus
-from app.services.cache.redis_client import redis_cache
+from app.runtime.context import ctx, market, now_ist, sessions, trading_day
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.mode_manager import mode_manager
 from app.core.config import settings
 from app.services.trading.regime_detector import regime_detector
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from app.services.trading.session_times import entry_cutoff, parse_square_off
+from app.services.trading.wiring import wire_signal_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,35 @@ EXPIRY_MIN_SL_PCT = 0.15   # on expiry day skip ALL strategies with sl_pct < 15%
                             # Raised from 0.08 — a 10% SL on a cheap OTM option
                             # (e.g. ₹23 LTP → SL at ₹20.70) is blown by a single
                             # adverse spot tick on expiry day.
+OI_IV_WARN_INTERVAL_SECS = 600   # rate-limit the OI/IV injection WARNING per underlying
+
+
+def _atm_pair(universe: list, expiry: date, atm_strike: float) -> tuple:
+    """Pure pick of the ATM CE and PE for *expiry* from an instrument universe."""
+    from app.db.models.instrument import InstrumentType, OptionType
+    ce = pe = None
+    for i in universe:
+        if i.instrument_type != InstrumentType.OPTIDX or i.expiry != expiry or i.strike != atm_strike:
+            continue
+        if i.option_type == OptionType.CE and ce is None:
+            ce = i
+        elif i.option_type == OptionType.PE and pe is None:
+            pe = i
+    return ce, pe
+
+
+def _as_int(v) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class StrategyRunner:
@@ -51,12 +81,13 @@ class StrategyRunner:
         self._eod_task:    Optional[asyncio.Task] = None
         self._strategies:  dict[str, list] = {}   # underlying → [strategy list]
         self._eod_done_date: Optional[date] = None   # IST date EOD square-off last ran
+        self._oi_iv_warned: dict[str, float] = {}     # underlying -> monotonic ts of last WARNING
 
     async def start(self):
         self._running = True
 
-        # Wire paper engine to signal bus
-        SignalBus.subscribe(paper_engine.handle_signal)
+        # Wire paper engine to signal bus (idempotent; design §14.1a)
+        wire_signal_handlers()
 
         # Start paper engine monitor
         await paper_engine.start()
@@ -102,8 +133,7 @@ class StrategyRunner:
         await mode_manager.reset_daily_counter_if_new_day()
         # Also reconcile used_capital against actual open positions to fix any
         # drift caused by server restarts mid-session.
-        from app.db.base import AsyncSessionLocal
-        await mode_manager.reconcile_used_capital(session_factory=AsyncSessionLocal)
+        await mode_manager.reconcile_used_capital(session_factory=ctx().sessions)
         # Reset the signal aggregator cooldown map so yesterday's last-acted
         # timestamps don't suppress the first valid signals of the new session.
         # Without this, a signal fired at 14:55 yesterday would still be in
@@ -112,13 +142,12 @@ class StrategyRunner:
         from app.strategies.base import signal_aggregator
         signal_aggregator.reset()
         logger.info("Daily trades counter checked (date-based) and signal aggregator cleared for new session.")
-        from app.db.base import AsyncSessionLocal
         from app.db.models.market_study import MarketDailySnapshot
         from sqlalchemy import select, desc
 
         for underlying in ["NIFTY", "BANKNIFTY"]:
             try:
-                async with AsyncSessionLocal() as db:
+                async with sessions()() as db:
                     result = await db.execute(
                         select(MarketDailySnapshot)
                         .where(
@@ -174,41 +203,43 @@ class StrategyRunner:
         while self._running:
             try:
                 await asyncio.sleep(CANDLE_CHECK_INTERVAL)
-                ist   = self._ist_now()
-                ist_t = ist.time().replace(tzinfo=None)
-
-                cfg = await mode_manager.get_config()
-                # Only run during the signal window (settings.SESSION_*_IST,
-                # 9:15 – 15:25) and stop evaluating strategies at the entry
-                # cutoff (configured square-off − 10 min).
-                # paper_engine.handle_signal enforces the same cutoff as the
-                # authoritative gate.
-                start_t, end_t = settings.SESSION_START_IST, settings.SESSION_END_IST
-                cutoff = entry_cutoff(cfg.square_off_time if cfg else None)
-                if ist_t < start_t or ist_t > end_t or ist_t >= cutoff:
-                    continue
-
-                flags = (cfg.strategy_flags or {}) if cfg else {}
-
                 for underlying in ["NIFTY", "BANKNIFTY"]:
-                    await self._run_underlying(underlying, flags)
-
+                    await self.run_cycle(underlying)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Candle loop error: %s", e, exc_info=True)
 
+    async def run_cycle(self, underlying: str) -> None:
+        """One candle step for one underlying (design §14.2). The live loop and
+        the replay engine both call this; there is no time or flags parameter —
+        time comes from the ctx clock and user flags from ctx().user_flags."""
+        ist_t = self._ist_now().time().replace(tzinfo=None)
+
+        cfg = await mode_manager.get_config()
+        # Only run during the signal window (settings.SESSION_*_IST,
+        # 9:15 – 15:25) and stop evaluating strategies at the entry
+        # cutoff (configured square-off − 10 min).
+        # paper_engine.handle_signal enforces the same cutoff as the
+        # authoritative gate.
+        start_t, end_t = settings.SESSION_START_IST, settings.SESSION_END_IST
+        cutoff = entry_cutoff(cfg.square_off_time if cfg else None)
+        if ist_t < start_t or ist_t > end_t or ist_t >= cutoff:
+            return
+
+        await self._run_underlying(underlying, ctx().user_flags.current())
+
     @staticmethod
     def _ist_now() -> datetime:
-        """Return current datetime in IST (UTC+5:30), timezone-aware."""
-        return datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        """Current IST datetime from the ctx clock (timezone-aware)."""
+        return now_ist()
 
     async def _run_underlying(self, underlying: str, flags: dict):
         spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
 
         # Get candles from Redis — fetch extra in case window spans overnight,
         # then filter to today's IST session so ORB levels are always correct.
-        all_candles = await redis_cache.get_candles(spot_token, "ONE_MINUTE", 500)
+        all_candles = await market().get_candles(spot_token, "ONE_MINUTE", 500)
         if not all_candles:
             return
 
@@ -264,7 +295,7 @@ class StrategyRunner:
         # spot-based signals (acceptable, never a blocker).
         avg_vol_key = f"avg_vol:spot:{underlying}"
         cur_volume  = indicators.get("volume") or 0.0
-        prev_avg    = await redis_cache.get(avg_vol_key) or 0.0
+        prev_avg    = await market().get(avg_vol_key) or 0.0
         if isinstance(prev_avg, dict):   # guard: shouldn't happen but be safe
             prev_avg = 0.0
         prev_avg = float(prev_avg)
@@ -274,7 +305,7 @@ class StrategyRunner:
                 new_avg = cur_volume
             else:
                 new_avg = round(0.2 * cur_volume + 0.8 * prev_avg, 2)   # α=0.2
-            await redis_cache.set(avg_vol_key, new_avg, ttl=28800)
+            await market().set(avg_vol_key, new_avg, ttl=28800)
             indicators["avg_volume"] = new_avg
         else:
             # Volume=0 (NSE index feed limitation) — don't clobber the EMA.
@@ -292,7 +323,7 @@ class StrategyRunner:
             return
 
         # ── Gate 2: VIX filter ────────────────────────────────────────────────
-        vix_ltp = await redis_cache.get_ltp(VIX_TOKEN)
+        vix_ltp = await market().get_ltp(VIX_TOKEN)
         if vix_ltp is not None:
             if vix_ltp > VIX_MAX:
                 logger.info(
@@ -308,11 +339,13 @@ class StrategyRunner:
                 return
 
         # ── Gate 3: Expiry day filter ─────────────────────────────────────────
-        from app.db.base import AsyncSessionLocal
-        from app.services.broker.instrument_sync import get_active_expiries
-        async with AsyncSessionLocal() as db:
-            expiries = await get_active_expiries(db, underlying)
-        is_expiry_day = bool(expiries and expiries[0] == self._ist_now().date())
+        # Same InstrumentPort universe as _inject_oi_iv, so "nearest expiry"
+        # can never disagree between the two (design §14.2).
+        today = trading_day()
+        async with sessions()() as db:
+            universe = await ctx().instruments.instruments_for(db, underlying)
+        expiries = sorted({i.expiry for i in universe if i.expiry and i.expiry >= today})
+        is_expiry_day = bool(expiries and expiries[0] == today)
         if is_expiry_day:
             logger.info("[%s] Expiry day — strategies with sl_pct < %.2f will be skipped",
                         underlying, EXPIRY_MIN_SL_PCT)
@@ -366,9 +399,8 @@ class StrategyRunner:
         gating to raw user flags. Never raises.
         """
         try:
-            from app.db.base import AsyncSessionLocal                    # file convention: function-local
             from app.services.trading.regime_persistence import regime_persistence
-            async with AsyncSessionLocal() as db:
+            async with sessions()() as db:
                 await regime_persistence.persist_to_db(regime_state, db)
                 await db.commit()
         except Exception as exc:
@@ -404,95 +436,83 @@ class StrategyRunner:
         }
         return final_flags, regime_state
 
+    def _warn_oi_iv(self, underlying: str, exc: Exception) -> None:
+        """OI/IV I/O failures are visible (R19.4), at most once per 10 min per underlying."""
+        now_m = _time.monotonic()
+        last = self._oi_iv_warned.get(underlying)
+        if last is None or now_m - last >= OI_IV_WARN_INTERVAL_SECS:
+            self._oi_iv_warned[underlying] = now_m
+            logger.warning("[%s] OI/IV context unavailable: %s", underlying, exc)
+
     async def _inject_oi_iv(self, underlying: str, indicators: dict, is_expiry_day: bool = False):
-        """Update OI/IV context in OISpikeStrategy and IVCrushStrategy."""
+        """Update OI/IV context in OISpikeStrategy and IVCrushStrategy.
+
+        The universe comes from ctx().instruments (design §14.2): the nearest
+        expiry on or after the ctx trading day, then a pure ATM CE/PE pick.
+        Only the Redis/DB I/O is guarded, and a failure logs at WARNING.
+        """
         try:
             spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
-            spot_ltp = await redis_cache.get_ltp(spot_token) or 0
+            spot_ltp = await market().get_ltp(spot_token) or 0
             if not spot_ltp:
                 return
 
             step = 50 if underlying == "NIFTY" else 100
             atm  = round(spot_ltp / step) * step
 
-            from app.db.base import AsyncSessionLocal
-            from app.db.models.instrument import Instrument, InstrumentType, OptionType
-            from sqlalchemy import select
-            from app.services.broker.instrument_sync import get_active_expiries
+            async with sessions()() as db:
+                universe = await ctx().instruments.instruments_for(db, underlying)
+            today = trading_day()
+            future = [i.expiry for i in universe if i.expiry and i.expiry >= today]
+            if not future:
+                return
+            expiry = min(future)
+            ce_inst, pe_inst = _atm_pair(universe, expiry, atm)
 
-            async with AsyncSessionLocal() as db:
-                expiries = await get_active_expiries(db, underlying)
-                if not expiries:
-                    return
-                expiry = expiries[0]
-
-                ce_r = await db.execute(
-                    select(Instrument).where(
-                        Instrument.name == underlying,
-                        Instrument.instrument_type == InstrumentType.OPTIDX,
-                        Instrument.option_type == OptionType.CE,
-                        Instrument.expiry == expiry,
-                        Instrument.strike == atm,
-                        Instrument.is_active == True,
-                    ).limit(1)
-                )
-                ce_inst = ce_r.scalar_one_or_none()
-                pe_r = await db.execute(
-                    select(Instrument).where(
-                        Instrument.name == underlying,
-                        Instrument.instrument_type == InstrumentType.OPTIDX,
-                        Instrument.option_type == OptionType.PE,
-                        Instrument.expiry == expiry,
-                        Instrument.strike == atm,
-                        Instrument.is_active == True,
-                    ).limit(1)
-                )
-                pe_inst = pe_r.scalar_one_or_none()
-
-            ce_tick = await redis_cache.get_tick(ce_inst.token) if ce_inst else {}
-            pe_tick = await redis_cache.get_tick(pe_inst.token) if pe_inst else {}
-            ce_oi   = int((ce_tick or {}).get("oi", 0))
-            pe_oi   = int((pe_tick or {}).get("oi", 0))
-
-            def _norm_iv(raw: float) -> float:
-                """Normalise IV to percentage form (e.g. 0.15 → 15.0, 15.0 → 15.0)."""
-                return raw * 100 if 0 < raw < 1.0 else raw
-
+            ce_tick = await market().get_tick(ce_inst.token) if ce_inst else {}
+            pe_tick = await market().get_tick(pe_inst.token) if pe_inst else {}
             # IV is NOT in the WebSocket binary feed — AngelOne only sends it via the
             # option chain REST snapshot.  Look it up from the option chain cache
             # (populated by study_collector).  Fall back to the tick "iv" field in
             # case a future feed version does carry it.
-            chain_iv: dict[str, float] = {}
-            chain = await redis_cache.get_option_chain(underlying, str(expiry))
-            if chain:
-                for s in chain.get("strikes", []):
-                    token_s = s.get("token")
-                    raw_iv  = float(s.get("iv") or 0)
-                    if token_s and raw_iv:
-                        chain_iv[token_s] = raw_iv * 100 if raw_iv < 1.0 else raw_iv
+            chain = await market().get_option_chain(underlying, str(expiry))
+        except Exception as e:      # Redis / DB I/O only
+            self._warn_oi_iv(underlying, e)
+            return
 
-            def _get_iv(inst, tick) -> float:
-                """Prefer option-chain IV; fall back to tick IV; normalise to %."""
-                if inst and inst.token in chain_iv:
-                    return chain_iv[inst.token]
-                raw = float((tick or {}).get("iv", 0))
-                return _norm_iv(raw)
+        ce_oi   = _as_int((ce_tick or {}).get("oi", 0))
+        pe_oi   = _as_int((pe_tick or {}).get("oi", 0))
 
-            atm_ce_iv = _get_iv(ce_inst, ce_tick)
-            atm_pe_iv = _get_iv(pe_inst, pe_tick)
-            atm_iv  = (atm_ce_iv + atm_pe_iv) / 2 if atm_ce_iv and atm_pe_iv else atm_ce_iv or atm_pe_iv
+        def _norm_iv(raw: float) -> float:
+            """Normalise IV to percentage form (e.g. 0.15 → 15.0, 15.0 → 15.0)."""
+            return raw * 100 if 0 < raw < 1.0 else raw
 
-            for strat in self._strategies.get(underlying, []):
-                if isinstance(strat, OISpikeStrategy):
-                    strat.update_oi(ce_oi, pe_oi)
-                    strat.is_expiry_day = is_expiry_day   # propagate expiry flag
-                if isinstance(strat, IVCrushStrategy) and atm_iv:
-                    strat.update_iv(atm_iv)
-                    logger.debug("[%s] IVCrush ATM IV=%.2f%% (ce=%.2f pe=%.2f)",
-                                 underlying, atm_iv, atm_ce_iv, atm_pe_iv)
+        chain_iv: dict[str, float] = {}
+        if isinstance(chain, dict):
+            for s in chain.get("strikes", []) or []:
+                token_s = s.get("token")
+                raw_iv  = _as_float(s.get("iv"))
+                if token_s and raw_iv:
+                    chain_iv[token_s] = raw_iv * 100 if raw_iv < 1.0 else raw_iv
 
-        except Exception as e:
-            logger.debug("OI/IV inject error: %s", e)
+        def _get_iv(inst, tick) -> float:
+            """Prefer option-chain IV; fall back to tick IV; normalise to %."""
+            if inst and inst.token in chain_iv:
+                return chain_iv[inst.token]
+            return _norm_iv(_as_float((tick or {}).get("iv", 0)))
+
+        atm_ce_iv = _get_iv(ce_inst, ce_tick)
+        atm_pe_iv = _get_iv(pe_inst, pe_tick)
+        atm_iv  = (atm_ce_iv + atm_pe_iv) / 2 if atm_ce_iv and atm_pe_iv else atm_ce_iv or atm_pe_iv
+
+        for strat in self._strategies.get(underlying, []):
+            if isinstance(strat, OISpikeStrategy):
+                strat.update_oi(ce_oi, pe_oi)
+                strat.is_expiry_day = is_expiry_day   # propagate expiry flag
+            if isinstance(strat, IVCrushStrategy) and atm_iv:
+                strat.update_iv(atm_iv)
+                logger.debug("[%s] IVCrush ATM IV=%.2f%% (ce=%.2f pe=%.2f)",
+                             underlying, atm_iv, atm_ce_iv, atm_pe_iv)
 
     # ── EOD monitor ───────────────────────────────────────────────────────────
 

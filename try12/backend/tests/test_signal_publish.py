@@ -49,8 +49,10 @@ def wired(monkeypatch):
 
     from app.services.trading import mode_manager as mm
     monkeypatch.setattr(mm.mode_manager, "get_config", _get_config)
-    monkeypatch.setattr(pe_mod, "AsyncSessionLocal", lambda: _Session())
-    monkeypatch.setattr(pe_mod.redis_cache, "publish_signal", _publish)
+    import app.db.base as db_base     # ctx().sessions resolves this at call time
+    from app.services.cache.redis_client import redis_cache
+    monkeypatch.setattr(db_base, "AsyncSessionLocal", lambda: _Session())
+    monkeypatch.setattr(redis_cache, "publish_signal", _publish)
     return calls, state
 
 

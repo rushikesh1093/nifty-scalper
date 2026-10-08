@@ -12,13 +12,12 @@ PostgreSQL:
 """
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional, TYPE_CHECKING
 
-from app.services.cache.redis_client import redis_cache
+from app.runtime.context import market, now_utc
 from app.services.trading.regime_indicators import RegimeIndicators
 
 logger = logging.getLogger(__name__)
@@ -98,6 +97,11 @@ class RegimePersistence:
     All public methods are async.  Redis errors are caught and logged at
     WARNING level — they never propagate to callers.  DB errors are also
     caught and logged at WARNING.
+
+    Cache contract (design §14.1): this class passes Python objects to
+    ``market().set(key, obj, ttl=...)`` and receives Python objects from
+    ``market().get(key)``. The port owns all (de)serialisation, so nothing
+    here calls json.dumps / json.loads on cache values.
     """
 
     # ── Redis: current state ──────────────────────────────────────────────────
@@ -111,8 +115,7 @@ class RegimePersistence:
         """
         key = f"regime:{state.underlying}:current"
         try:
-            payload = json.dumps(_state_to_dict(state))
-            await redis_cache._r().setex(key, TTL_CURRENT, payload)
+            await market().set(key, _state_to_dict(state), ttl=TTL_CURRENT)
             logger.debug(
                 "[RegimePersistence] Saved regime state for %s: %s",
                 state.underlying, state.regime,
@@ -137,15 +140,14 @@ class RegimePersistence:
         """
         key = f"regime:{underlying}:current"
         try:
-            raw_bytes = await redis_cache._r().get(key)
-            if raw_bytes is None:
+            raw = await market().get(key)
+            if raw is None:
                 return None
 
-            raw: dict = json.loads(raw_bytes)
             state = _dict_to_state(raw)
 
             # Discard stale entries (> 10 minutes old)
-            now = datetime.now(timezone.utc)
+            now = now_utc()
             ts = state.timestamp
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
@@ -183,8 +185,7 @@ class RegimePersistence:
         try:
             # Keep only the most recent MAX_HISTORY entries
             trimmed = history[-MAX_HISTORY:] if len(history) > MAX_HISTORY else history
-            payload = json.dumps([_state_to_dict(s) for s in trimmed])
-            await redis_cache._r().setex(key, TTL_HISTORY, payload)
+            await market().set(key, [_state_to_dict(s) for s in trimmed], ttl=TTL_HISTORY)
             logger.debug(
                 "[RegimePersistence] Saved %d history entries for %s",
                 len(trimmed), underlying,
@@ -205,11 +206,10 @@ class RegimePersistence:
         """
         key = f"regime:{underlying}:history"
         try:
-            raw_bytes = await redis_cache._r().get(key)
-            if raw_bytes is None:
+            raw_list = await market().get(key)
+            if raw_list is None:
                 return []
 
-            raw_list: list[dict] = json.loads(raw_bytes)
             return [_dict_to_state(item) for item in raw_list]
 
         except Exception as exc:

@@ -34,6 +34,7 @@ from app.services.trading.regime_persistence import (
 )
 from app.services.trading.regime_rules import classify_regime
 from app.services.trading.regime_config import RegimeConfig, reload_config_if_stale
+from app.runtime.context import ctx, now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -109,14 +110,9 @@ class RegimeDetector:
             RegimeState — never raises.
         """
         try:
-            # Step 1: Reload config (TTL cache, per-underlying override)
-            # regime_config.load_config uses the *sync* session API. Passing an
-            # AsyncSession would create an un-awaited coroutine, so only sync
-            # sessions are forwarded; async callers get the cached defaults.
-            config: RegimeConfig = reload_config_if_stale(
-                underlying,
-                db_session=None if isinstance(db_session, AsyncSession) else db_session,
-            )
+            # Step 1: Per-underlying config through the RegimeConfigPort
+            # (live: the TTL cache + loader; replay: the run's frozen config).
+            config: RegimeConfig = ctx().regime_config.for_underlying(underlying)
 
             # Step 2: Build regime-specific indicators
             regime_indicators: RegimeIndicators = build_regime_indicators(
@@ -182,7 +178,7 @@ class RegimeDetector:
                     transition_cooldown_remaining = 0
 
             # Step 5: Build RegimeState
-            now = datetime.now(timezone.utc)
+            now = now_utc()
             state = RegimeState(
                 regime=regime,
                 underlying=underlying,
@@ -324,7 +320,7 @@ class RegimeDetector:
         return RegimeState(
             regime="UNKNOWN",
             underlying=underlying,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=now_utc(),
             indicators=zeroed_indicators,
             previous_regime=None,
             transition_cooldown_remaining=0,

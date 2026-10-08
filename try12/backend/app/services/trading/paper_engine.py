@@ -30,12 +30,11 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func
 
-from app.db.base import AsyncSessionLocal
 from app.db.models.paper_trade import (
     PaperPosition, StrategySignal, DailyPnLSummary,
     TradingMode, SignalDirection, SignalStatus,
 )
-from app.services.cache.redis_client import redis_cache
+from app.runtime.context import market, now_ist, now_utc, sessions, trading_day
 from app.services.trading.option_selector import SelectedOption, option_selector
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from app.services.trading.session_times import (
@@ -133,8 +132,10 @@ def _statutory_charges(buy_value: float, sell_value: float, brokerage: float) ->
     return round(stt + exch + sebi + stamp + gst, 2)
 
 
-def _tick_age_seconds(tick: Optional[dict], now: Optional[datetime] = None) -> Optional[float]:
-    """Age of a Redis tick in seconds from its ``ts`` field (naive ISO = UTC). None if unknown."""
+def _tick_age_seconds(tick: Optional[dict]) -> Optional[float]:
+    """Age of a Redis tick from its ``ts`` field (naive ISO treated as UTC).
+    None when unknown. Reads the ctx clock; there is no `now` parameter, because
+    two sources of 'now' are how the replay clock gets bypassed (design §14.2)."""
     if not tick:
         return None
     ts = tick.get("ts")
@@ -146,8 +147,7 @@ def _tick_age_seconds(tick: Optional[dict], now: Optional[datetime] = None) -> O
         return None
     if t.tzinfo is None:
         t = t.replace(tzinfo=timezone.utc)
-    now = now or datetime.now(timezone.utc)
-    return max(0.0, (now - t).total_seconds())
+    return max(0.0, (now_utc() - t).total_seconds())
 
 
 def _quote_valid(bid, ask, age_s: Optional[float]) -> bool:
@@ -266,7 +266,7 @@ class PaperEngine:
         # ── Select best option first (before touching capital) ────────────────
         # Option selector runs DB + Redis queries — do this BEFORE reserving
         # capital so a "no option available" result never leaks capital.
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             selected = await option_selector.select(
                 db=db,
                 direction=signal.direction,
@@ -290,7 +290,7 @@ class PaperEngine:
         # Skip this check if tick history is unavailable (don't block the trade).
         tick_now = None
         try:
-            tick_now = await redis_cache.get_tick(selected.token)
+            tick_now = await market().get_tick(selected.token)
             if tick_now:
                 opt_open  = float(tick_now.get("open", 0) or 0)
                 opt_close = float(tick_now.get("ltp",  0) or 0)
@@ -449,7 +449,7 @@ class PaperEngine:
                 await mode_manager.release_reserved_capital(capital_used)
                 return False
 
-            async with AsyncSessionLocal() as db:
+            async with sessions()() as db:
                 sig_id = await self._save_signal(
                     signal, SignalStatus.SELECTED,
                     selected=selected, sl=sl, tgt=tgt, rr=rr, db=db
@@ -480,7 +480,7 @@ class PaperEngine:
                     trade_amount_used = capital_used,
                     is_open         = True,
                     mode            = TradingMode(cfg.mode),
-                    entry_time      = datetime.now(timezone.utc),
+                    entry_time      = now_utc(),
                 )
                 db.add(pos)
                 await db.commit()
@@ -497,7 +497,7 @@ class PaperEngine:
             )
 
             # Cache for fast monitoring
-            await redis_cache.set(
+            await market().set(
                 f"pos:{pos.id}",
                 {
                     "id":       pos.id,
@@ -514,7 +514,7 @@ class PaperEngine:
 
             available = cfg.capital - (cfg.used_capital or 0.0)
             # Notify frontend
-            await redis_cache.publish_signal("paper_trade", {
+            await market().publish_signal("paper_trade", {
                 "event":         "POSITION_OPENED",
                 "pos_id":        pos.id,
                 "symbol":        selected.symbol,
@@ -556,21 +556,27 @@ class PaperEngine:
         while self._running:
             try:
                 await asyncio.sleep(1)
-                now_ist = _ist_time()
-                async with AsyncSessionLocal() as db:
-                    result = await db.execute(
-                        select(PaperPosition).where(PaperPosition.is_open == True)
-                    )
-                    open_positions = result.scalars().all()
-                if not open_positions:
-                    continue
-                square_off = await self._get_square_off()
-                for pos in open_positions:
-                    await self._check_position(pos, now_ist, square_off)
+                await self.monitor_once()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Monitor loop error: %s", e, exc_info=True)
+
+    async def monitor_once(self) -> None:
+        """One monitor pass over every open position (design §14.2). Shared by
+        the live loop and replay. No time parameter: it reads the ctx clock,
+        since two sources of "now" invite divergence."""
+        now_ist = _ist_time()
+        async with sessions()() as db:
+            result = await db.execute(
+                select(PaperPosition).where(PaperPosition.is_open == True)
+            )
+            open_positions = result.scalars().all()
+        if not open_positions:
+            return
+        square_off = await self._get_square_off()
+        for pos in open_positions:
+            await self._check_position(pos, now_ist, square_off)
 
     async def _get_square_off(self) -> dtime:
         """Configured square-off time, cached for 30 s (fallback 15:15)."""
@@ -602,8 +608,8 @@ class PaperEngine:
 
     async def _remember_price(self, pos_id: int, ltp: float) -> None:
         """Track the last fresh LTP in memory and (throttled) in Redis pos:{id}."""
-        now_utc = datetime.now(timezone.utc)
-        self._last_known[pos_id] = (float(ltp), now_utc)
+        seen_at = now_utc()
+        self._last_known[pos_id] = (float(ltp), seen_at)
         now_m = _time.monotonic()
         last = self._last_persist.get(pos_id)
         if last is not None and now_m - last < LAST_PRICE_PERSIST_SECS:
@@ -611,11 +617,11 @@ class PaperEngine:
         self._last_persist[pos_id] = now_m
         try:
             key = f"pos:{pos_id}"
-            cached = await redis_cache.get(key)
+            cached = await market().get(key)
             cached = cached if isinstance(cached, dict) else {"id": pos_id}
             cached["last_ltp"] = float(ltp)
-            cached["last_ltp_ts"] = now_utc.isoformat()
-            await redis_cache.set(key, cached, ttl=86400)
+            cached["last_ltp_ts"] = seen_at.isoformat()
+            await market().set(key, cached, ttl=86400)
         except Exception as exc:
             logger.debug("last_ltp persist failed for pos %d: %s", pos_id, exc)
 
@@ -627,13 +633,13 @@ class PaperEngine:
         """
         ltp = None
         try:
-            ltp = await redis_cache.get_ltp(pos.token)
+            ltp = await market().get_ltp(pos.token)
         except Exception as exc:
             logger.debug("get_ltp failed for pos %d: %s", pos.id, exc)
         if ltp:
             tick = None
             try:
-                tick = await redis_cache.get_tick(pos.token)
+                tick = await market().get_tick(pos.token)
             except Exception:
                 tick = None
             age = _tick_age_seconds(tick)
@@ -644,7 +650,7 @@ class PaperEngine:
             return known[0], True
 
         try:
-            cached = await redis_cache.get(f"pos:{pos.id}")
+            cached = await market().get(f"pos:{pos.id}")
             if isinstance(cached, dict) and cached.get("last_ltp"):
                 return float(cached["last_ltp"]), True
         except Exception as exc:
@@ -665,7 +671,7 @@ class PaperEngine:
         Close every open position at the best available price (EOD and kill switch).
         Positions closed on a stale/fallback price get reason "<reason>_STALE".
         """
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(PaperPosition).where(PaperPosition.is_open == True)
             )
@@ -698,10 +704,10 @@ class PaperEngine:
     async def _check_position(
         self, pos: PaperPosition, now_ist: dtime, square_off: dtime = DEFAULT_SQUARE_OFF,
     ):
-        ltp = await redis_cache.get_ltp(pos.token)
+        ltp = await market().get_ltp(pos.token)
         tick = None
         try:
-            tick = await redis_cache.get_tick(pos.token)
+            tick = await market().get_tick(pos.token)
         except Exception:
             tick = None
         age = _tick_age_seconds(tick)
@@ -740,7 +746,7 @@ class PaperEngine:
         # _monitor_loop and may be stale).
         live_sl: Optional[float] = pos.stop_loss
         live_entry: float = pos.actual_entry or 0.0
-        async with AsyncSessionLocal() as _db:
+        async with sessions()() as _db:
             _r = await _db.execute(
                 select(
                     PaperPosition.stop_loss,
@@ -802,7 +808,7 @@ class PaperEngine:
 
                 new_sl = _trailing_stop(live_entry, pos.target, ltp, live_sl)
                 if new_sl:
-                    async with AsyncSessionLocal() as db:
+                    async with sessions()() as db:
                         await db.execute(
                             update(PaperPosition)
                             .where(PaperPosition.id == pos.id)
@@ -827,7 +833,7 @@ class PaperEngine:
                 if entry_utc.tzinfo is None:
                     from datetime import timezone as _tz
                     entry_utc = entry_utc.replace(tzinfo=_tz.utc)
-                hold_mins = (datetime.now(timezone.utc) - entry_utc).total_seconds() / 60
+                hold_mins = (now_utc() - entry_utc).total_seconds() / 60
                 if hold_mins > _hold_limit and ltp < (live_entry or 0) * 1.05:
                     logger.info(
                         "[PaperEngine] MAX-HOLD-TIME exit pos %d (%s) — "
@@ -877,7 +883,7 @@ class PaperEngine:
 
         tick = None
         try:
-            tick = await redis_cache.get_tick(pos.token)
+            tick = await market().get_tick(pos.token)
         except Exception:
             tick = None
         fill = _exit_fill(
@@ -898,7 +904,7 @@ class PaperEngine:
         capital_fraction = (partial_qty / pos.quantity) if pos.quantity else 0.5
         capital_released = round((pos.trade_amount_used or 0) * capital_fraction, 2)
 
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             await db.execute(
                 update(PaperPosition)
                 .where(PaperPosition.id == pos.id)
@@ -938,7 +944,7 @@ class PaperEngine:
         )
 
         # Notify frontend
-        await redis_cache.publish_signal("paper_trade", {
+        await market().publish_signal("paper_trade", {
             "event":        "PARTIAL_CLOSE",
             "pos_id":       pos.id,
             "partial_qty":  partial_qty,
@@ -953,7 +959,7 @@ class PaperEngine:
     async def _close_position(self, pos_id: int, exit_price: float, reason: str):
         from app.services.trading.mode_manager import mode_manager
 
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(PaperPosition).where(PaperPosition.id == pos_id)
             )
@@ -965,7 +971,7 @@ class PaperEngine:
             # sell at best bid when the quote is valid, else price − 0.1%.
             tick = None
             try:
-                tick = await redis_cache.get_tick(pos.token)
+                tick = await market().get_tick(pos.token)
             except Exception:
                 tick = None
             actual_exit = _exit_fill(
@@ -1009,7 +1015,7 @@ class PaperEngine:
                     exit_slippage= exit_slip,
                     actual_exit  = actual_exit,
                     exit_reason  = reason,
-                    exit_time    = datetime.now(timezone.utc),
+                    exit_time    = now_utc(),
                     gross_pnl    = total_gross,
                     brokerage    = total_brok,
                     statutory_charges = total_charges,
@@ -1061,7 +1067,7 @@ class PaperEngine:
                     reward = actual_exit - pos.actual_entry
                     if risk > 0:
                         trade_rr_for_regime = round(reward / risk, 3)
-                async with AsyncSessionLocal() as rdb:
+                async with sessions()() as rdb:
                     await strategy_orchestrator.record_trade_result(
                         regime=pos.entry_regime,
                         underlying=pos.underlying,
@@ -1075,10 +1081,10 @@ class PaperEngine:
                 logger.warning("[PaperEngine] Regime performance record failed (non-fatal): %s", _rpe)
 
         # Cleanup Redis
-        await redis_cache.delete(f"pos:{pos_id}")
+        await market().delete(f"pos:{pos_id}")
 
         # Notify frontend
-        await redis_cache.publish_signal("paper_trade", {
+        await market().publish_signal("paper_trade", {
             "event":   "POSITION_CLOSED",
             "pos_id":  pos_id,
             "reason":  reason,
@@ -1089,7 +1095,7 @@ class PaperEngine:
     # ── Daily P&L aggregation ─────────────────────────────────────────────────
 
     async def _update_daily_pnl(self, pos: PaperPosition, net_pnl: float):
-        today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+        today = trading_day()
 
         # ── Compute avg_rr for this trade ──────────────────────────────────────
         # Achieved R:R = (actual_exit - actual_entry) / (actual_entry - initial SL)
@@ -1105,7 +1111,7 @@ class PaperEngine:
             if risk > 0:
                 trade_rr = round(reward / risk, 3)
 
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(DailyPnLSummary).where(
                     DailyPnLSummary.date          == today,
@@ -1216,7 +1222,7 @@ class PaperEngine:
 
         async def _publish_recorded(channel: str, payload: dict) -> None:
             try:
-                await redis_cache.publish_signal(channel, payload)
+                await market().publish_signal(channel, payload)
             except Exception as exc:        # observability must never break persistence
                 logger.debug("Signal publish failed (non-fatal): %s", exc)
 
@@ -1242,20 +1248,20 @@ class PaperEngine:
 
         if db:
             return await _persist(db)
-        async with AsyncSessionLocal() as session:
+        async with sessions()() as session:
             return await _persist(session)
 
     # ── Manual close ──────────────────────────────────────────────────────────
 
     async def manual_close(self, pos_id: int) -> bool:
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(PaperPosition).where(PaperPosition.id == pos_id)
             )
             pos = result.scalar_one_or_none()
             if not pos or not pos.is_open:
                 return False
-        ltp = await redis_cache.get_ltp(pos.token) or pos.entry_price
+        ltp = await market().get_ltp(pos.token) or pos.entry_price
         await self._close_position(pos_id, ltp, "MANUAL")
         return True
 
@@ -1263,10 +1269,8 @@ class PaperEngine:
 # ── IST time helper ───────────────────────────────────────────────────────────
 
 def _ist_time() -> dtime:
-    """Return current IST time (UTC+5:30)."""
-    from datetime import timezone, timedelta
-    ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-    return ist.time().replace(tzinfo=None)
+    """Current IST wall time from the ctx clock (naive)."""
+    return now_ist().time().replace(tzinfo=None)
 
 
 # Singleton

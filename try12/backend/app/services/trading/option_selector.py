@@ -48,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.db.models.instrument import Instrument, InstrumentType, OptionType
-from app.services.cache.redis_client import redis_cache
+from app.runtime.context import ctx, market, trading_day
 from app.strategies.base import Direction
 
 logger = logging.getLogger(__name__)
@@ -430,7 +430,7 @@ def _score_expiry(expiry: date) -> float:
     DTE 15-30: 55
     DTE >30:   30  (monthly expiry — slow theta)
     """
-    dte = max((expiry - datetime.now(timezone(timedelta(hours=5, minutes=30))).date()).days, 0)
+    dte = max((expiry - trading_day()).days, 0)
     if dte == 0:
         return 10.0   # expiry day — avoid unless before noon
     elif dte == 1:
@@ -527,7 +527,7 @@ def score_candidate(
 
     # ── STEP 2: Soft scoring ──────────────────────────────────────────────────
     iv_decimal = (iv or 20.0) / 100.0
-    dte        = max((expiry - datetime.now(timezone(timedelta(hours=5, minutes=30))).date()).days, 0)
+    dte        = max((expiry - trading_day()).days, 0)
     # Normalise sentinel -1 → 0 for scoring (gives low but valid score)
     oi_score   = max(oi, 0)
     vol_score  = max(volume, 0)
@@ -683,48 +683,38 @@ class OptionSelector:
         )
         step = NIFTY_STEP if underlying.upper() == "NIFTY" else BANKNIFTY_STEP
 
-        # Resolve expiry
+        # Universe through the InstrumentPort (design §10.4, §14.2): live =
+        # active rows with expiry >= the ctx trading day; replay = the day's
+        # traded tokens. No inline is_active / wall-clock filter here.
+        universe = [
+            i for i in await ctx().instruments.instruments_for(db, underlying.upper())
+            if i.instrument_type == InstrumentType.OPTIDX and i.option_type == option_type_enum
+        ]
+
+        # Resolve expiry: nearest expiry on or after the trading day (unchanged semantics)
         if not expiry:
-            exp_result = await db.execute(
-                select(Instrument.expiry)
-                .where(
-                    Instrument.name             == underlying.upper(),
-                    Instrument.instrument_type  == InstrumentType.OPTIDX,
-                    Instrument.option_type      == option_type_enum,
-                    Instrument.is_active        == True,
-                    Instrument.expiry           >= datetime.now(timezone(timedelta(hours=5, minutes=30))).date(),
-                )
-                .distinct()
-                .order_by(Instrument.expiry)
-                .limit(1)
-            )
-            expiry = exp_result.scalar()
-            if not expiry:
+            today = trading_day()
+            future = sorted({i.expiry for i in universe if i.expiry and i.expiry >= today})
+            if not future:
                 return [], 0, 0
+            expiry = future[0]
 
         # Fetch strikes: ATM ± 5 strikes
         atm  = round(spot_price / step) * step
         low  = atm - 5 * step
         high = atm + 5 * step
 
-        inst_result = await db.execute(
-            select(Instrument).where(
-                Instrument.name             == underlying.upper(),
-                Instrument.instrument_type  == InstrumentType.OPTIDX,
-                Instrument.option_type      == option_type_enum,
-                Instrument.expiry           == expiry,
-                Instrument.is_active        == True,
-                Instrument.strike           >= low,
-                Instrument.strike           <= high,
-            ).order_by(Instrument.strike)
+        instruments = sorted(
+            (i for i in universe
+             if i.expiry == expiry and i.strike is not None and low <= i.strike <= high),
+            key=lambda i: i.strike,
         )
-        instruments = inst_result.scalars().all()
         if not instruments:
             return [], 0, 0
 
         # Fetch IV from option chain cache (best-effort)
         chain_iv: dict[str, float] = {}
-        chain = await redis_cache.get_option_chain(underlying, str(expiry))
+        chain = await market().get_option_chain(underlying, str(expiry))
         if chain:
             for s in chain.get("strikes", []):
                 if s.get("token") and s.get("iv"):
@@ -737,13 +727,13 @@ class OptionSelector:
         # Fetch previous OI snapshot from Redis for OI-change scoring
         prev_oi_map: dict[str, int] = {}
         prev_snap_key = f"prev_oi:{underlying}:{expiry}"
-        prev_snap = await redis_cache.get(prev_snap_key)
+        prev_snap = await market().get(prev_snap_key)
         if prev_snap and isinstance(prev_snap, dict):
             prev_oi_map = {k: int(v) for k, v in prev_snap.items()}
 
         # Fetch rolling average volume from Redis for volume-trend scoring
         avg_vol_key = f"avg_vol:{underlying}:{expiry}"
-        avg_vol_snap = await redis_cache.get(avg_vol_key)
+        avg_vol_snap = await market().get(avg_vol_key)
         avg_vol_map: dict[str, float] = {}
         if avg_vol_snap and isinstance(avg_vol_snap, dict):
             avg_vol_map = {k: float(v) for k, v in avg_vol_snap.items()}
@@ -753,9 +743,9 @@ class OptionSelector:
         no_tick_count = 0
 
         for inst in instruments:
-            tick = await redis_cache.get_tick(inst.token)
+            tick = await market().get_tick(inst.token)
             if not tick:
-                ltp_val = await redis_cache.get_ltp(inst.token)
+                ltp_val = await market().get_ltp(inst.token)
                 if not ltp_val:
                     rejected += 1
                     continue
@@ -807,7 +797,7 @@ class OptionSelector:
             new_snap: dict[str, int] = {}
             new_avg_vol: dict[str, float] = {}
             for inst in instruments:
-                tick = await redis_cache.get_tick(inst.token)
+                tick = await market().get_tick(inst.token)
                 if tick:
                     # OI snapshot — used for OI-change scoring next cycle
                     cur_oi = int(tick.get("oi") or 0)
@@ -820,9 +810,9 @@ class OptionSelector:
                     else:
                         new_avg_vol[inst.token] = round(0.3 * cur_volume + 0.7 * prev_avg, 1)
             if new_snap:
-                await redis_cache.set(prev_snap_key, new_snap, ttl=3600)
+                await market().set(prev_snap_key, new_snap, ttl=3600)
             if new_avg_vol:
-                await redis_cache.set(avg_vol_key, new_avg_vol, ttl=28800)
+                await market().set(avg_vol_key, new_avg_vol, ttl=28800)
 
         if no_tick_count > 0:
             logger.warning(

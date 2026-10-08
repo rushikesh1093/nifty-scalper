@@ -514,7 +514,7 @@ async def get_signal_diagnostics():
                     if info["spot"]:
                         step = 50 if u == "NIFTY" else 100
                         atm = round(info["spot"] / step) * step
-                        expiries = await get_active_expiries(db, u)
+                        expiries = await get_active_expiries(db, u, as_of=now_ist.date())
                         insts = []
                         if expiries:
                             insts = (await db.execute(

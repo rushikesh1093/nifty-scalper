@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from app.services.trading.regime_persistence import RegimeState, regime_persistence
 from app.services.trading.regime_rules import get_regime_rule
 from app.strategies.names import ALL_STRATEGY_NAMES
+from app.runtime.context import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +196,7 @@ class StrategyOrchestrator:
                 "direction=%s underlying=%s regime=%s reason='%s' ts=%s",
                 signal.strategy_name, signal.direction.value, underlying,
                 regime, reason,
-                datetime.now(timezone.utc).isoformat(),
+                now_utc().isoformat(),
             )
             return False, reason
 
@@ -211,7 +212,7 @@ class StrategyOrchestrator:
                 "direction=%s underlying=%s regime=%s reason='%s' ts=%s",
                 signal.strategy_name, signal.direction.value, underlying,
                 regime, reason,
-                datetime.now(timezone.utc).isoformat(),
+                now_utc().isoformat(),
             )
             return False, reason
 
@@ -281,7 +282,7 @@ class StrategyOrchestrator:
                     winning_trades=0,
                     losing_trades=0,
                     total_pnl=0.0,
-                    first_trade_at=datetime.now(timezone.utc),
+                    first_trade_at=now_utc(),
                 )
                 db_session.add(row)
 
@@ -304,7 +305,7 @@ class StrategyOrchestrator:
                 n = row.total_trades
                 row.avg_rr = float(row.avg_rr) + (rr - float(row.avg_rr)) / n
 
-            row.last_trade_at = datetime.now(timezone.utc)
+            row.last_trade_at = now_utc()
 
             await db_session.flush()
 

@@ -15,6 +15,11 @@ from app.services.trading.option_selector import (
 )
 from datetime import date, timedelta
 
+from app.runtime.context import bind
+from app.runtime.live import script_context
+
+bind(script_context())     # the scorer reads the ctx trading day (design §14.2)
+
 SL_PCT     = 0.35   # ORB_VWAP strategy defaults
 TARGET_PCT = 0.60
 
