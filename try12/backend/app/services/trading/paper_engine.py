@@ -34,7 +34,9 @@ from app.db.models.paper_trade import (
     PaperPosition, StrategySignal, DailyPnLSummary,
     TradingMode, SignalDirection, SignalStatus,
 )
-from app.runtime.context import market, now_ist, now_utc, sessions, trading_day
+from app.runtime.context import ctx, market, now_ist, now_utc, sessions, trading_day
+from app.services.trading import no_trade
+from app.services.trading.no_trade import Stage
 from app.services.trading.option_selector import SelectedOption, option_selector
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from app.services.trading.session_times import (
@@ -247,9 +249,19 @@ class PaperEngine:
         # ── Regime signal filter ──────────────────────────────────────────────────
         try:
             regime_state = await strategy_orchestrator.get_current_regime(signal.underlying)
-            allowed, regime_reason = strategy_orchestrator.should_allow_signal(signal, regime_state)
+            allowed, regime_code, regime_reason = strategy_orchestrator.should_allow_signal(
+                signal, regime_state)
             if not allowed:
-                await self._save_signal(signal, SignalStatus.SKIPPED, reason=f"[Regime] {regime_reason}")
+                ntd_id = await no_trade.record_isolated(
+                    stage=Stage.SIGNAL_GATE, code=regime_code, reason=regime_reason,
+                    context=no_trade.as_context(
+                        regime=getattr(regime_state, "regime", None),
+                        direction=signal.direction.value),
+                    underlying=signal.underlying, strategy_name=signal.strategy_name,
+                )
+                await self._save_signal(signal, SignalStatus.SKIPPED,
+                                        reason=f"[Regime] {regime_reason}",
+                                        no_trade_decision_id=ntd_id)
                 logger.info("[PaperEngine] REGIME BLOCKED %s: %s", signal.strategy_name, regime_reason)
                 return False
         except Exception as _re:
@@ -481,6 +493,7 @@ class PaperEngine:
                     is_open         = True,
                     mode            = TradingMode(cfg.mode),
                     entry_time      = now_utc(),
+                    run_id          = ctx().run_id,
                 )
                 db.add(pos)
                 await db.commit()
@@ -1111,26 +1124,29 @@ class PaperEngine:
             if risk > 0:
                 trade_rr = round(reward / risk, 3)
 
+        run_id = ctx().run_id
         async with sessions()() as db:
             result = await db.execute(
                 select(DailyPnLSummary).where(
                     DailyPnLSummary.date          == today,
                     DailyPnLSummary.strategy_name == pos.strategy_name,
                     DailyPnLSummary.mode          == pos.mode,
+                    DailyPnLSummary.run_id        == run_id,
                 )
             )
             summary = result.scalar_one_or_none()
             won = net_pnl > 0
 
-            # ── max_drawdown: largest single-trade loss for this strategy today ──
+            # ── worst_trade_loss: largest single-trade loss for this strategy today ──
             # Defined as the most negative net_pnl among all closed trades today.
             # A positive number means "₹X was the worst loss" (stored as positive).
-            new_max_drawdown: float | None = None
+            # (Column renamed from max_drawdown in migration 0013, R15.4.)
+            new_worst_loss: float | None = None
             if net_pnl < 0:
-                prev_dd = summary.max_drawdown if summary and summary.max_drawdown else 0.0
-                new_max_drawdown = round(max(prev_dd, abs(net_pnl)), 2)
+                prev_dd = summary.worst_trade_loss if summary and summary.worst_trade_loss else 0.0
+                new_worst_loss = round(max(prev_dd, abs(net_pnl)), 2)
             elif summary:
-                new_max_drawdown = summary.max_drawdown  # keep existing
+                new_worst_loss = summary.worst_trade_loss  # keep existing
 
             # ── avg_rr: running mean of achieved R:R across all trades today ─────
             new_avg_rr: float | None = None
@@ -1153,10 +1169,11 @@ class PaperEngine:
                     summary.winning_trades / summary.total_trades * 100, 1
                 )
                 summary.total_lots    = (summary.total_lots or 0) + pos.lots
-                summary.max_drawdown  = new_max_drawdown
+                summary.worst_trade_loss = new_worst_loss
                 summary.avg_rr        = new_avg_rr
             else:
                 summary = DailyPnLSummary(
+                    run_id         = run_id,
                     date           = today,
                     strategy_name  = pos.strategy_name or "UNKNOWN",
                     mode           = pos.mode,
@@ -1168,7 +1185,7 @@ class PaperEngine:
                     brokerage      = round(pos.brokerage or 0, 2),
                     net_pnl        = round(net_pnl, 2),
                     total_lots     = pos.lots,
-                    max_drawdown   = new_max_drawdown,
+                    worst_trade_loss = new_worst_loss,
                     avg_rr         = new_avg_rr,
                 )
                 db.add(summary)
@@ -1195,6 +1212,7 @@ class PaperEngine:
         rr:       Optional[float] = None,
         reason:   str = "",
         db:       Optional[AsyncSession] = None,
+        no_trade_decision_id: Optional[int] = None,
     ) -> Optional[int]:
         from app.services.trading.mode_manager import mode_manager
         cfg  = await mode_manager.get_config()
@@ -1217,7 +1235,9 @@ class PaperEngine:
             risk_reward      = rr,
             indicators       = signal.indicators,
             mode             = mode,
-            skip_reason      = reason[:300] if reason else None,
+            skip_reason      = reason[:300] if reason else None,   # untruncated copy: no_trade_decisions
+            no_trade_decision_id = no_trade_decision_id,
+            run_id           = ctx().run_id,
         )
 
         async def _publish_recorded(channel: str, payload: dict) -> None:

@@ -25,7 +25,8 @@ if TYPE_CHECKING:
 from app.services.trading.regime_persistence import RegimeState, regime_persistence
 from app.services.trading.regime_rules import get_regime_rule
 from app.strategies.names import ALL_STRATEGY_NAMES
-from app.runtime.context import now_utc
+from app.runtime.context import ctx, now_utc
+from app.services.trading.no_trade import ReasonCode
 
 logger = logging.getLogger(__name__)
 
@@ -171,9 +172,11 @@ class StrategyOrchestrator:
         self,
         signal: "SignalEvent",
         regime_state: Optional[RegimeState],
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, Optional[ReasonCode], str]:
         """
         Check whether *signal* is permitted by the current regime rules.
+        Returns (ok, code, reason); the caller records the code (design §12),
+        which keeps the orchestrator I/O-free.
 
         If *regime_state* is None the signal passes through (no regime data →
         don't block).
@@ -181,7 +184,7 @@ class StrategyOrchestrator:
         Requirements: 16.1–16.7
         """
         if regime_state is None:
-            return True, ""
+            return True, None, ""
 
         underlying = signal.underlying
         regime = regime_state.regime
@@ -198,7 +201,7 @@ class StrategyOrchestrator:
                 regime, reason,
                 now_utc().isoformat(),
             )
-            return False, reason
+            return False, ReasonCode.REGIME_DIRECTION_MISMATCH, reason
 
         # Direction not permitted
         if signal.direction.value not in rule.allowed_directions:
@@ -214,14 +217,14 @@ class StrategyOrchestrator:
                 regime, reason,
                 now_utc().isoformat(),
             )
-            return False, reason
+            return False, ReasonCode.REGIME_DIRECTION_MISMATCH, reason
 
         # Transition cooldown blocks everything
         if self.is_in_cooldown(underlying):
             reason = f"Transition cooldown active for {underlying}"
-            return False, reason
+            return False, ReasonCode.TRANSITION_COOLDOWN, reason
 
-        return True, ""
+        return True, None, ""
 
     # ── is_in_cooldown ────────────────────────────────────────────────────────
 
@@ -269,12 +272,14 @@ class StrategyOrchestrator:
                         RegimePerformanceModel.regime == regime,
                         RegimePerformanceModel.underlying == underlying,
                         RegimePerformanceModel.strategy_name == strategy_name,
+                        RegimePerformanceModel.run_id == ctx().run_id,
                     )
                 )
             ).scalars().first()
 
             if row is None:
                 row = RegimePerformanceModel(
+                    run_id=ctx().run_id,
                     regime=regime,
                     underlying=underlying,
                     strategy_name=strategy_name,

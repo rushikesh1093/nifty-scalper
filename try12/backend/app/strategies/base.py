@@ -11,6 +11,8 @@ from typing import Optional, Callable, Awaitable
 from enum import Enum
 
 from app.runtime.context import now_utc
+from app.services.trading import no_trade
+from app.services.trading.no_trade import ReasonCode
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +71,9 @@ class SignalAggregator:
         # key: (underlying, direction) → last acted timestamp
         self._last_acted: dict[tuple, datetime] = {}
 
-    def should_act(self, signal: SignalEvent) -> tuple[bool, str]:
+    def should_act(self, signal: SignalEvent) -> tuple[bool, Optional[ReasonCode], str]:
+        """(ok, code, reason). The aggregator is the one component that knows
+        which rule fired, so it returns the code; callers never parse reason."""
         now = now_utc()
         key_same = (signal.underlying, signal.direction)
         key_opp  = (
@@ -84,7 +88,7 @@ class SignalAggregator:
                 last_t = last_t.replace(tzinfo=timezone.utc)
             elapsed = (now - last_t).total_seconds()
             if elapsed < self.SAME_DIR_COOLDOWN_SECS:
-                return False, (
+                return False, ReasonCode.AGGREGATOR_SAME_DIRECTION, (
                     f"Same direction ({signal.direction}) already acted on "
                     f"{signal.underlying} {elapsed:.0f}s ago. "
                     f"Cooldown: {self.SAME_DIR_COOLDOWN_SECS}s"
@@ -97,12 +101,12 @@ class SignalAggregator:
                 last_opp = last_opp.replace(tzinfo=timezone.utc)
             elapsed = (now - last_opp).total_seconds()
             if elapsed < self.CONFLICT_COOLDOWN_SECS:
-                return False, (
+                return False, ReasonCode.AGGREGATOR_CONFLICT, (
                     f"Opposite direction signal on {signal.underlying} "
                     f"fired {elapsed:.0f}s ago — conflicting signals."
                 )
 
-        return True, ""
+        return True, None, ""
 
     def record_acted(self, signal: SignalEvent):
         key = (signal.underlying, signal.direction)
@@ -146,12 +150,19 @@ class SignalBus:
         signal (no option, capital exhausted, etc.) does not waste the 90s
         same-direction cooldown for subsequent valid signals.
         """
-        # ── Signal aggregator gate ────────────────────────────────────────────
-        ok, reason = signal_aggregator.should_act(signal)
+        no_trade.note_signal_emitted()      # cycle_stats.signals_emitted
+
+        # ── Signal aggregator gate (a recorded decision, design §12) ──────────
+        ok, code, reason = signal_aggregator.should_act(signal)
         if not ok:
             logger.debug(
                 "[SignalBus] AGGREGATOR blocked %s %s %s: %s",
                 signal.strategy_name, signal.underlying, signal.direction, reason
+            )
+            # own short-lived session, commits, never raises
+            await no_trade.record_signal_gate(
+                code=code, reason=reason,
+                underlying=signal.underlying, strategy_name=signal.strategy_name,
             )
             return False
 

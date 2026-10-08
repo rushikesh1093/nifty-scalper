@@ -22,6 +22,8 @@ from app.services.trading.regime_detector import regime_detector
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from app.services.trading.session_times import entry_cutoff, parse_square_off
 from app.services.trading.wiring import wire_signal_handlers
+from app.services.trading import no_trade
+from app.services.trading.no_trade import ReasonCode, Stage
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,11 @@ class StrategyRunner:
         self._strategies:  dict[str, list] = {}   # underlying → [strategy list]
         self._eod_done_date: Optional[date] = None   # IST date EOD square-off last ran
         self._oi_iv_warned: dict[str, float] = {}     # underlying -> monotonic ts of last WARNING
+        # no-trade dedupe (design §12): keys seen today, and the last
+        # STRATEGY_GATE code per (run_id, underlying, strategy); both reset daily
+        self._seen: set[tuple] = set()
+        self._seen_day: Optional[date] = None
+        self._strategy_gate_last: dict[tuple, Optional[str]] = {}
 
     async def start(self):
         self._running = True
@@ -159,6 +166,13 @@ class StrategyRunner:
                     )
                     prev = result.scalar_one_or_none()
 
+                if prev is None:
+                    await self._record_day_gate(
+                        underlying, ReasonCode.NO_PREV_DAY_SNAPSHOT,
+                        f"No previous-day snapshot for {underlying}: PDH_PDL, CPR_VWAP and "
+                        f"GAP_VWAP_FILL cannot fire today",
+                    )
+
                 for strat in self._strategies.get(underlying, []):
                     if isinstance(strat, PDHPDLStrategy):
                         if prev:
@@ -213,7 +227,11 @@ class StrategyRunner:
     async def run_cycle(self, underlying: str) -> None:
         """One candle step for one underlying (design §14.2). The live loop and
         the replay engine both call this; there is no time or flags parameter —
-        time comes from the ctx clock and user flags from ctx().user_flags."""
+        time comes from the ctx clock and user flags from ctx().user_flags.
+
+        Every gate that stops the cycle writes one no_trade_decisions row
+        (deduped per underlying/candle/code), and every in-window cycle adds
+        to the cycle_stats row — the positive evidence of evaluation (§12)."""
         ist_t = self._ist_now().time().replace(tzinfo=None)
 
         cfg = await mode_manager.get_config()
@@ -224,24 +242,121 @@ class StrategyRunner:
         # authoritative gate.
         start_t, end_t = settings.SESSION_START_IST, settings.SESSION_END_IST
         cutoff = entry_cutoff(cfg.square_off_time if cfg else None)
-        if ist_t < start_t or ist_t > end_t or ist_t >= cutoff:
+        if ist_t < start_t or ist_t > end_t:
+            await self._record_day_gate(
+                underlying, ReasonCode.OUTSIDE_SESSION_WINDOW,
+                f"{ist_t:%H:%M} IST is outside the signal window "
+                f"{start_t:%H:%M}-{end_t:%H:%M}",
+            )
+            return
+        if ist_t >= cutoff:
+            await self._record_day_gate(
+                underlying, ReasonCode.AFTER_ENTRY_CUTOFF,
+                f"{ist_t:%H:%M} IST is at/after the entry cutoff {cutoff:%H:%M}",
+            )
             return
 
-        await self._run_underlying(underlying, ctx().user_flags.current())
+        with no_trade.cycle_tally() as tally:
+            evaluated = False
+            try:
+                evaluated = await self._run_underlying(underlying, ctx().user_flags.current())
+            finally:
+                await self._flush_cycle(underlying, tally, bool(evaluated))
+
+    # ── no-trade bookkeeping (design §12) ─────────────────────────────────────
+
+    def _roll_day(self) -> None:
+        day = trading_day()
+        if self._seen_day != day:
+            self._seen_day = day
+            self._seen.clear()
+            self._strategy_gate_last.clear()
+
+    def _dedupe(self, key: tuple) -> bool:
+        """True the first time *key* is seen today (cleared on day rollover)."""
+        self._roll_day()
+        if key in self._seen:
+            return False
+        self._seen.add(key)
+        return True
+
+    async def _record_day_gate(self, underlying: str, code: ReasonCode, reason: str) -> None:
+        """A CYCLE gate that fires before any candle is read: one row per day."""
+        rc = ctx()
+        if not self._dedupe((rc.run_id, underlying, str(trading_day()), code.value)):
+            return
+        await no_trade.record_isolated(stage=Stage.CYCLE, code=code, reason=reason,
+                                       underlying=underlying)
+
+    def _queue(self, tally, key: tuple, *, stage: Stage, code: ReasonCode, reason: str,
+               underlying: str, strategy_name: Optional[str] = None,
+               context: Optional[dict] = None) -> None:
+        """Queue one row for the end-of-cycle write, at most once per *key*."""
+        if not self._dedupe((ctx().run_id,) + key):
+            return
+        tally.pending.append(dict(stage=stage, code=code, reason=reason,
+                                  context=context or {}, underlying=underlying,
+                                  strategy_name=strategy_name))
+
+    def _queue_cycle_gate(self, tally, underlying: str, candle_ts: str, code: ReasonCode,
+                          reason: str, **context) -> None:
+        self._queue(tally, (underlying, candle_ts, code.value), stage=Stage.CYCLE, code=code,
+                    reason=reason, underlying=underlying,
+                    context=no_trade.as_context(candle_ts=candle_ts, **context))
+
+    def _queue_strategy_gate(self, tally, underlying: str, strategy: str,
+                             code: Optional[ReasonCode], reason: str = "") -> None:
+        """STRATEGY_GATE rows are written on a state change per strategy and
+        day, not per candle: a strategy disabled all session is one row."""
+        key = (ctx().run_id, underlying, strategy)
+        self._roll_day()
+        if self._strategy_gate_last.get(key) == (code.value if code else None):
+            return
+        self._strategy_gate_last[key] = code.value if code else None
+        if code is None:
+            return
+        tally.pending.append(dict(stage=Stage.STRATEGY_GATE, code=code, reason=reason,
+                                  context={}, underlying=underlying, strategy_name=strategy))
+
+    async def _flush_cycle(self, underlying: str, tally, evaluated: bool) -> None:
+        """Queued rows plus the cycle_stats upsert, one short-lived session.
+        A write failure is a WARNING and never aborts the cycle."""
+        try:
+            rc = ctx()
+            async with sessions()() as db:
+                for row in tally.pending:
+                    await no_trade.record(db, rc, **row)
+                await no_trade.upsert_cycle_stats(
+                    db, rc, underlying=underlying, trading_day=rc.clock.trading_day(),
+                    at=rc.clock.now_utc(), candles=1 if evaluated else 0,
+                    strategies=tally.strategies_evaluated, signals=tally.signals_emitted,
+                    rejections=tally.rejections_recorded,
+                    oi_iv_missing=tally.oi_iv_context_missing,
+                )
+                await db.commit()
+        except Exception as exc:
+            logger.warning("[%s] cycle_stats / no-trade write failed (non-fatal): %s",
+                           underlying, exc)
 
     @staticmethod
     def _ist_now() -> datetime:
         """Current IST datetime from the ctx clock (timezone-aware)."""
         return now_ist()
 
-    async def _run_underlying(self, underlying: str, flags: dict):
+    async def _run_underlying(self, underlying: str, flags: dict) -> bool:
+        """Evaluate one candle. Returns True once today's candles were read
+        (the cycle "evaluated a candle", whether or not a later gate fired)."""
+        tally = no_trade.current_tally() or no_trade.CycleTally()
         spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
 
         # Get candles from Redis — fetch extra in case window spans overnight,
         # then filter to today's IST session so ORB levels are always correct.
         all_candles = await market().get_candles(spot_token, "ONE_MINUTE", 500)
         if not all_candles:
-            return
+            self._queue_cycle_gate(tally, underlying, str(trading_day()),
+                                   ReasonCode.FEED_UNAVAILABLE,
+                                   f"No ONE_MINUTE candles in the cache for {underlying}")
+            return False
 
         today_str = str(self._ist_now().date())
         # Filter to today's candles AND ensure they are within the official
@@ -269,6 +384,13 @@ class StrategyRunner:
                 pass  # If we can't parse, keep the candle (safe default)
             candles.append(c)
 
+        if not candles:
+            self._queue_cycle_gate(tally, underlying, today_str, ReasonCode.FEED_UNAVAILABLE,
+                                   f"No candles for today ({today_str}) in the cache for "
+                                   f"{underlying}")
+            return False
+        candle_ts = str(candles[-1].get("timestamp", ""))
+
         if len(candles) < MIN_TODAY_CANDLES:
             # Not enough today-only candles yet — market just opened or no data.
             # Do NOT fall back to multi-day candles: that would corrupt ORB high/low
@@ -277,7 +399,12 @@ class StrategyRunner:
                 "[%s] Only %d today-candles available (need %d) — skipping this cycle",
                 underlying, len(candles), MIN_TODAY_CANDLES,
             )
-            return
+            self._queue_cycle_gate(
+                tally, underlying, candle_ts, ReasonCode.INSUFFICIENT_CANDLES,
+                f"Only {len(candles)} today-candles (need {MIN_TODAY_CANDLES})",
+                candles=len(candles), required=MIN_TODAY_CANDLES,
+            )
+            return True
 
         # Compute indicators once, share with all strategies
         indicators = compute_all(candles)
@@ -320,7 +447,10 @@ class StrategyRunner:
                 "[%s] ATR=%.2f < %.1f — market too choppy, skipping all strategies",
                 underlying, atr_v, atr_min,
             )
-            return
+            self._queue_cycle_gate(tally, underlying, candle_ts, ReasonCode.ATR_BELOW_FLOOR,
+                                   f"ATR={atr_v:.2f} < floor {atr_min:.1f}",
+                                   atr=float(atr_v), floor=atr_min)
+            return True
 
         # ── Gate 2: VIX filter ────────────────────────────────────────────────
         vix_ltp = await market().get_ltp(VIX_TOKEN)
@@ -330,13 +460,19 @@ class StrategyRunner:
                     "[%s] VIX=%.1f > %.0f — high-risk environment, skipping strategies",
                     underlying, vix_ltp, VIX_MAX,
                 )
-                return
+                self._queue_cycle_gate(tally, underlying, candle_ts, ReasonCode.VIX_ABOVE_MAX,
+                                       f"VIX={vix_ltp:.1f} > max {VIX_MAX:.0f}",
+                                       vix=float(vix_ltp), max=VIX_MAX)
+                return True
             if vix_ltp < VIX_MIN:
                 logger.debug(
                     "[%s] VIX=%.1f < %.0f — options too cheap / no movement expected",
                     underlying, vix_ltp, VIX_MIN,
                 )
-                return
+                self._queue_cycle_gate(tally, underlying, candle_ts, ReasonCode.VIX_BELOW_MIN,
+                                       f"VIX={vix_ltp:.1f} < min {VIX_MIN:.0f}",
+                                       vix=float(vix_ltp), min=VIX_MIN)
+                return True
 
         # ── Gate 3: Expiry day filter ─────────────────────────────────────────
         # Same InstrumentPort universe as _inject_oi_iv, so "nearest expiry"
@@ -354,7 +490,15 @@ class StrategyRunner:
         # Pass is_expiry_day so OISpikeStrategy can self-block (it also checks
         # this flag internally, but setting it here ensures the state is always
         # current before evaluate() is called this cycle).
-        await self._inject_oi_iv(underlying, indicators, is_expiry_day=is_expiry_day)
+        oi_iv_gap = await self._inject_oi_iv(underlying, indicators, is_expiry_day=is_expiry_day)
+        if oi_iv_gap is not None:
+            # §14.2: counted every candle, one DATA_GAP row per underlying-day
+            tally.oi_iv_context_missing += 1
+            self._queue(tally, (underlying, str(today), "oi_iv_context"),
+                        stage=Stage.DEGRADATION, code=ReasonCode.DATA_GAP,
+                        reason=f"OI/IV context not populated for {underlying}: {oi_iv_gap}",
+                        underlying=underlying,
+                        context={"what": "oi_iv_context", "cause": oi_iv_gap})
 
         # ── Regime detection ─────────────────────────────────────────────────────
         # Detect current market regime, get updated strategy flags from orchestrator.
@@ -376,20 +520,39 @@ class StrategyRunner:
         # ── Run strategies ────────────────────────────────────────────────────
         for strat in self._strategies.get(underlying, []):
             if not final_flags.get(strat.name, True):
+                if not flags.get(strat.name, True):
+                    self._queue_strategy_gate(tally, underlying, strat.name,
+                                              ReasonCode.STRATEGY_USER_DISABLED,
+                                              f"{strat.name} disabled by user flag")
+                else:
+                    self._queue_strategy_gate(tally, underlying, strat.name,
+                                              ReasonCode.STRATEGY_REGIME_DISABLED,
+                                              f"{strat.name} disabled by the regime map")
                 continue
             if strategy_orchestrator.is_in_cooldown(underlying):
                 logger.debug("[%s] Transition cooldown active — skipping %s", underlying, strat.name)
+                self._queue_cycle_gate(tally, underlying, candle_ts,
+                                       ReasonCode.TRANSITION_COOLDOWN,
+                                       f"Regime transition cooldown active for {underlying}")
                 continue
             if is_expiry_day and strat.sl_pct < EXPIRY_MIN_SL_PCT:
                 logger.debug(
                     "[%s] Expiry day — skipping %s (sl_pct=%.2f < %.2f)",
                     underlying, strat.name, strat.sl_pct, EXPIRY_MIN_SL_PCT,
                 )
+                self._queue_strategy_gate(
+                    tally, underlying, strat.name, ReasonCode.EXPIRY_DAY_SL_TOO_TIGHT,
+                    f"Expiry day: {strat.name} sl_pct={strat.sl_pct:.2f} < "
+                    f"{EXPIRY_MIN_SL_PCT:.2f}",
+                )
                 continue
+            self._queue_strategy_gate(tally, underlying, strat.name, None)   # evaluated
+            tally.strategies_evaluated += 1
             try:
                 await strat.on_candle(candles, indicators)
             except Exception as e:
                 logger.error("[%s] Strategy error: %s", strat.name, e, exc_info=True)
+        return True
 
     async def _persist_regime_state(self, underlying: str, regime_state) -> None:
         """
@@ -444,18 +607,22 @@ class StrategyRunner:
             self._oi_iv_warned[underlying] = now_m
             logger.warning("[%s] OI/IV context unavailable: %s", underlying, exc)
 
-    async def _inject_oi_iv(self, underlying: str, indicators: dict, is_expiry_day: bool = False):
+    async def _inject_oi_iv(self, underlying: str, indicators: dict,
+                            is_expiry_day: bool = False) -> Optional[str]:
         """Update OI/IV context in OISpikeStrategy and IVCrushStrategy.
 
         The universe comes from ctx().instruments (design §14.2): the nearest
         expiry on or after the ctx trading day, then a pure ATM CE/PE pick.
         Only the Redis/DB I/O is guarded, and a failure logs at WARNING.
+
+        Returns None when OI or IV was populated, else the cause, so the
+        caller can count oi_iv_context_missing and record the DATA_GAP.
         """
         try:
             spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
             spot_ltp = await market().get_ltp(spot_token) or 0
             if not spot_ltp:
-                return
+                return "no spot LTP"
 
             step = 50 if underlying == "NIFTY" else 100
             atm  = round(spot_ltp / step) * step
@@ -465,7 +632,7 @@ class StrategyRunner:
             today = trading_day()
             future = [i.expiry for i in universe if i.expiry and i.expiry >= today]
             if not future:
-                return
+                return "no active expiry in the instrument universe"
             expiry = min(future)
             ce_inst, pe_inst = _atm_pair(universe, expiry, atm)
 
@@ -478,7 +645,7 @@ class StrategyRunner:
             chain = await market().get_option_chain(underlying, str(expiry))
         except Exception as e:      # Redis / DB I/O only
             self._warn_oi_iv(underlying, e)
-            return
+            return f"I/O error: {type(e).__name__}: {e}"
 
         ce_oi   = _as_int((ce_tick or {}).get("oi", 0))
         pe_oi   = _as_int((pe_tick or {}).get("oi", 0))
@@ -513,6 +680,9 @@ class StrategyRunner:
                 strat.update_iv(atm_iv)
                 logger.debug("[%s] IVCrush ATM IV=%.2f%% (ce=%.2f pe=%.2f)",
                              underlying, atm_iv, atm_ce_iv, atm_pe_iv)
+        if not (ce_oi or pe_oi or atm_iv):
+            return "no OI or IV for the ATM pair"
+        return None
 
     # ── EOD monitor ───────────────────────────────────────────────────────────
 
