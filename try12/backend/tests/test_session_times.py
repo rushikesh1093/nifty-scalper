@@ -1,5 +1,5 @@
 """Fix 7: configured square-off time used everywhere; no entries in the last 10 min."""
-from datetime import time as dtime
+from datetime import date, datetime, time as dtime, timedelta, timezone
 
 import pytest
 
@@ -8,7 +8,8 @@ from app.services.trading import paper_engine as pe_mod
 from app.services.trading.mode_manager import mode_manager
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.session_times import (
-    DEFAULT_SQUARE_OFF, entry_cutoff, is_after_entry_cutoff, parse_square_off,
+    DEFAULT_SQUARE_OFF, IST, entry_cutoff, is_after_entry_cutoff, parse_square_off,
+    trading_day, trading_day_bounds_utc,
 )
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from tests.helpers import add_position, make_cfg, make_signal, run, seed_config
@@ -29,6 +30,28 @@ def test_is_after_cutoff():
     assert not is_after_entry_cutoff(dtime(15, 4), "15:15")
     assert is_after_entry_cutoff(dtime(15, 5), "15:15")
     assert is_after_entry_cutoff(dtime(14, 25), "14:30")
+
+
+@pytest.mark.parametrize("ts, day", [
+    # 05:30 UTC offset: 18:29:59 UTC is still the same IST day, 18:30 UTC is the next
+    (datetime(2026, 9, 1, 18, 29, 59, tzinfo=timezone.utc), date(2026, 9, 1)),
+    (datetime(2026, 9, 1, 18, 30, 0, tzinfo=timezone.utc), date(2026, 9, 2)),
+    # naive is treated as UTC
+    (datetime(2026, 9, 1, 18, 30, 0), date(2026, 9, 2)),
+    # aware IST just after midnight
+    (datetime(2026, 9, 2, 0, 0, 1, tzinfo=IST), date(2026, 9, 2)),
+])
+def test_trading_day_ist_boundary(ts, day):
+    assert trading_day(ts) == day
+
+
+def test_trading_day_bounds_utc():
+    start, end = trading_day_bounds_utc(date(2026, 9, 1))
+    assert start == datetime(2026, 8, 31, 18, 30, tzinfo=timezone.utc)
+    assert end == datetime(2026, 9, 1, 18, 30, tzinfo=timezone.utc)
+    assert trading_day(start) == date(2026, 9, 1)
+    assert trading_day(end - timedelta(microseconds=1)) == date(2026, 9, 1)
+    assert trading_day(end) == date(2026, 9, 2)
 
 
 @pytest.fixture

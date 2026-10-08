@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 # How often to emit a DEBUG heartbeat log when regime is unchanged (Req 15.6)
 _LOG_INTERVAL = timedelta(minutes=5)
 
+# Design §5: the transition cooldown is bounded so the retained history always
+# holds at least two non-transition entries after a full cooldown.
+# TradingParams.validate() enforces both bounds (§6.3 check 6).
+TRANSITION_COOLDOWN_CANDLES_MAX = 8
+
+
+def _history_len(cooldown: int) -> int:
+    return max(5, cooldown + 2)
+
 
 class RegimeDetector:
     """

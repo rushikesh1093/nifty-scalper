@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, NamedTuple, Optional
 
+from app.strategies.names import StrategyName as S
+
 if TYPE_CHECKING:
     from app.services.trading.regime_indicators import RegimeIndicators
     from app.services.trading.regime_config import RegimeConfig
@@ -50,19 +52,19 @@ class RegimeRule(NamedTuple):
 REGIME_RULES: dict[str, RegimeRule] = {
     # ── Trend regimes ────────────────────────────────────────────────────────
     "BULL_TREND_NORMAL_VOL": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_PULLBACK"}),
+        enabled_strategies=frozenset({S.VWAP_PULLBACK.value}),
         allowed_directions=frozenset({"BUY"}),
         position_multiplier=1.0,
         notes="Confirmed uptrend with normal volatility — CE trades only",
     ),
     "BEAR_TREND_NORMAL_VOL": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_PULLBACK"}),
+        enabled_strategies=frozenset({S.VWAP_PULLBACK.value}),
         allowed_directions=frozenset({"SELL"}),
         position_multiplier=1.0,
         notes="Confirmed downtrend with normal volatility — PE trades only",
     ),
     "TREND_HIGH_VOL": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_PULLBACK"}),
+        enabled_strategies=frozenset({S.VWAP_PULLBACK.value}),
         # Both directions allowed; filtered at signal time by price vs VWAP
         allowed_directions=frozenset({"BUY", "SELL"}),
         position_multiplier=0.5,
@@ -70,14 +72,14 @@ REGIME_RULES: dict[str, RegimeRule] = {
     ),
     # ── Breakout regimes ─────────────────────────────────────────────────────
     "BREAKOUT_EVENT_BULLISH": RegimeRule(
-        enabled_strategies=frozenset({"ORB_VWAP"}),
+        enabled_strategies=frozenset({S.ORB_VWAP.value}),
         allowed_directions=frozenset({"BUY"}),
         # Adjusted to 0.5 dynamically when ATR_percentile > 70
         position_multiplier=1.0,
         notes="Volume-confirmed bullish breakout",
     ),
     "BREAKOUT_EVENT_BEARISH": RegimeRule(
-        enabled_strategies=frozenset({"ORB_VWAP"}),
+        enabled_strategies=frozenset({S.ORB_VWAP.value}),
         allowed_directions=frozenset({"SELL"}),
         # Adjusted to 0.5 dynamically when ATR_percentile > 70
         position_multiplier=1.0,
@@ -85,20 +87,20 @@ REGIME_RULES: dict[str, RegimeRule] = {
     ),
     # ── Compression / range regimes ──────────────────────────────────────────
     "LOW_VOL_COMPRESSION": RegimeRule(
-        enabled_strategies=frozenset({"BOLLINGER_BREAKOUT"}),
+        enabled_strategies=frozenset({S.BOLLINGER_BREAKOUT.value}),
         allowed_directions=frozenset({"BUY", "SELL"}),
         position_multiplier=1.0,
         notes="Low volatility compression — await expansion breakout",
     ),
     "RANGE_NORMAL_VOL": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_REVERSAL"}),
+        enabled_strategies=frozenset({S.VWAP_REVERSAL.value}),
         allowed_directions=frozenset({"BUY", "SELL"}),
         position_multiplier=1.0,
         notes="Range-bound with normal volatility — mean-reversion trades",
     ),
     # ── No-trade regimes ─────────────────────────────────────────────────────
     "HIGH_VOL_CHOP": RegimeRule(
-        enabled_strategies=frozenset({"BOLLINGER_BREAKOUT", "VWAP_REVERSAL"}),
+        enabled_strategies=frozenset({S.BOLLINGER_BREAKOUT.value, S.VWAP_REVERSAL.value}),
         allowed_directions=frozenset({"BUY", "SELL"}),
         position_multiplier=0.3,
         notes="High volatility chop — scaled-down breakout and reversal trades",
@@ -116,7 +118,7 @@ REGIME_RULES: dict[str, RegimeRule] = {
         notes="Option expiry day — no regime-based trades (let expiry guards handle)",
     ),
     "UNKNOWN": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_PULLBACK", "VWAP_REVERSAL"}),
+        enabled_strategies=frozenset({S.VWAP_PULLBACK.value, S.VWAP_REVERSAL.value}),
         allowed_directions=frozenset({"BUY", "SELL"}),
         position_multiplier=0.5,
         notes="Regime classification failed — trade at half size using mean reversion",

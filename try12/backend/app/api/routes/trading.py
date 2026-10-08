@@ -50,6 +50,7 @@ from app.services.trading.mode_manager import mode_manager
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.option_selector import option_selector
 from app.strategies.base import Direction
+from app.strategies.names import ALL_STRATEGY_NAMES
 from app.core.config import settings
 
 router = APIRouter(prefix="/trading", tags=["trading"])
@@ -552,7 +553,7 @@ async def get_signal_diagnostics():
     # Strategies
     strategies = {"total": None, "enabled": None, "disabled": []}
     try:
-        names = [s.name for s in _sr.strategy_runner._strategies.get("NIFTY", [])] or list(strategy_flags.keys())
+        names = list(ALL_STRATEGY_NAMES)    # canonical universe, never strategy_flags.keys()
         if names:
             disabled = [n for n in names if strategy_flags.get(n, True) is False]
             strategies = {"total": len(names), "enabled": len(names) - len(disabled), "disabled": disabled}

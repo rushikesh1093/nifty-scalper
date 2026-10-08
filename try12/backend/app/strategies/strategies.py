@@ -9,6 +9,7 @@ import numpy as np
 
 from app.strategies.base import BaseStrategy, Direction, SignalEvent
 from app.strategies.indicators import ema, rsi, bollinger, supertrend, atr
+from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ def _atr_ok(indicators: dict, underlying: str) -> bool:
 
 class ORBVWAPStrategy(BaseStrategy):
     """9:15-9:30 opening range breakout + VWAP confirm + volume surge."""
-    name = "ORB_VWAP"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.ORB_VWAP.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
         if len(candles) < 20: return None
@@ -122,7 +123,7 @@ class VWAPPullbackStrategy(BaseStrategy):
     no bearing on today's intraday VWAP direction — causing false trend counts
     that make the strategy fire immediately at 9:45 on stale data.
     """
-    name = "VWAP_PULLBACK"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.VWAP_PULLBACK.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 15
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
@@ -171,7 +172,7 @@ class EMAVWAPStrategy(BaseStrategy):
     Volume surge confirms real participation on the crossover candle — filters
     out fake crosses caused by low-volume drift between EMAs.
     """
-    name = "EMA_VWAP"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.EMA_VWAP.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 20   # EMA cross is a trend signal — needs time to play out
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
@@ -218,7 +219,7 @@ class SupertrendVWAPStrategy(BaseStrategy):
     ATR gate added: supertrend flips in low-volatility chop are unreliable
     because the ATR-based bands compress and any tiny tick can trigger a flip.
     """
-    name = "SUPERTREND_VWAP"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.SUPERTREND_VWAP.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 25   # Supertrend flip is rare and high-conviction — long cooldown
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
@@ -253,7 +254,7 @@ class SupertrendVWAPStrategy(BaseStrategy):
 
 class PDHPDLStrategy(BaseStrategy):
     """Clean breakout above PDH or below PDL with volume confirmation."""
-    name = "PDH_PDL"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.PDH_PDL.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
 
     def __init__(self, underlying: str = "NIFTY"):
         super().__init__(underlying)
@@ -286,7 +287,7 @@ class PDHPDLStrategy(BaseStrategy):
 
 class VWAPReversalStrategy(BaseStrategy):
     """Price over-extended from VWAP + reversal candle pattern."""
-    name = "VWAP_REVERSAL"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.VWAP_REVERSAL.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 10
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
@@ -327,7 +328,7 @@ class BollingerBreakoutStrategy(BaseStrategy):
     ATR gate added: a breakout candle outside the bands is meaningless if the
     underlying isn't actually moving — options won't follow without spot movement.
     """
-    name = "BOLLINGER_BREAKOUT"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.BOLLINGER_BREAKOUT.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 20
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
@@ -388,7 +389,7 @@ class RSIVWAPStrategy(BaseStrategy):
         should be looking for BUY, not adding more SELL).
       - Removed to prevent chasing exhausted moves.
     """
-    name = "RSI_VWAP"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.RSI_VWAP.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 8
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
@@ -472,7 +473,7 @@ class OISpikeStrategy(BaseStrategy):
       - sl_pct raised to 0.15 (was 0.10) so a 2-tick adverse move doesn't hit SL
       - Only active 9:30–12:30 (not 13:30; expiry afternoon OI is pure noise)
     """
-    name = "OI_SPIKE"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.OI_SPIKE.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 15
 
     def __init__(self, underlying: str = "NIFTY"):
@@ -568,7 +569,7 @@ class IVCrushStrategy(BaseStrategy):
         prevents firing on doji / spinning-top candles inside the squeeze that
         look like breakouts on LTP alone but have no real directional commitment.
     """
-    name = "IV_CRUSH"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.IV_CRUSH.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 15
 
     def __init__(self, underlying: str = "NIFTY"):
@@ -637,7 +638,7 @@ class CPRVWAPStrategy(BaseStrategy):
     - Price below BC + VWAP below CPR midpoint → bearish
     - Narrow CPR (width < 0.1% of pivot) = trending day expected
     """
-    name = "CPR_VWAP"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.CPR_VWAP.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 30   # CPR is a daily level — once confirmed, don't re-enter all day
 
     def __init__(self, underlying: str = "NIFTY"):
@@ -701,7 +702,7 @@ class GapVWAPFillStrategy(BaseStrategy):
     Gap down (open < prev_close * 0.997) + price starts recovering above VWAP → BUY
     Only valid in first 90 minutes.
     """
-    name = "GAP_VWAP_FILL"; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
+    name = StrategyName.GAP_VWAP_FILL.value; sl_pct = 0.15; target_pct = 0.30; min_rr = 2.0
     _cooldown_minutes = 20
 
     def __init__(self, underlying: str = "NIFTY"):
@@ -768,8 +769,5 @@ def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
     ]
 
 
-STRATEGY_NAMES = [
-    "ORB_VWAP", "VWAP_PULLBACK", "EMA_VWAP", "SUPERTREND_VWAP",
-    "PDH_PDL", "VWAP_REVERSAL", "BOLLINGER_BREAKOUT", "RSI_VWAP",
-    "OI_SPIKE", "IV_CRUSH", "CPR_VWAP", "GAP_VWAP_FILL",
-]
+# Re-exported for compatibility; the canonical tuple lives in app.strategies.names.
+STRATEGY_NAMES = ALL_STRATEGY_NAMES

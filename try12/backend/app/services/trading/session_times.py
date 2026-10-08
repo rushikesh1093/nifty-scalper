@@ -6,7 +6,7 @@ Single source of truth for the configured square-off time
 new-entry cutoff (square-off minus ENTRY_CUTOFF_BUFFER_MIN minutes).
 """
 import logging
-from datetime import time as dtime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -56,3 +56,20 @@ def is_market_hours(now: dtime) -> bool:
     """True between 09:15 and 15:30 IST (no holiday calendar)."""
     t = now.replace(tzinfo=None)
     return MARKET_OPEN <= t <= MARKET_CLOSE
+
+
+def trading_day(ts: datetime) -> date:
+    """IST calendar date of *ts*. Naive datetimes are treated as UTC (storage convention).
+
+    The single IST day-boundary helper (design NFR 8): every "which trading day
+    is this" question goes through here or through ``trading_day_bounds_utc``.
+    """
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(IST).date()
+
+
+def trading_day_bounds_utc(day: date) -> tuple[datetime, datetime]:
+    """[start, end) of IST calendar day *day*, as aware UTC datetimes."""
+    start = datetime.combine(day, dtime(0, 0), tzinfo=IST).astimezone(timezone.utc)
+    return start, start + timedelta(days=1)

@@ -24,24 +24,9 @@ if TYPE_CHECKING:
 
 from app.services.trading.regime_persistence import RegimeState, regime_persistence
 from app.services.trading.regime_rules import get_regime_rule
+from app.strategies.names import ALL_STRATEGY_NAMES
 
 logger = logging.getLogger(__name__)
-
-# ── All strategy names known to the system ────────────────────────────────────
-_ALL_STRATEGIES: tuple[str, ...] = (
-    "ORB_VWAP",
-    "VWAP_PULLBACK",
-    "EMA_VWAP",
-    "SUPERTREND_VWAP",
-    "PDH_PDL",
-    "VWAP_REVERSAL",
-    "BOLLINGER_BREAKOUT",
-    "RSI_VWAP",
-    "OI_SPIKE",
-    "IV_CRUSH",
-    "PCR_SIGNAL",
-    "GAP_FILL",
-)
 
 # NOTE: the REGIME_TRANSITION cooldown length is owned by RegimeDetector
 # (RegimeConfig.TRANSITION_COOLDOWN_CANDLES). The orchestrator only mirrors
@@ -87,7 +72,7 @@ class StrategyOrchestrator:
         # ── Build base flags from rule ────────────────────────────────────────
         flags: dict[str, bool] = {
             name: (name in rule.enabled_strategies)
-            for name in _ALL_STRATEGIES
+            for name in ALL_STRATEGY_NAMES
         }
 
         # ── Transition cooldown bookkeeping ───────────────────────────────────
@@ -119,7 +104,7 @@ class StrategyOrchestrator:
             # We don't know previous flags by name, but any regime change
             # potentially flips strategies, so log everything that is enabled
             # or disabled under the new regime.
-            for name in _ALL_STRATEGIES:
+            for name in ALL_STRATEGY_NAMES:
                 new_state = flags[name]
                 if new_state:
                     logger.info(

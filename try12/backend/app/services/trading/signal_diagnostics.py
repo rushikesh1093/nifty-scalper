@@ -10,6 +10,11 @@ from __future__ import annotations
 from datetime import datetime, time
 from typing import Optional
 
+from app.strategies.names import StrategyName
+
+# Strategies that need the previous-day snapshot (PDH/PDL, CPR, gap).
+_PREV_DAY_STRATEGIES = (StrategyName.PDH_PDL, StrategyName.CPR_VWAP, StrategyName.GAP_VWAP_FILL)
+
 SESSION_WINDOW_NOTE = "clock-based; exchange holidays are not detected"
 EXCHANGE_CLOSE_IST = time(15, 30)
 
@@ -120,7 +125,9 @@ def derive_blockers(state: dict) -> list[dict]:
         if state.get("db_available") is not False and u.get("prev_day_snapshot") is None \
                 and "prev_day_snapshot" in u:
             blockers.append(_b("NO_PREV_DAY_SNAPSHOT", "warning", f"No previous-day snapshot for {name}.",
-                               underlying=name, detail="PDH_PDL, CPR_VWAP and GAP_VWAP_FILL cannot fire"))
+                               underlying=name,
+                               detail=f"{', '.join(s.value for s in _PREV_DAY_STRATEGIES[:-1])} and "
+                                      f"{_PREV_DAY_STRATEGIES[-1].value} cannot fire"))
 
         if u.get("regime_allows_trading") is False:
             blockers.append(_b("REGIME_BLOCKS_ALL", "blocking",

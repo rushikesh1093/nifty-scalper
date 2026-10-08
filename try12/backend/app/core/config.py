@@ -79,6 +79,17 @@ class Settings(BaseSettings):
     SESSION_START_IST: ClassVar[time] = time(9, 15)
     SESSION_END_IST:   ClassVar[time] = time(15, 25)
 
+    # Operator key for mutating risk routes (halt release, reconcile, ...).
+    # No default: unset means those routes return 503, while engaging a halt
+    # always works (design §17.4). Never logged or returned by any route.
+    ADMIN_API_KEY: Optional[str] = None
+
+    # Replay engine knobs (design §14.6). The seed default is a recorded
+    # constant, never "random", so an unseeded run is still reproducible.
+    REPLAY_DEFAULT_SEED: int = 20260101
+    REPLAY_MAX_RANGE_DAYS: int = 366
+    REPLAY_ARTIFACT_DIR: str = ""      # empty → the CLI's --out default
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
