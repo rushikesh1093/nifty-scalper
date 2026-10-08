@@ -12,7 +12,7 @@ from app.services.trading.session_times import (
     trading_day, trading_day_bounds_utc,
 )
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
-from tests.helpers import add_position, make_cfg, make_signal, run, seed_config
+from tests.helpers import add_position, allow_regime, make_cfg, make_signal, run, seed_config
 
 
 @pytest.mark.parametrize("value, sq, cutoff", [
@@ -69,13 +69,10 @@ def gate(monkeypatch, fake_redis):
         checks.append(underlying)
         return False, "stop here"
 
-    async def _none(u):
-        return None
-
     monkeypatch.setattr(mode_manager, "get_config", _cfg)
     monkeypatch.setattr(mode_manager, "pre_trade_check", _pre)
     monkeypatch.setattr(paper_engine, "_save_signal", _save)
-    monkeypatch.setattr(strategy_orchestrator, "get_current_regime", _none)
+    allow_regime(monkeypatch)          # the regime filter fails closed without a state
     return saved, checks
 
 

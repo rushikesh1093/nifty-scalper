@@ -20,6 +20,7 @@ from app.services.trading.mode_manager import mode_manager
 from app.core.config import settings
 from app.services.trading.regime_detector import regime_detector
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
+from app.services.trading.regime_rules import get_regime_rule
 from app.services.trading.session_times import entry_cutoff, parse_square_off
 from app.services.trading.wiring import wire_signal_handlers
 from app.services.trading import no_trade
@@ -509,17 +510,27 @@ class StrategyRunner:
                 underlying, candles, indicators, is_expiry_day, flags,
             )
         except Exception as _regime_err:
-            logger.warning("[%s] Regime detection error: %s — falling back to user flags", underlying, _regime_err)
-            final_flags = flags
-            regime_state = None
+            # Never fall back to raw user flags: a Redis or DB blip must not
+            # silently remove regime gating (§6.4).
+            logger.warning("[%s] Regime detection error: %s — every strategy disabled",
+                           underlying, _regime_err)
+            strategy_orchestrator.mark_regime_unavailable(underlying)
+            self._queue_cycle_gate(tally, underlying, candle_ts, ReasonCode.REGIME_UNAVAILABLE,
+                                   f"Regime detection failed for {underlying}: "
+                                   f"{type(_regime_err).__name__}: {_regime_err}")
+            return True
 
         # ── Observability only — isolated; cannot influence final_flags ───────
         if regime_state is not None:
             await self._persist_regime_state(underlying, regime_state)
+            if self._queue_no_trade_regime(tally, underlying, candle_ts, regime_state):
+                return True
 
         # ── Run strategies ────────────────────────────────────────────────────
+        # The merged flags are the only gate (the detector-owned cooldown is
+        # expressed through the REGIME_TRANSITION rule enabling nothing).
         for strat in self._strategies.get(underlying, []):
-            if not final_flags.get(strat.name, True):
+            if not final_flags.get(strat.name, False):
                 if not flags.get(strat.name, True):
                     self._queue_strategy_gate(tally, underlying, strat.name,
                                               ReasonCode.STRATEGY_USER_DISABLED,
@@ -528,12 +539,6 @@ class StrategyRunner:
                     self._queue_strategy_gate(tally, underlying, strat.name,
                                               ReasonCode.STRATEGY_REGIME_DISABLED,
                                               f"{strat.name} disabled by the regime map")
-                continue
-            if strategy_orchestrator.is_in_cooldown(underlying):
-                logger.debug("[%s] Transition cooldown active — skipping %s", underlying, strat.name)
-                self._queue_cycle_gate(tally, underlying, candle_ts,
-                                       ReasonCode.TRANSITION_COOLDOWN,
-                                       f"Regime transition cooldown active for {underlying}")
                 continue
             if is_expiry_day and strat.sl_pct < EXPIRY_MIN_SL_PCT:
                 logger.debug(
@@ -592,12 +597,38 @@ class StrategyRunner:
         )
 
         regime_flags = await strategy_orchestrator.on_regime_detected(regime_state)
-        # Merge: user flag AND regime flag must both be True to enable
-        final_flags = {
-            name: regime_flags.get(name, True) and flags.get(name, True)
-            for name in set(list(flags.keys()) + list(regime_flags.keys()))
-        }
+        # Merge over the 12 canonical names: an absent regime flag is
+        # disabled, and a user disable wins in every regime (§6.4).
+        final_flags = strategy_orchestrator.merge_flags(underlying, regime_flags, flags)
         return final_flags, regime_state
+
+    def _queue_no_trade_regime(self, tally, underlying: str, candle_ts: str,
+                               regime_state) -> bool:
+        """One CYCLE row per candle when the regime enables no strategy, and
+        a DEGRADATION row when that regime is the detector's error fallback.
+        Returns True when the candle is structurally ineligible."""
+        regime = regime_state.regime
+        rule = get_regime_rule(regime, regime_state.indicators.atr_percentile)
+        if rule.enabled_strategies:
+            return False
+        if regime == "DETECTOR_ERROR":
+            self._queue(tally, (underlying, candle_ts, ReasonCode.DETECTOR_ERROR.value),
+                        stage=Stage.DEGRADATION, code=ReasonCode.DETECTOR_ERROR,
+                        reason=f"Regime detector raised for {underlying}; no-trade fallback",
+                        underlying=underlying,
+                        context=no_trade.as_context(candle_ts=candle_ts))
+        if regime == "REGIME_TRANSITION":
+            self._queue_cycle_gate(
+                tally, underlying, candle_ts, ReasonCode.TRANSITION_COOLDOWN,
+                f"Regime transition cooldown for {underlying} "
+                f"({regime_state.transition_cooldown_remaining} candle(s) remaining)",
+                previous_regime=regime_state.previous_regime,
+                remaining=int(regime_state.transition_cooldown_remaining or 0),
+            )
+        else:
+            self._queue_cycle_gate(tally, underlying, candle_ts, ReasonCode.REGIME_NO_TRADE,
+                                   f"Regime {regime} enables no strategy", regime=regime)
+        return True
 
     def _warn_oi_iv(self, underlying: str, exc: Exception) -> None:
         """OI/IV I/O failures are visible (R19.4), at most once per 10 min per underlying."""

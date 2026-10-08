@@ -5,7 +5,8 @@ Handles both Redis caching and PostgreSQL persistence for regime state.
 
 Redis key schema:
   regime:{underlying}:current   — latest RegimeState JSON, TTL=600s
-  regime:{underlying}:history   — list of last 5 RegimeState JSON, TTL=28800s
+  regime:{underlying}:history   — list of the detector's last _history_len(cooldown)
+                                  RegimeState JSON, TTL=28800s
 
 PostgreSQL:
   regime_states — one row per classification event, written by persist_to_db()
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 # ── TTLs ─────────────────────────────────────────────────────────────────────
 TTL_CURRENT = 600       # 10 minutes
 TTL_HISTORY = 28800     # 8 hours
-MAX_HISTORY = 5         # keep only the last 5 states in history
+
 
 
 # ── RegimeState dataclass ─────────────────────────────────────────────────────
@@ -177,15 +178,16 @@ class RegimePersistence:
         history: list[RegimeState],
     ) -> None:
         """
-        Serialize the last ``MAX_HISTORY`` states and write to
-        ``regime:{underlying}:history`` with TTL=28800 s.
+        Serialize *history* and write to ``regime:{underlying}:history`` with
+        TTL=28800 s. The detector has already truncated it to
+        ``_history_len(cooldown)``; trimming harder here would let a long
+        cooldown evict every stable state from the rehydrated history (§5).
 
         Requirements: 13.3, 13.4
         """
         key = f"regime:{underlying}:history"
         try:
-            # Keep only the most recent MAX_HISTORY entries
-            trimmed = history[-MAX_HISTORY:] if len(history) > MAX_HISTORY else history
+            trimmed = list(history)
             await market().set(key, [_state_to_dict(s) for s in trimmed], ttl=TTL_HISTORY)
             logger.debug(
                 "[RegimePersistence] Saved %d history entries for %s",
@@ -201,17 +203,27 @@ class RegimePersistence:
         """
         Load regime history for *underlying* from Redis.
 
+        Every state whose IST trading day is not the ctx clock's trading day
+        is discarded (§5, R4 finding 17): the last state of yesterday (often
+        EXPIRY_DAY) must not be the "last stable regime" at 09:15 today, or
+        the first ordinary classification would be blocked as a flip. The
+        Redis TTL is not the mechanism; this date filter is.
+
         Returns an empty list on any failure.
 
         Requirements: 13.3, 13.4
         """
+        from app.services.trading.session_times import trading_day as ist_day
+
         key = f"regime:{underlying}:history"
         try:
             raw_list = await market().get(key)
             if raw_list is None:
                 return []
 
-            return [_dict_to_state(item) for item in raw_list]
+            today = ctx().clock.trading_day()
+            states = [_dict_to_state(item) for item in raw_list]
+            return [s for s in states if ist_day(s.timestamp) == today]
 
         except Exception as exc:
             logger.warning(

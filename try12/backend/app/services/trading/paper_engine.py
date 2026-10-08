@@ -221,10 +221,23 @@ class PaperEngine:
         if not cfg:
             return False
 
-        # Strategy enabled?
-        flags = cfg.strategy_flags or {}
-        if not flags.get(signal.strategy_name, True):
-            logger.debug("[%s] disabled — skipping", signal.strategy_name)
+        # Strategy enabled? Re-check the orchestrator's last merged flags (regime
+        # rule AND user flag) rather than trusting cfg.strategy_flags (§6.4).
+        enabled, why = strategy_orchestrator.is_strategy_enabled(
+            signal.underlying, signal.strategy_name)
+        if not enabled:
+            code = {
+                "user_disabled": no_trade.ReasonCode.STRATEGY_USER_DISABLED,
+                "regime_unavailable": no_trade.ReasonCode.REGIME_UNAVAILABLE,
+            }.get(why, no_trade.ReasonCode.STRATEGY_REGIME_DISABLED)
+            reason = f"{signal.strategy_name} not enabled for {signal.underlying}: {why}"
+            ntd_id = await no_trade.record_isolated(
+                stage=Stage.STRATEGY_GATE, code=code, reason=reason,
+                underlying=signal.underlying, strategy_name=signal.strategy_name,
+            )
+            await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason,
+                                    no_trade_decision_id=ntd_id)
+            logger.info("[PaperEngine] SKIPPED %s: %s", signal.strategy_name, reason)
             return False
 
         # ── Entry cutoff: no new entries in the last minutes before square-off ─
@@ -265,8 +278,18 @@ class PaperEngine:
                 logger.info("[PaperEngine] REGIME BLOCKED %s: %s", signal.strategy_name, regime_reason)
                 return False
         except Exception as _re:
-            logger.debug("[PaperEngine] Regime filter error (non-fatal): %s", _re)
-            regime_state = None
+            # Fail closed (§20.3): a regime filter that cannot run admits nothing.
+            logger.error("[PaperEngine] Regime filter error — signal rejected: %s", _re,
+                         exc_info=True)
+            reason = f"[Regime] regime state unreadable: {type(_re).__name__}: {_re}"
+            ntd_id = await no_trade.record_isolated(
+                stage=Stage.SIGNAL_GATE, code=no_trade.ReasonCode.REGIME_STATE_UNAVAILABLE,
+                reason=reason, underlying=signal.underlying,
+                strategy_name=signal.strategy_name,
+            )
+            await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason,
+                                    no_trade_decision_id=ntd_id)
+            return False
 
         # All risk/capital checks
         ok, reason = await mode_manager.pre_trade_check(signal.underlying)
@@ -331,7 +354,7 @@ class PaperEngine:
         try:
             regime_multiplier = strategy_orchestrator.get_position_multiplier(signal.underlying)
             if regime_multiplier == 0.0:
-                current_regime = getattr(regime_state, 'regime', 'UNKNOWN') if regime_state else 'UNKNOWN'
+                current_regime = regime_state.regime
                 reason = f"[Regime] Position_Size_Multiplier=0.0 for regime {current_regime}"
                 await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
                 logger.info("[PaperEngine] REGIME SKIPPED %s: %s", signal.strategy_name, reason)

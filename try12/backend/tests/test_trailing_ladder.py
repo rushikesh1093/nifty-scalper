@@ -10,7 +10,7 @@ from app.services.trading.option_selector import option_selector
 from app.services.trading.paper_engine import _trailing_stop, paper_engine
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from tests.helpers import (
-    add_position, fake_candidate, get_position, make_signal, run, seed_config,
+    add_position, allow_regime, fake_candidate, get_position, make_signal, run, seed_config,
 )
 
 
@@ -74,14 +74,11 @@ def test_handle_signal_sets_initial_stop_loss(sqlite_db, fake_redis, monkeypatch
     async def _select(**kwargs):
         return fake_candidate(ltp=40.0, lot_size=65)
 
-    async def _none(u):
-        return None
-
     async def _kelly(name, cfg):
         return 3000.0
 
     monkeypatch.setattr(option_selector, "select", _select)
-    monkeypatch.setattr(strategy_orchestrator, "get_current_regime", _none)
+    allow_regime(monkeypatch)
     monkeypatch.setattr(strategy_orchestrator, "get_position_multiplier", lambda u: 1.0)
     monkeypatch.setattr(mode_manager, "kelly_trade_amount", _kelly)
 

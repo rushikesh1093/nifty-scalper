@@ -11,7 +11,7 @@ from app.services.trading.strategy_orchestrator import StrategyOrchestrator
 from tests.helpers import run
 
 T = "REGIME_TRANSITION"
-U = "UNKNOWN"
+U = "UNCLASSIFIED"      # the classifier's catch-all (was UNKNOWN before the §6.2 split)
 B = "BULL_TREND_NORMAL_VOL"
 
 
@@ -31,6 +31,9 @@ class _NoopPersistence:
 
     async def persist_to_db(self, state, db_session):
         pass
+
+    async def load_regime_history(self, underlying):
+        return []
 
 
 def _replay(monkeypatch, script):
@@ -61,15 +64,14 @@ def _entries_into_transition(regimes):
 
 
 def test_unknown_then_bull_settles(monkeypatch):
-    """Readiness-report repro: UNKNOWN x3 then BULL x21 (old code looped T x3 / B x1)."""
+    """Readiness-report repro: UNCLASSIFIED x3 then BULL x21 (old code looped T x3 / B x1)."""
     regimes, active = _replay(monkeypatch, [U] * 3 + [B] * 21)
 
     assert regimes == [U] * 3 + [T] * 3 + [B] * 18
     assert _entries_into_transition(regimes) == 1
     assert T not in regimes[6:]
     assert regimes[-1] == B
-    assert active >= 18
-    assert active == 21   # 3 UNKNOWN + 18 BULL candles allow strategies
+    assert active == 18   # UNCLASSIFIED is no-trade (D7); the 18 BULL candles trade
 
 
 def test_single_flip_one_transition_block(monkeypatch):
@@ -87,11 +89,12 @@ def _st(regime):
 
 
 @pytest.mark.parametrize("history, candidate, expected", [
-    ([], B, False),                          # no history
-    ([_st(U)], B, False),                    # < window stable entries
+    ([], B, False),                          # no stable regime yet
+    ([_st(T), _st(T)], B, False),            # only transition entries: nothing to differ from
+    ([_st(U)], B, True),                     # one stable entry is enough (window unused, §5)
     ([_st(U), _st(U)], U, False),            # unchanged
     ([_st(U), _st(U)], B, True),             # real flip
-    ([_st(U), _st(T), _st(T)], B, False),    # only 1 stable entry → not enough data
+    ([_st(U), _st(T), _st(T)], B, True),     # compared against the last stable regime
     ([_st(U), _st(U), _st(T), _st(T), _st(B)], B, False),  # T entries ignored
     ([_st(U), _st(T), _st(T), _st(T), _st(B)], B, False),
     ([_st(B), _st(B), _st(T)], U, True),

@@ -122,6 +122,38 @@ def make_signal(strategy="VWAP_PULLBACK", underlying="NIFTY", direction=Directio
     )
 
 
+def regime_state(regime="BULL_TREND_NORMAL_VOL", underlying="NIFTY", price=22610.0,
+                 vwap=22600.0, cooldown=0, ts: Optional[datetime] = None):
+    from app.services.trading.regime_indicators import RegimeIndicators
+    from app.services.trading.regime_persistence import RegimeState
+    ind = RegimeIndicators(
+        adx=25.0, atr=5.0, atr_percentile=50.0, vwap=vwap, price=price, vwap_cross_count=0,
+        volume=0.0, avg_volume=0.0, orb_high=None, orb_low=None, pdh=None, pdl=None,
+    )
+    return RegimeState(regime=regime, underlying=underlying,
+                       timestamp=ts or datetime.now(timezone.utc), indicators=ind,
+                       transition_cooldown_remaining=cooldown)
+
+
+def allow_regime(monkeypatch, regime="BULL_TREND_NORMAL_VOL", underlying="NIFTY",
+                 user_flags: Optional[dict] = None):
+    """Put the orchestrator in *regime* for *underlying*, as one detected
+    candle would: get_current_regime returns that state, the merged flags are
+    computed, and the multiplier is the rule's. handle_signal fails closed
+    without this (design §6.4)."""
+    from app.services.trading.strategy_orchestrator import strategy_orchestrator
+
+    state = regime_state(regime, underlying)
+
+    async def _current(u):
+        return state if u == underlying else None
+
+    monkeypatch.setattr(strategy_orchestrator, "get_current_regime", _current)
+    flags = asyncio.run(strategy_orchestrator.on_regime_detected(state))
+    strategy_orchestrator.merge_flags(underlying, flags, user_flags or {})
+    return state
+
+
 def fake_candidate(ltp=40.0, lot_size=65, bid=0.0, ask=0.0, token="OPT1") -> SimpleNamespace:
     return SimpleNamespace(
         token=token, symbol="NIFTY06OCT2622600CE", strike=22600.0, option_type="CE",

@@ -120,6 +120,55 @@ async def get_regime_current(
         raise HTTPException(status_code=503, detail=f"regime cache unavailable: {exc}")
 
 
+@router.get("/strategy-map")
+async def get_strategy_map():
+    """
+    The regime → strategy map (design §6.2) plus live per-underlying state
+    (§6.5). Reasons are a closed set: enabled, regime_rule, user_disabled,
+    daily_strategy_halt, transition_cooldown, regime_unavailable.
+    """
+    from app.runtime.context import ctx
+    from app.services.trading.regime_rules import (
+        NEVER_ENABLED, POSITION_MULTIPLIERS, REGIME_RULES,
+    )
+    from app.services.trading.strategy_orchestrator import strategy_orchestrator
+    from app.strategies.names import ALL_STRATEGY_NAMES
+
+    regimes = [
+        {
+            "regime": name,
+            "strategies": sorted(rule.enabled_strategies),
+            "directions": sorted(rule.allowed_directions),
+            "multiplier": rule.position_multiplier,
+            "notes": rule.notes,
+        }
+        for name, rule in REGIME_RULES.items()
+    ]
+    user_flags = ctx().user_flags.current()
+    current = []
+    for u in ctx().cfg.underlyings:
+        strategies = []
+        for name in ALL_STRATEGY_NAMES:
+            enabled, reason = strategy_orchestrator.is_strategy_enabled(u, name)
+            if not user_flags.get(name, True):
+                enabled, reason = False, "user_disabled"
+            elif reason == "regime flags not yet computed":
+                reason = "regime_unavailable"
+            strategies.append({"name": name, "enabled": enabled, "reason": reason})
+        current.append({
+            "underlying": u,
+            "regime": strategy_orchestrator.current_regime_name(u),
+            "cooldown_remaining": strategy_orchestrator.cooldown_remaining(u),
+            "strategies": strategies,
+        })
+    return {
+        "multiplier_set": sorted(POSITION_MULTIPLIERS),
+        "never_enabled": sorted(NEVER_ENABLED),
+        "regimes": regimes,
+        "current": current,
+    }
+
+
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 

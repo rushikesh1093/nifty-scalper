@@ -7,7 +7,7 @@ from app.services.trading.mode_manager import mode_manager
 from app.services.trading.option_selector import option_selector
 from app.services.trading.paper_engine import _calc_lots, paper_engine
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
-from tests.helpers import fake_candidate, make_cfg, make_signal, run
+from tests.helpers import allow_regime, fake_candidate, make_cfg, make_signal, run
 
 
 @pytest.mark.parametrize("amount, price, lot, expected", [
@@ -45,9 +45,6 @@ def wired(monkeypatch, fake_redis):
         saved.append((status, reason))
         return 1
 
-    async def _no_regime(underlying):
-        return None
-
     class _NoDB:
         async def __aenter__(self):
             return self
@@ -63,7 +60,7 @@ def wired(monkeypatch, fake_redis):
     monkeypatch.setattr(mode_manager, "kelly_trade_amount", _Spy(3000.0))
     reserve = _Spy(False)
     monkeypatch.setattr(mode_manager, "reserve_capital", reserve)
-    monkeypatch.setattr(strategy_orchestrator, "get_current_regime", _no_regime)
+    allow_regime(monkeypatch)          # the regime filter fails closed without a state
     monkeypatch.setattr(strategy_orchestrator, "get_position_multiplier", lambda u: 1.0)
     monkeypatch.setattr(paper_engine, "_save_signal", _save_signal)
     return {"cfg": cfg, "saved": saved, "reserve": reserve, "redis": fake_redis}

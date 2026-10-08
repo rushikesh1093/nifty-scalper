@@ -5,18 +5,24 @@ Translates regime state into strategy enable/disable flags and position
 size multipliers. Sits between RegimeDetector and StrategyRunner.
 
 Responsibilities:
-  - Convert regime → strategy_flags dict (all 12 strategies)
-  - Enforce REGIME_TRANSITION cooldown
-  - Filter signals by regime-permitted directions
+  - Convert regime → strategy_flags dict (all 12 strategies, design §6.2)
+  - Merge regime flags with user flags (absent = disabled, user disable wins)
+    and remember the result, so paper_engine can re-check authority (§6.4)
+  - Filter signals by regime-permitted directions (fail closed on no state)
   - Record per-regime P&L performance in the DB
-  - Expose current regime via RegimePersistence
+  - Mirror the detector's transition cooldown for display only (§5)
+
+The REGIME_TRANSITION cooldown is owned by RegimeDetector alone. This class
+holds no counter: during a transition the REGIME_TRANSITION rule enables no
+strategy, which is the suppression. ``is_in_cooldown`` is a read-only,
+expiring mirror for the API and gates nothing.
 
 Requirements: 11.2–11.7, 12.2, 16.1–16.7, 19.1, 19.2, 19.5, 19.6, 20.1–20.5
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,14 +31,18 @@ if TYPE_CHECKING:
 from app.services.trading.regime_persistence import RegimeState, regime_persistence
 from app.services.trading.regime_rules import get_regime_rule
 from app.strategies.names import ALL_STRATEGY_NAMES
-from app.runtime.context import ctx, now_utc
+from app.runtime.context import ctx, now_utc, params
 from app.services.trading.no_trade import ReasonCode
 
 logger = logging.getLogger(__name__)
 
-# NOTE: the REGIME_TRANSITION cooldown length is owned by RegimeDetector
-# (RegimeConfig.TRANSITION_COOLDOWN_CANDLES). The orchestrator only mirrors
-# the detector's state; it does not run a second, independent counter.
+# Closed set of per-strategy reasons (design §6.5)
+REASON_ENABLED = "enabled"
+REASON_REGIME_RULE = "regime_rule"
+REASON_USER_DISABLED = "user_disabled"
+REASON_TRANSITION_COOLDOWN = "transition_cooldown"
+REASON_REGIME_UNAVAILABLE = "regime_unavailable"
+REASON_NOT_COMPUTED = "regime flags not yet computed"
 
 
 class StrategyOrchestrator:
@@ -42,10 +52,12 @@ class StrategyOrchestrator:
     """
 
     def __init__(self) -> None:
-        # underlying → remaining cooldown candle count
-        self._transition_cooldown: dict[str, int] = {}
+        # underlying → (cooldown remaining, as_of_utc): display mirror with a TTL
+        self._regime_cooldown: dict[str, tuple[int, datetime]] = {}
         # underlying → last known regime name
         self._current_regime: dict[str, str] = {}
+        # underlying → {strategy: (enabled, reason)} from the last merge
+        self._flag_state: dict[str, dict[str, tuple[bool, str]]] = {}
 
     # ── on_regime_detected ────────────────────────────────────────────────────
 
@@ -56,9 +68,9 @@ class StrategyOrchestrator:
         """
         Called after every regime classification.
 
-        Derives enabled-strategy flags from REGIME_RULES, enforces transition
-        cooldown, logs every strategy state change and position-size multiplier
-        change, then returns the flag dict.
+        Derives the 12 strategy flags from REGIME_RULES, refreshes the cooldown
+        mirror from the detector's state, logs every strategy state change and
+        position-size multiplier change, then returns the flag dict.
 
         Requirements: 11.2, 11.3, 11.4, 11.6, 11.7, 15.2, 15.3, 15.4,
                       20.1, 20.2, 20.3, 20.4, 20.5
@@ -77,38 +89,17 @@ class StrategyOrchestrator:
             for name in ALL_STRATEGY_NAMES
         }
 
-        # ── Transition cooldown bookkeeping ───────────────────────────────────
-        # The detector owns the cooldown (TRANSITION_COOLDOWN_CANDLES). The
-        # orchestrator mirrors it: in cooldown iff the current state is
-        # REGIME_TRANSITION. Re-arming a second counter on every TRANSITION
-        # candle (old behaviour) suppressed the first normal candles after
-        # each flip and, together with the detector bug, locked trading out.
-        if regime == "REGIME_TRANSITION":
-            remaining = max(int(regime_state.transition_cooldown_remaining or 0), 1)
-            self._transition_cooldown[underlying] = remaining
-            logger.debug(
-                "[StrategyOrchestrator] underlying=%s REGIME_TRANSITION — "
-                "%d cooldown candle(s) remaining (detector-owned)",
-                underlying, remaining,
-            )
-        elif self._transition_cooldown.pop(underlying, None) is not None:
-            logger.info(
-                "[StrategyOrchestrator] underlying=%s cooldown expired — "
-                "regime=%s strategies evaluated from this candle",
-                underlying, regime,
-            )
+        # ── Cooldown mirror (display only; the detector owns the counter) ─────
+        remaining = (int(regime_state.transition_cooldown_remaining or 0)
+                     if regime == "REGIME_TRANSITION" else 0)
+        self._regime_cooldown[underlying] = (remaining, now_utc())
 
         # ── Log per-strategy state changes ────────────────────────────────────
         # Req 15.2, 15.3: log every enable/disable with regime/underlying/ts
         prev_regime = self._current_regime.get(underlying)
         if prev_regime != regime:
-            # Regime changed — log every strategy that changed state
-            # We don't know previous flags by name, but any regime change
-            # potentially flips strategies, so log everything that is enabled
-            # or disabled under the new regime.
             for name in ALL_STRATEGY_NAMES:
-                new_state = flags[name]
-                if new_state:
+                if flags[name]:
                     logger.info(
                         "[StrategyOrchestrator] ENABLED  strategy=%s "
                         "regime=%s underlying=%s ts=%s",
@@ -124,11 +115,7 @@ class StrategyOrchestrator:
             # ── Log position-size multiplier change (Req 15.4) ───────────────
             old_multiplier: Optional[float] = None
             if prev_regime is not None:
-                try:
-                    old_rule = get_regime_rule(prev_regime, atr_pct)
-                    old_multiplier = old_rule.position_multiplier
-                except Exception:
-                    pass
+                old_multiplier = get_regime_rule(prev_regime, atr_pct).position_multiplier
 
             new_multiplier = rule.position_multiplier
             if old_multiplier is None or old_multiplier != new_multiplier:
@@ -144,18 +131,64 @@ class StrategyOrchestrator:
 
         return flags
 
+    # ── flag merge (design §6.4) ──────────────────────────────────────────────
+
+    def merge_flags(
+        self, underlying: str, regime_flags: dict[str, bool], user_flags: dict[str, bool],
+    ) -> dict[str, bool]:
+        """Final flags over the 12 canonical names only.
+
+        A strategy missing from *regime_flags* is disabled (R3.6); a
+        user-disabled strategy stays disabled in every regime (R3.7). The user
+        default stays True so a fresh strategy_flags JSON disables nothing.
+        The result is remembered for ``is_strategy_enabled``.
+        """
+        in_transition = self._current_regime.get(underlying) == "REGIME_TRANSITION"
+        state: dict[str, tuple[bool, str]] = {}
+        for name in ALL_STRATEGY_NAMES:
+            if not user_flags.get(name, True):
+                state[name] = (False, REASON_USER_DISABLED)
+            elif not regime_flags.get(name, False):
+                state[name] = (False, REASON_TRANSITION_COOLDOWN if in_transition
+                               else REASON_REGIME_RULE)
+            else:
+                state[name] = (True, REASON_ENABLED)
+        self._flag_state[underlying] = state
+        return {name: on for name, (on, _) in state.items()}
+
+    def mark_regime_unavailable(self, underlying: str) -> dict[str, bool]:
+        """Detection failed: every flag False (never the raw user flags)."""
+        self._flag_state[underlying] = {
+            name: (False, REASON_REGIME_UNAVAILABLE) for name in ALL_STRATEGY_NAMES
+        }
+        return {name: False for name in ALL_STRATEGY_NAMES}
+
+    def current_regime_name(self, underlying: str) -> Optional[str]:
+        """The last regime the orchestrator saw for *underlying*, or None."""
+        return self._current_regime.get(underlying)
+
+    def is_strategy_enabled(self, underlying: str, strategy_name: str) -> tuple[bool, str]:
+        """(enabled, reason) from the last merged flag set for *underlying*.
+        Fails closed when no flags have been computed yet."""
+        state = self._flag_state.get(underlying)
+        if state is None:
+            return False, REASON_NOT_COMPUTED
+        return state.get(strategy_name, (False, REASON_REGIME_RULE))
+
     # ── get_position_multiplier ───────────────────────────────────────────────
 
     def get_position_multiplier(self, underlying: str) -> float:
         """
         Return the position size multiplier for *underlying*'s current regime.
 
-        Returns 0.0 on any exception or when no regime is known.
+        Returns 0.0 on any exception or when no regime is known: an underlying
+        with no regime computed yet resolves to the no-trade DETECTOR_ERROR
+        rule, never to a tradeable-looking default.
 
         Requirements: 12.2
         """
         try:
-            regime = self._current_regime.get(underlying, "UNKNOWN")
+            regime = self._current_regime.get(underlying, "DETECTOR_ERROR")
             rule = get_regime_rule(regime)
             return rule.position_multiplier
         except Exception as exc:
@@ -178,63 +211,69 @@ class StrategyOrchestrator:
         Returns (ok, code, reason); the caller records the code (design §12),
         which keeps the orchestrator I/O-free.
 
-        If *regime_state* is None the signal passes through (no regime data →
-        don't block).
+        No regime state fails closed (§6.4): a signal the system cannot place
+        in a regime is not traded. TREND_HIGH_VOL permits only the direction
+        on the price side of VWAP.
 
         Requirements: 16.1–16.7
         """
         if regime_state is None:
-            return True, None, ""
+            return False, ReasonCode.REGIME_STATE_UNAVAILABLE, "regime state unavailable"
 
         underlying = signal.underlying
         regime = regime_state.regime
         atr_pct = regime_state.indicators.atr_percentile
         rule = get_regime_rule(regime, atr_pct)
 
-        # No directions allowed — regime blocks all trades
+        reason = ""
         if not rule.allowed_directions:
             reason = f"Regime {regime} allows no trades"
-            logger.info(
-                "[StrategyOrchestrator] SIGNAL SUPPRESSED strategy=%s "
-                "direction=%s underlying=%s regime=%s reason='%s' ts=%s",
-                signal.strategy_name, signal.direction.value, underlying,
-                regime, reason,
-                now_utc().isoformat(),
-            )
-            return False, ReasonCode.REGIME_DIRECTION_MISMATCH, reason
-
-        # Direction not permitted
-        if signal.direction.value not in rule.allowed_directions:
+        elif signal.direction.value not in rule.allowed_directions:
             reason = (
                 f"Regime {regime} does not permit direction "
-                f"{signal.direction.value} (allowed: {rule.allowed_directions})"
+                f"{signal.direction.value} (allowed: {sorted(rule.allowed_directions)})"
             )
+        elif regime == "TREND_HIGH_VOL":
+            ind = regime_state.indicators
+            required = "BUY" if ind.price > ind.vwap else "SELL"
+            if signal.direction.value != required:
+                reason = f"TREND_HIGH_VOL permits {required} only (price vs VWAP)"
+
+        if reason:
             # Req 16.6: log suppression
             logger.info(
                 "[StrategyOrchestrator] SIGNAL SUPPRESSED strategy=%s "
                 "direction=%s underlying=%s regime=%s reason='%s' ts=%s",
                 signal.strategy_name, signal.direction.value, underlying,
-                regime, reason,
-                now_utc().isoformat(),
+                regime, reason, now_utc().isoformat(),
             )
             return False, ReasonCode.REGIME_DIRECTION_MISMATCH, reason
 
-        # Transition cooldown blocks everything
-        if self.is_in_cooldown(underlying):
-            reason = f"Transition cooldown active for {underlying}"
-            return False, ReasonCode.TRANSITION_COOLDOWN, reason
-
         return True, None, ""
 
-    # ── is_in_cooldown ────────────────────────────────────────────────────────
+    # ── cooldown mirror (read-only; gates nothing) ────────────────────────────
+
+    def cooldown_remaining(self, underlying: str) -> int:
+        """The detector's remaining cooldown as last mirrored, or 0 when the
+        mirror is absent or older than cooldown_mirror_ttl_s."""
+        entry = self._regime_cooldown.get(underlying)
+        if entry is None:
+            return 0                       # never detected: the cycle gate owns this case
+        remaining, as_of = entry
+        if (now_utc() - as_of) > timedelta(seconds=params().cooldown_mirror_ttl_s):
+            return 0                       # stale mirror: REGIME_UNAVAILABLE gates the cycle
+        return remaining
 
     def is_in_cooldown(self, underlying: str) -> bool:
         """
-        Return True while the post-transition cooldown counter is > 0.
+        True while the detector's last mirrored state is REGIME_TRANSITION and
+        the mirror is fresh. Display only (GET /regime/strategy-map and the
+        diagnostics probe): a static test asserts it gates nothing outside
+        app/api/.
 
         Requirements: 20.2, 20.3
         """
-        return self._transition_cooldown.get(underlying, 0) > 0
+        return self.cooldown_remaining(underlying) > 0
 
     # ── record_trade_result ───────────────────────────────────────────────────
 

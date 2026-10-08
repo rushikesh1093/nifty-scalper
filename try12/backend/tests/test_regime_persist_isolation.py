@@ -93,8 +93,11 @@ def test_gating_block_does_not_reference_persistence():
     assert "AsyncSessionLocal" not in helper and "persist" not in helper
     assert "db_session=None" in helper
 
+    # the detection-failure branch decides the flags (all disabled, design §6.4)
+    # before, and independently of, the persistence call
     after = src[src.index("except Exception as _regime_err"):]
-    assert after.index("final_flags = flags") < after.index("_persist_regime_state")
+    assert after.index("mark_regime_unavailable") < after.index("_persist_regime_state")
+    assert "final_flags = flags" not in src
 
 
 @pytest.mark.parametrize("attr", ["is_running"])

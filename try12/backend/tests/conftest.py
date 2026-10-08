@@ -80,7 +80,8 @@ def _reset_singletons():
         paper_engine._square_off_cache = None
         regime_detector._regime_history.clear()
         regime_detector._last_log_time.clear()
-        strategy_orchestrator._transition_cooldown.clear()
+        strategy_orchestrator._regime_cooldown.clear()
+        strategy_orchestrator._flag_state.clear()
         strategy_orchestrator._current_regime.clear()
         strategy_runner._oi_iv_warned.clear()
         strategy_runner._seen.clear()
