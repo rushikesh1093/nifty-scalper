@@ -9,7 +9,7 @@ Responsibilities:
   - Merge regime flags with user flags (absent = disabled, user disable wins)
     and remember the result, so paper_engine can re-check authority (§6.4)
   - Filter signals by regime-permitted directions (fail closed on no state)
-  - Record per-regime P&L performance in the DB
+  - Record per-regime performance (one TradeOutcome, on the close's session)
   - Mirror the detector's transition cooldown for display only (§5)
 
 The REGIME_TRANSITION cooldown is owned by RegimeDetector alone. This class
@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from app.services.trading.trade_outcome import TradeOutcome
     from app.strategies.base import SignalEvent
 
 from app.services.trading.regime_persistence import RegimeState, regime_persistence
@@ -279,95 +280,70 @@ class StrategyOrchestrator:
 
     async def record_trade_result(
         self,
+        db_session,
+        *,
         regime: str,
         underlying: str,
         strategy_name: str,
-        pnl: float,
-        rr: float,
-        db_session=None,
+        outcome: "TradeOutcome",
     ) -> None:
         """
-        Upsert a ``regime_performance`` row with trade outcome data.
+        Upsert the run's ``regime_performance`` row with one TradeOutcome, on
+        the CLOSE's session (design §7). The caller commits.
+
+        A None session is a programming error, never a silent skip (R4.2).
+        Write failures propagate: paper_engine rolls the stats back, closes
+        the position without them and records PERF_WRITE_FAILED, and
+        reconcile_performance backfills.
+
+        Exact sums, not running means, so reconcile can recompute every
+        derived field (R15.6). Legacy Numeric columns are rounded to their
+        scale, as reconcile stores them.
 
         Requirements: 19.1, 19.2, 19.5, 19.6
         """
         if db_session is None:
-            logger.warning(
-                "[StrategyOrchestrator] record_trade_result called without "
-                "db_session — skipping performance update for "
-                "regime=%s underlying=%s strategy=%s pnl=%.2f",
-                regime, underlying, strategy_name, pnl,
-            )
-            return
+            raise TypeError("record_trade_result requires the close's db session")
 
-        try:
-            from sqlalchemy import select
-            from app.db.models.regime import RegimePerformanceModel
+        from sqlalchemy import select
+        from app.db.models.regime import RegimePerformanceModel
+        from app.services.trading.trade_outcome import accumulate
 
-            # Load or create the performance row
-            row: Optional[RegimePerformanceModel] = (
-                await db_session.execute(
-                    select(RegimePerformanceModel).where(
-                        RegimePerformanceModel.regime == regime,
-                        RegimePerformanceModel.underlying == underlying,
-                        RegimePerformanceModel.strategy_name == strategy_name,
-                        RegimePerformanceModel.run_id == ctx().run_id,
-                    )
+        run_id = ctx().run_id
+        row: Optional[RegimePerformanceModel] = (
+            await db_session.execute(
+                select(RegimePerformanceModel).where(
+                    RegimePerformanceModel.regime == regime,
+                    RegimePerformanceModel.underlying == underlying,
+                    RegimePerformanceModel.strategy_name == strategy_name,
+                    RegimePerformanceModel.run_id == run_id,
                 )
-            ).scalars().first()
-
-            if row is None:
-                row = RegimePerformanceModel(
-                    run_id=ctx().run_id,
-                    regime=regime,
-                    underlying=underlying,
-                    strategy_name=strategy_name,
-                    total_trades=0,
-                    winning_trades=0,
-                    losing_trades=0,
-                    total_pnl=0.0,
-                    first_trade_at=now_utc(),
-                )
-                db_session.add(row)
-
-            # Update counters
-            row.total_trades = (row.total_trades or 0) + 1
-            if pnl > 0:
-                row.winning_trades = (row.winning_trades or 0) + 1
-            else:
-                row.losing_trades = (row.losing_trades or 0) + 1
-
-            row.total_pnl = float(row.total_pnl or 0.0) + pnl
-            row.avg_pnl = row.total_pnl / row.total_trades
-            row.win_rate = (row.winning_trades / row.total_trades) * 100.0
-
-            # Rolling average R:R
-            if row.avg_rr is None:
-                row.avg_rr = rr
-            else:
-                # Simple running mean: avg = old_avg + (new - old_avg) / n
-                n = row.total_trades
-                row.avg_rr = float(row.avg_rr) + (rr - float(row.avg_rr)) / n
-
-            row.last_trade_at = now_utc()
-
-            await db_session.flush()
-
-            logger.debug(
-                "[StrategyOrchestrator] Recorded trade result: "
-                "regime=%s underlying=%s strategy=%s pnl=%.2f "
-                "total_trades=%d win_rate=%.1f%%",
-                regime, underlying, strategy_name, pnl,
-                row.total_trades, row.win_rate,
             )
+        ).scalars().first()
 
-        except Exception as exc:
-            # Req 19.6: catch and log, never raise
-            logger.warning(
-                "[StrategyOrchestrator] Failed to record trade result for "
-                "regime=%s underlying=%s strategy=%s: %s",
-                regime, underlying, strategy_name, exc,
+        if row is None:
+            row = RegimePerformanceModel(
+                run_id=run_id, regime=regime, underlying=underlying,
+                strategy_name=strategy_name, first_trade_at=outcome.exit_time,
             )
+            db_session.add(row)
+
+        accumulate(row, outcome)
+        row.total_pnl = round(float(row.total_pnl or 0.0) + outcome.net_pnl, 2)
+        row.avg_pnl = round(row.expectancy_inr, 2)
+        row.win_rate = round(row.win_rate, 2)
+        row.avg_r_multiple = row.expectancy_r
+        row.avg_rr = round(row.expectancy_r, 3) if row.expectancy_r is not None else None
+        row.last_trade_at = outcome.exit_time
+
+        await db_session.flush()
+
+        logger.debug(
+            "[StrategyOrchestrator] Recorded trade result: regime=%s underlying=%s "
+            "strategy=%s net=%.2f R=%s total_trades=%d win_rate=%.1f%%",
+            regime, underlying, strategy_name, outcome.net_pnl, outcome.r_multiple,
+            row.total_trades, float(row.win_rate),
+        )
 
     # ── get_current_regime ────────────────────────────────────────────────────
 

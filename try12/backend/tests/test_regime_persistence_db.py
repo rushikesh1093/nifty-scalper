@@ -90,7 +90,7 @@ def test_close_position_continues_when_regime_write_fails(sqlite_db, fake_redis,
     run(seed_config(sqlite_db, used_capital=6500.0))
     pid = run(add_position(sqlite_db, entry_regime="BULL_TREND_NORMAL_VOL"))
 
-    async def _boom(**kwargs):
+    async def _boom(*args, **kwargs):
         raise RuntimeError("regime perf write failed")
 
     monkeypatch.setattr(strategy_orchestrator, "record_trade_result", _boom)

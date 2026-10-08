@@ -49,6 +49,7 @@ from app.services.trading import fills, no_trade, trailing
 from app.services.trading.no_trade import Stage
 from app.services.trading.option_selector import SelectedOption, option_selector
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
+from app.services.trading.trade_outcome import TradeOutcome, build_outcome
 from app.services.trading.session_times import (
     DEFAULT_SQUARE_OFF, entry_cutoff, is_after_entry_cutoff,
     is_market_hours, parse_square_off,
@@ -978,6 +979,9 @@ class PaperEngine:
             pos = result.scalar_one_or_none()
             if not pos or not pos.is_open:
                 return
+            # Detached: the guarded UPDATE below is the only write to this row,
+            # and a stats rollback cannot expire the values read here.
+            db.expunge(pos)
 
             tick = None
             observed = None
@@ -1033,30 +1037,69 @@ class PaperEngine:
             hold_minutes = ((exit_time - entry_utc).total_seconds() / 60
                             if entry_utc is not None else None)
 
+            close_values = dict(
+                is_open      = False,
+                exit_price   = exit_price,
+                exit_slippage= exit_slip,
+                actual_exit  = actual_exit,
+                exit_reason  = reason,
+                exit_time    = exit_time,
+                gross_pnl    = total_gross,
+                brokerage    = total_brok,
+                statutory_charges = total_charges,
+                net_pnl      = total_net,
+                exit_fill_source    = exit_source,
+                exit_value_weighted = evw,
+                r_multiple          = r_multiple,
+                r_multiple_net      = r_multiple_net,
+                hold_minutes        = hold_minutes,
+            )
+            close_stmt = (update(PaperPosition)
+                          .where(PaperPosition.id == pos_id, PaperPosition.is_open == True)  # noqa: E712
+                          .values(**close_values))
             # Conditional on is_open so two concurrent closers (monitor loop,
             # EOD, kill switch) can never double-release capital.
-            upd = await db.execute(
-                update(PaperPosition)
-                .where(PaperPosition.id == pos_id, PaperPosition.is_open == True)
-                .values(
-                    is_open      = False,
-                    exit_price   = exit_price,
-                    exit_slippage= exit_slip,
-                    actual_exit  = actual_exit,
-                    exit_reason  = reason,
-                    exit_time    = exit_time,
-                    gross_pnl    = total_gross,
-                    brokerage    = total_brok,
-                    statutory_charges = total_charges,
-                    net_pnl      = total_net,
-                    exit_fill_source    = exit_source,
-                    exit_value_weighted = evw,
-                    r_multiple          = r_multiple,
-                    r_multiple_net      = r_multiple_net,
-                    hold_minutes        = hold_minutes,
-                )
+            upd = await db.execute(close_stmt)
+            if upd.rowcount != 1:
+                await db.rollback()
+                logger.info("[PaperEngine] pos %d already closed by another task — skipping", pos_id)
+                return
+
+            # One transaction: the close and its statistics (design §7). The
+            # final values are stamped on *pos* so the outcome reads them.
+            for k, v in close_values.items():
+                setattr(pos, k, v)
+            outcome = build_outcome(pos, run_id=ctx().run_id, trading_day=trading_day(),
+                                    params=p)
+            try:
+                await self._record_outcome(db, pos, outcome)
+                await db.commit()
+                stats_ok = True
+            except Exception as exc:
+                await db.rollback()
+                stats_ok = False
+                stats_error = exc
+
+        if not stats_ok:
+            # The position is never left open because of a statistics failure:
+            # close-only retry, then a visible degradation row. reconcile_performance
+            # rebuilds the aggregates from paper_positions.
+            async with sessions()() as db2:
+                upd = await db2.execute(close_stmt)
+                await db2.commit()
+            logger.error(
+                "[PaperEngine] stats write failed for pos %d — closed without stats, "
+                "run reconcile_performance to backfill: %s", pos_id, stats_error,
+                exc_info=stats_error,
             )
-            await db.commit()
+            await no_trade.record_degradation(
+                ctx().run_id, no_trade.ReasonCode.PERF_WRITE_FAILED, position_id=pos_id,
+                underlying=pos.underlying,
+                reason=f"stats write failed for pos {pos_id}: "
+                       f"{type(stats_error).__name__}: {stats_error}",
+                context=no_trade.as_context(strategy_name=pos.strategy_name,
+                                            regime=pos.entry_regime),
+            )
             if upd.rowcount != 1:
                 logger.info("[PaperEngine] pos %d already closed by another task — skipping", pos_id)
                 return
@@ -1072,36 +1115,6 @@ class PaperEngine:
         capital_to_release = pos.trade_amount_used or 0
         await mode_manager.on_position_closed(capital_to_release)
 
-        # Stamp the final values onto the in-memory pos for the aggregates
-        pos.gross_pnl = total_gross
-        pos.net_pnl   = total_net
-        pos.brokerage = total_brok
-        pos.statutory_charges = total_charges
-        pos.actual_exit = actual_exit
-        pos.r_multiple = r_multiple
-
-        # Update daily P&L (a DB failure here must not break the monitor loop)
-        try:
-            await self._update_daily_pnl(pos, total_net)
-        except Exception as _dpe:
-            logger.error("[PaperEngine] Daily P&L update failed for pos %d (non-fatal): %s", pos_id, _dpe)
-
-        # ── Record regime performance (own session; log-and-continue) ─────────────
-        if getattr(pos, 'entry_regime', None):
-            try:
-                async with sessions()() as rdb:
-                    await strategy_orchestrator.record_trade_result(
-                        regime=pos.entry_regime,
-                        underlying=pos.underlying,
-                        strategy_name=pos.strategy_name or "UNKNOWN",
-                        pnl=total_net,
-                        rr=r_multiple if pos.r_source == "ENTRY" else None,
-                        db_session=rdb,
-                    )
-                    await rdb.commit()
-            except Exception as _rpe:
-                logger.warning("[PaperEngine] Regime performance record failed (non-fatal): %s", _rpe)
-
         # Cleanup Redis
         await market().delete(f"pos:{pos_id}")
 
@@ -1114,91 +1127,78 @@ class PaperEngine:
             "exit":    exit_price,
         })
 
-    # ── Daily P&L aggregation ─────────────────────────────────────────────────
+    # ── Performance aggregates (design §7) ────────────────────────────────────
 
-    async def _update_daily_pnl(self, pos: PaperPosition, net_pnl: float):
-        today = trading_day()
+    async def _record_outcome(self, db: AsyncSession, pos: PaperPosition,
+                              outcome: TradeOutcome) -> None:
+        """regime_performance + strategy_perf + daily_pnl_summary, all on the
+        close's session. Any failure propagates to _close_position."""
+        from app.services.trading.mode_manager import mode_manager
 
-        # ── This trade's R: the stored r_multiple, against the initial risk ─────
-        # Never recomputed from stop_loss (which trailing overwrites, §8.4);
-        # None when the position has no ENTRY-sourced initial risk.
-        trade_rr: float | None = pos.r_multiple if pos.r_source == "ENTRY" else None
-
-        run_id = ctx().run_id
-        async with sessions()() as db:
-            result = await db.execute(
-                select(DailyPnLSummary).where(
-                    DailyPnLSummary.date          == today,
-                    DailyPnLSummary.strategy_name == pos.strategy_name,
-                    DailyPnLSummary.mode          == pos.mode,
-                    DailyPnLSummary.run_id        == run_id,
-                )
+        if outcome.entry_regime:
+            await strategy_orchestrator.record_trade_result(
+                db,
+                regime=outcome.entry_regime,
+                underlying=outcome.underlying,
+                strategy_name=outcome.strategy_name,
+                outcome=outcome,
             )
-            summary = result.scalar_one_or_none()
-            won = net_pnl > 0
+        await mode_manager.update_strategy_perf(db, outcome.strategy_name, outcome)
+        await self._update_daily_pnl(db, pos, outcome)
 
-            # ── worst_trade_loss: largest single-trade loss for this strategy today ──
-            # Defined as the most negative net_pnl among all closed trades today.
-            # A positive number means "₹X was the worst loss" (stored as positive).
-            # (Column renamed from max_drawdown in migration 0013, R15.4.)
-            new_worst_loss: float | None = None
-            if net_pnl < 0:
-                prev_dd = summary.worst_trade_loss if summary and summary.worst_trade_loss else 0.0
-                new_worst_loss = round(max(prev_dd, abs(net_pnl)), 2)
-            elif summary:
-                new_worst_loss = summary.worst_trade_loss  # keep existing
+    async def _update_daily_pnl(self, db: AsyncSession, pos: PaperPosition,
+                                outcome: TradeOutcome) -> None:
+        """Per strategy, trading day and mode (R4.4): exact sums of the four
+        P&L components (so gross − brokerage − charges == net holds on the
+        summary, R14.5), the R buckets, worst_trade_loss, and the day's
+        peak-to-trough max_equity_drawdown over this strategy's closes."""
+        from app.services.trading.session_times import trading_day_bounds_utc
+        from app.services.trading.trade_outcome import accumulate
 
-            # ── avg_rr: running mean of achieved R:R across all trades today ─────
-            new_avg_rr: float | None = None
-            if trade_rr is not None and summary and summary.total_trades > 0:
-                # Incremental mean: new_avg = (prev_avg * n + new_val) / (n + 1)
-                prev_avg = summary.avg_rr or 0.0
-                prev_n   = summary.total_trades   # count BEFORE this trade
-                new_avg_rr = round((prev_avg * prev_n + trade_rr) / (prev_n + 1), 3)
-            elif trade_rr is not None:
-                new_avg_rr = trade_rr  # first trade for this strategy today
+        today = outcome.trading_day
+        run_id = outcome.run_id
+        summary = (await db.execute(
+            select(DailyPnLSummary).where(
+                DailyPnLSummary.date          == today,
+                DailyPnLSummary.strategy_name == outcome.strategy_name,
+                DailyPnLSummary.mode          == pos.mode,
+                DailyPnLSummary.run_id        == run_id,
+            )
+        )).scalar_one_or_none()
+        if summary is None:
+            summary = DailyPnLSummary(run_id=run_id, date=today,
+                                      strategy_name=outcome.strategy_name, mode=pos.mode)
+            db.add(summary)
 
-            if summary:
-                summary.total_trades   += 1
-                summary.winning_trades += int(won)
-                summary.losing_trades  += int(not won)
-                summary.net_pnl    = round(summary.net_pnl   + net_pnl, 2)
-                summary.gross_pnl  = round(summary.gross_pnl + (pos.gross_pnl or 0), 2)
-                summary.brokerage  = round(summary.brokerage  + (pos.brokerage or 0), 2)
-                summary.win_rate   = round(
-                    summary.winning_trades / summary.total_trades * 100, 1
-                )
-                summary.total_lots    = (summary.total_lots or 0) + pos.lots
-                summary.worst_trade_loss = new_worst_loss
-                summary.avg_rr        = new_avg_rr
-            else:
-                summary = DailyPnLSummary(
-                    run_id         = run_id,
-                    date           = today,
-                    strategy_name  = pos.strategy_name or "UNKNOWN",
-                    mode           = pos.mode,
-                    total_trades   = 1,
-                    winning_trades = int(won),
-                    losing_trades  = int(not won),
-                    win_rate       = 100.0 if won else 0.0,
-                    gross_pnl      = round(pos.gross_pnl or 0, 2),
-                    brokerage      = round(pos.brokerage or 0, 2),
-                    net_pnl        = round(net_pnl, 2),
-                    total_lots     = pos.lots,
-                    worst_trade_loss = new_worst_loss,
-                    avg_rr         = new_avg_rr,
-                )
-                db.add(summary)
-            await db.commit()
+        accumulate(summary, outcome)
+        summary.gross_pnl = float(summary.gross_pnl or 0.0) + outcome.gross_pnl
+        summary.brokerage = float(summary.brokerage or 0.0) + outcome.brokerage
+        summary.statutory_charges = float(summary.statutory_charges or 0.0) + outcome.statutory_charges
+        summary.net_pnl = float(summary.net_pnl or 0.0) + outcome.net_pnl
+        summary.total_lots = (summary.total_lots or 0) + outcome.lots
+        summary.avg_rr = summary.expectancy_r
+        if outcome.net_pnl < 0:
+            summary.worst_trade_loss = max(float(summary.worst_trade_loss or 0.0), -outcome.net_pnl)
 
-        # ── Update all-time StrategyPerf for half-Kelly sizing ────────────────
-        # This is fire-and-forget — a failure here must never break P&L recording.
-        from app.services.trading.mode_manager import mode_manager as _mm
-        await _mm.update_strategy_perf(
-            strategy_name = pos.strategy_name or "UNKNOWN",
-            won           = won,
-            achieved_rr   = trade_rr,
-        )
+        # Peak-to-trough of the day's cumulative net for this strategy. The
+        # close above is flushed in this transaction, so it is included.
+        start, end = trading_day_bounds_utc(today)
+        nets = (await db.execute(
+            select(PaperPosition.net_pnl)
+            .where(PaperPosition.run_id == run_id,
+                   PaperPosition.strategy_name == outcome.strategy_name,
+                   PaperPosition.mode == pos.mode,
+                   PaperPosition.is_open == False,  # noqa: E712
+                   PaperPosition.exit_time >= start, PaperPosition.exit_time < end)
+            .order_by(PaperPosition.exit_time, PaperPosition.id)
+        )).scalars().all()
+        cum = peak = dd = 0.0
+        for n in nets:
+            cum += float(n or 0.0)
+            peak = max(peak, cum)
+            dd = max(dd, peak - cum)
+        summary.max_equity_drawdown = dd
+        await db.flush()
 
     # ── Signal persistence ────────────────────────────────────────────────────
 

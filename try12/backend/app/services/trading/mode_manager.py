@@ -489,82 +489,56 @@ class ModeManager:
             fallback = min(per_trade_budget(cfg), kelly_max_amount)
             return max(fallback, kelly_min_amount)
 
-    async def update_strategy_perf(
-        self, strategy_name: str, won: bool, achieved_rr: Optional[float]
-    ) -> None:
+    async def update_strategy_perf(self, db, strategy_name: str, outcome) -> None:
         """
-        Incrementally update StrategyPerf after a closed trade.
-        Called from PaperEngine._update_daily_pnl().
+        Add one TradeOutcome to the run's all-time StrategyPerf row, on the
+        CLOSE's session *db* (design §7); the caller commits. Write failures
+        propagate so paper_engine records PERF_WRITE_FAILED and reconcile can
+        backfill — a silently skipped update would desynchronise Kelly.
 
-        Uses incremental mean formula to avoid storing all historical trades:
-            new_avg = (prev_avg × n + new_val) / (n + 1)
-
-        The kelly_fraction is recomputed and cached so kelly_trade_amount()
-        can read it cheaply without recalculating every time.
+        Exact sums plus the R-sign buckets Kelly reads (§9.5):
+        winning_trades_r / losing_trades_r count only R-valid trades, keyed on
+        the sign of r_multiple, never on net P&L. avg_rr is kept equal to
+        expectancy_r for the legacy kelly_trade_amount reader, and
+        kelly_fraction is the cached value of that same (pre-FEAT-005) formula.
         """
-        try:
-            async with sessions()() as db:
-                result = await db.execute(
-                    select(StrategyPerf).where(
-                        StrategyPerf.strategy_name == strategy_name,
-                        StrategyPerf.run_id == ctx().run_id,
-                    )
-                )
-                perf = result.scalar_one_or_none()
+        from app.services.trading.trade_outcome import accumulate
 
-                if perf is None:
-                    perf = StrategyPerf(
-                        run_id         = ctx().run_id,
-                        strategy_name  = strategy_name,
-                        total_trades   = 0,
-                        winning_trades = 0,
-                    )
-                    db.add(perf)
-
-                n = perf.total_trades or 0
-                perf.total_trades   = n + 1
-                perf.winning_trades = (perf.winning_trades or 0) + int(won)
-                perf.win_rate       = round(perf.winning_trades / perf.total_trades * 100, 2)
-
-                # Update avg_rr via incremental mean (only when we have an rr value)
-                if achieved_rr is not None:
-                    prev_avg = perf.avg_rr or 0.0
-                    perf.avg_rr = round(
-                        (prev_avg * n + achieved_rr) / perf.total_trades, 4
-                    )
-
-                # Recompute and cache kelly_fraction
-                if (
-                    perf.total_trades >= KELLY_MIN_TRADES
-                    and perf.win_rate
-                    and perf.avg_rr
-                    and perf.avg_rr > 0
-                ):
-                    p = perf.win_rate / 100.0
-                    q = 1.0 - p
-                    b = perf.avg_rr
-                    kelly_full = (p * b - q) / b
-                    perf.kelly_fraction = round(max(0.0, kelly_full) * 0.5, 6)
-                else:
-                    perf.kelly_fraction = None  # not enough data yet
-
-                await db.commit()
-
-                logger.debug(
-                    "[Kelly] Updated %s: trades=%d wins=%d win_rate=%.1f%% "
-                    "avg_rr=%.3f kelly_fraction=%s",
-                    strategy_name, perf.total_trades, perf.winning_trades,
-                    perf.win_rate or 0,
-                    perf.avg_rr or 0,
-                    f"{perf.kelly_fraction:.4f}" if perf.kelly_fraction else "N/A (< %d trades)" % KELLY_MIN_TRADES,
-                )
-
-        except Exception as exc:
-            # Non-fatal — a failed perf update must never break position closing
-            logger.warning(
-                "[Kelly] update_strategy_perf failed for %s: %s",
-                strategy_name, exc,
+        if db is None:
+            raise TypeError("update_strategy_perf requires the close's db session")
+        perf = (await db.execute(
+            select(StrategyPerf).where(
+                StrategyPerf.strategy_name == strategy_name,
+                StrategyPerf.run_id == ctx().run_id,
             )
+        )).scalar_one_or_none()
+        if perf is None:
+            perf = StrategyPerf(run_id=ctx().run_id, strategy_name=strategy_name)
+            db.add(perf)
+
+        accumulate(perf, outcome)
+        perf.winning_trades_r = (perf.winning_trades_r or 0) + int(outcome.r_bucket == "R_WIN")
+        perf.losing_trades_r = (perf.losing_trades_r or 0) + int(outcome.r_bucket == "R_LOSS")
+        perf.avg_win_r = (perf.sum_r_win / perf.winning_trades_r) if perf.winning_trades_r else None
+        perf.avg_loss_r = (abs(perf.sum_r_loss) / perf.losing_trades_r) \
+            if perf.losing_trades_r else None
+        perf.avg_rr = perf.expectancy_r
+
+        if (perf.total_trades >= KELLY_MIN_TRADES and perf.win_rate
+                and perf.avg_rr and perf.avg_rr > 0):
+            p = perf.win_rate / 100.0
+            b = perf.avg_rr
+            perf.kelly_fraction = round(max(0.0, (p * b - (1.0 - p)) / b) * 0.5, 6)
+        else:
+            perf.kelly_fraction = None          # not enough data yet
+        await db.flush()
+
+        logger.debug(
+            "[Kelly] Updated %s: trades=%d wins=%d win_rate=%.1f%% expectancy_r=%s "
+            "R buckets=%d/%d",
+            strategy_name, perf.total_trades, perf.winning_trades, perf.win_rate,
+            perf.expectancy_r, perf.winning_trades_r, perf.losing_trades_r,
+        )
 
     async def reset_daily_counter(self):
         """Manual reset of daily_trades_count (stamps today's IST date)."""
