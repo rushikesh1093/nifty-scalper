@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.schemas.auth import LoginRequest, LoginResponse, SessionStatusResponse
-from app.services.broker.angel_client import angel_client, _session
+from app.services.broker.angel_client import angel_client, _session, set_credentials
 from app.services.market_data.feed import market_feed
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -13,13 +13,8 @@ async def login(req: LoginRequest):
     In production these come from .env; this endpoint is useful for
     runtime credential override / re-login.
     """
-    from app.core.config import settings
     # Temporarily override settings for this login
-    import app.core.config as cfg
-    cfg.settings.ANGEL_API_KEY    = req.api_key
-    cfg.settings.ANGEL_CLIENT_ID  = req.client_id
-    cfg.settings.ANGEL_PASSWORD   = req.password
-    cfg.settings.ANGEL_TOTP_SECRET = req.totp_secret
+    set_credentials(req.api_key, req.client_id, req.password, req.totp_secret)
 
     try:
         session = await angel_client.login()

@@ -102,7 +102,8 @@ class StrategyRunner:
         await mode_manager.reset_daily_counter_if_new_day()
         # Also reconcile used_capital against actual open positions to fix any
         # drift caused by server restarts mid-session.
-        await mode_manager.reconcile_used_capital()
+        from app.db.base import AsyncSessionLocal
+        await mode_manager.reconcile_used_capital(session_factory=AsyncSessionLocal)
         # Reset the signal aggregator cooldown map so yesterday's last-acted
         # timestamps don't suppress the first valid signals of the new session.
         # Without this, a signal fired at 14:55 yesterday would still be in

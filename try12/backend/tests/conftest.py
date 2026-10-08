@@ -34,6 +34,7 @@ def _bigint_as_integer_on_sqlite(type_, compiler, **kw):
 
 # Import the modules whose AsyncSessionLocal binding we must patch.
 import app.db.base  # noqa: E402,F401
+import app.main  # noqa: E402,F401  (its lifespan reads AsyncSessionLocal before any context exists)
 import app.services.trading.mode_manager  # noqa: E402,F401
 import app.services.trading.paper_engine  # noqa: E402,F401
 import app.services.trading.strategy_runner  # noqa: E402,F401

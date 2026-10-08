@@ -60,7 +60,6 @@ try:  # websockets >= 10 exposes the connection state enum here (17.1 installed)
 except Exception:  # pragma: no cover — very old websockets
     _WsState = None
 
-from app.core.config import settings
 from app.services.broker.angel_client import _session, angel_client
 
 logger = logging.getLogger(__name__)
@@ -295,12 +294,7 @@ class MarketFeed:
 
     async def _connect(self):
         # Official header spec — lowercase keys, jwt WITHOUT "Bearer " prefix
-        headers = {
-            "Authorization": _session.jwt_token or "",
-            "x-api-key":     settings.ANGEL_API_KEY,
-            "x-client-code": settings.ANGEL_CLIENT_ID,
-            "x-feed-token":  _session.feed_token or "",
-        }
+        headers = _session.ws_feed_headers
 
         logger.info("Connecting to AngelOne WebSocket...")
         async with websockets.connect(

@@ -53,11 +53,31 @@ class AngelSession:
             "X-FeedToken":   self.feed_token or "",
         }
 
+    # Headers for the market-data WebSocket (official spec: lowercase keys,
+    # jwt WITHOUT the "Bearer " prefix). Built here so credential settings are
+    # read in exactly one module (R1.7).
+    @property
+    def ws_feed_headers(self) -> dict:
+        return {
+            "Authorization": self.jwt_token or "",
+            "x-api-key":     settings.ANGEL_API_KEY,
+            "x-client-code": settings.ANGEL_CLIENT_ID,
+            "x-feed-token":  self.feed_token or "",
+        }
+
     def is_valid(self) -> bool:
         if not self.jwt_token or not self.logged_in_at:
             return False
         elapsed = (datetime.now() - self.logged_in_at).total_seconds()
         return elapsed < 7 * 3600   # refresh before 8-hour expiry
+
+
+def set_credentials(api_key: str, client_id: str, password: str, totp_secret: str) -> None:
+    """Runtime credential override (POST /auth/login). Values are held in-process only."""
+    settings.ANGEL_API_KEY = api_key
+    settings.ANGEL_CLIENT_ID = client_id
+    settings.ANGEL_PASSWORD = password
+    settings.ANGEL_TOTP_SECRET = totp_secret
 
 
 # App-level session singleton.
@@ -132,7 +152,7 @@ class AngelClient:
         _session.client_code   = settings.ANGEL_CLIENT_ID
         _session.logged_in_at  = datetime.now()
 
-        logger.info("✅ AngelOne login OK | client=%s", settings.ANGEL_CLIENT_ID)
+        logger.info("✅ AngelOne login OK")   # credential values are never logged (R1.7)
         return _session
 
     async def refresh_tokens(self) -> AngelSession:
@@ -353,64 +373,22 @@ class AngelClient:
         return resp.json().get("data", {}) or {}
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Orders
+    # Orders — PAPER TRADING ONLY (design §13, R1.2)
+    #
+    # This client has NO order-placing, order-modifying or order-cancelling
+    # method. They were deleted rather than guarded: a guard is a thing that
+    # can be mis-set. tests/test_paper_only_guard.py fails if one reappears.
+    #
+    # Three read-only methods remain on AngelOne's `order/v1` path, because
+    # AngelOne groups them there even though none of them places anything:
+    #   search_scrip    -> order/v1/searchScrip   (instrument/token lookup)
+    #   get_order_book  -> order/v1/getOrderBook  (empty for a paper account)
+    #   get_positions   -> order/v1/getPosition   (operator reconciliation)
+    # They are the only entries of ALLOWED_ORDER_PATHS in the guard test. That
+    # allowlist is not a loophole: any new order/v1 path fails the suite until
+    # it is deliberately added there, and broker paths may appear in no module
+    # other than this one.
     # ─────────────────────────────────────────────────────────────────────────
-
-    async def place_order(
-        self,
-        variety: str,
-        trading_symbol: str,
-        symbol_token: str,
-        exchange: str,
-        transaction_type: str,
-        order_type: str,
-        product_type: str,
-        quantity: int,
-        price: float = 0,
-        trigger_price: float = 0,
-        squareoff: float = 0,
-        stoploss: float = 0,
-        trailing_stoploss: float = 0,
-    ) -> str:
-        """Place order. Returns broker order ID string."""
-        await self.ensure_logged_in()
-        http = await self._client()
-        resp = await http.post(
-            "/rest/secure/angelbroking/order/v1/placeOrder",
-            json={
-                "variety":          variety,
-                "tradingsymbol":    trading_symbol,
-                "symboltoken":      symbol_token,
-                "transactiontype":  transaction_type,
-                "exchange":         exchange,
-                "ordertype":        order_type,
-                "producttype":      product_type,
-                "duration":         "DAY",
-                "price":            str(price),
-                "squareoff":        str(squareoff),
-                "stoploss":         str(stoploss),
-                "trailingstoploss": str(trailing_stoploss),
-                "quantity":         str(quantity),
-                "triggerprice":     str(trigger_price),
-            },
-            headers=_session.auth_headers,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get("status"):
-            raise RuntimeError(f"Order placement failed: {data.get('message')}")
-        return data["data"]["orderid"]
-
-    async def cancel_order(self, variety: str, order_id: str) -> bool:
-        await self.ensure_logged_in()
-        http = await self._client()
-        resp = await http.post(
-            "/rest/secure/angelbroking/order/v1/cancelOrder",
-            json={"variety": variety, "orderid": order_id},
-            headers=_session.auth_headers,
-        )
-        resp.raise_for_status()
-        return resp.json().get("status", False)
 
     async def get_order_book(self) -> list[dict]:
         await self.ensure_logged_in()

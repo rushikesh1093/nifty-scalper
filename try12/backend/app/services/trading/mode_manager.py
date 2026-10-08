@@ -42,12 +42,46 @@ class ModeManager:
             )
             return result.scalar_one_or_none()
 
-    async def ensure_config(self) -> TradingConfig:
+    async def _write_halt(self, halt_type: str, code: str, *, reason: str, session_factory) -> None:
+        """
+        Block entries and record why. The in-memory flag is set first so the
+        block holds even if the DB write fails. Only the halt columns are
+        written; mode / live_mode_confirmed are never touched here (refuse,
+        don't patch — design §11).
+        """
+        self._halted = True
+        logger.error("%s halt (%s): %s", code, halt_type, reason)
+        try:
+            async with session_factory() as db:
+                await db.execute(
+                    update(TradingConfig)
+                    .where(TradingConfig.id == 1)
+                    .values(
+                        trading_halted=True,
+                        halted_reason=f"{code}: {reason}"[:200],
+                        halted_at=datetime.now(timezone.utc),
+                    )
+                )
+                await db.commit()
+        except Exception as exc:
+            logger.error("%s halt DB write failed (in-memory halt holds): %s", code, exc)
+
+    async def ensure_config(self, *, session_factory) -> TradingConfig:
         """
         Guarantee that the single TradingConfig row (id=1) exists.
         Call once at startup. Idempotent — safe to call multiple times.
         Always ensures study_phase=False so paper trading is active.
         Also corrects any legacy rows that have under-sized capital or lot limits.
+
+        Runs before any RuntimeContext is bound, so the session factory is an
+        explicit argument (design §6.6).
+
+        mode / live_mode_confirmed are NEVER patched on an existing row. A row
+        reading mode != PAPER or live_mode_confirmed = True gets a
+        CONFIG_INVALID halt and is left as found, so startup check 1 sees the
+        bad value and refuses to start (design §6.3 check 1, §11). A new row
+        is still created as PAPER / not confirmed, and update_config still
+        forces both on every write.
 
         All risk parameters are computed as fractions of capital so the system
         behaves correctly from ₹15,000 to ₹10,00,000 without manual tuning:
@@ -56,7 +90,7 @@ class ModeManager:
                              → 60% max deployment across concurrent positions
           max_daily_loss    = 5% of capital
         """
-        async with AsyncSessionLocal() as db:
+        async with session_factory() as db:
             result = await db.execute(
                 select(TradingConfig).where(TradingConfig.id == 1)
             )
@@ -67,6 +101,8 @@ class ModeManager:
                 max_pos      = max(2, int(capital / trade_amount * 0.6))
                 cfg = TradingConfig(
                     id=1,
+                    mode=TradingMode.PAPER,
+                    live_mode_confirmed=False,
                     study_phase=False,
                     capital=capital,
                     trade_amount=trade_amount,
@@ -85,8 +121,17 @@ class ModeManager:
                 )
                 return cfg
 
-            # Patch fields that may have been set to bad values
-            patches: dict = {"mode": TradingMode.PAPER, "live_mode_confirmed": False}
+            # Patch fields that may have been set to bad values.
+            # mode / live_mode_confirmed are deliberately NOT in this dict:
+            # refuse, don't patch (design §6.3 check 1a).
+            patches: dict = {}
+            if cfg.mode is not TradingMode.PAPER or cfg.live_mode_confirmed:
+                await self._write_halt(
+                    "MANUAL", "CONFIG_INVALID",
+                    reason=f"mode={cfg.mode!r} live_mode_confirmed={cfg.live_mode_confirmed!r}",
+                    session_factory=session_factory,
+                )
+                # do not patch -- let run_startup_checks fail
 
             if cfg.study_phase:
                 patches["study_phase"] = False
@@ -530,12 +575,14 @@ class ModeManager:
         )
         return True
 
-    async def reconcile_used_capital(self):
+    async def reconcile_used_capital(self, *, session_factory):
         """
         Recompute used_capital from actual open positions.
         Fixes drift caused by server restarts mid-session.
+        The session factory is explicit because the lifespan calls this
+        before any RuntimeContext is bound (design §6.6).
         """
-        async with AsyncSessionLocal() as db:
+        async with session_factory() as db:
             result = await db.execute(
                 select(func.sum(PaperPosition.trade_amount_used))
                 .where(PaperPosition.is_open == True)

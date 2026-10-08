@@ -9,7 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.db.base import AsyncSessionLocal
 from app.services.cache.redis_client import redis_cache
+from app.services.trading.startup_checks import (
+    StartupAssertionError, assert_paper_mode, run_startup_checks,
+)
 from app.services.market_data.market_manager import market_manager
 from app.api.routes import auth, market, instruments, trading
 from app.api.routes.report import router as report_router
@@ -22,30 +26,48 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
+    # Order is fixed by design §6.6. Nothing above the narrowed loop-start
+    # `try` may sit inside a handler that catches Exception: the paper guard
+    # must be able to stop the process (tests/test_lifespan_guard.py).
     logger.info("Starting %s...", settings.APP_NAME)
+
+    from app.services.trading.strategy_runner import strategy_runner
+    from app.services.market_data.study_collector import study_collector
+    from app.services.trading.mode_manager import mode_manager
 
     # Connect Redis
     await redis_cache.connect()
 
-    # Start market data pipeline (login → instrument sync → feed)
+    try:
+        # 1. Paper preflight: raw-scalar read, BEFORE any ORM hydration of trading_config
+        v = await assert_paper_mode(AsyncSessionLocal, allow_absent=True)
+        if v:
+            raise StartupAssertionError(v)
+        await mode_manager.ensure_config(session_factory=AsyncSessionLocal)   # creates the row if absent
+        await mode_manager.reconcile_used_capital(session_factory=AsyncSessionLocal)
+        await run_startup_checks(require_config_row=True)   # raises on violation
+    except StartupAssertionError:
+        logger.critical("Startup assertions failed -- refusing to start")  # violations already logged at ERROR
+        await redis_cache.disconnect()
+        raise                                           # propagates out of lifespan -> uvicorn exits non-zero
+    except Exception as exc:                            # DB unreachable, etc.
+        await redis_cache.disconnect()
+        raise StartupAssertionError([f"startup could not prove paper mode: {exc!r}"]) from exc
+
+    # 2. Market data: only after the guard has passed (login → instrument sync → feed)
     market_started = False
     try:
         await market_manager.startup()
         market_started = True
-    except Exception as exc:
+    except Exception as exc:                            # unchanged tolerance: app may run feedless
         logger.error("MarketManager startup error: %s", exc, exc_info=True)
         logger.warning(
             "⚠️  App started WITHOUT live market feed. "
             "Check AngelOne credentials and Redis/Postgres connectivity."
         )
 
-    # Start strategy runner + study collector
-    from app.services.trading.strategy_runner import strategy_runner
-    from app.services.market_data.study_collector import study_collector
-    from app.services.trading.mode_manager import mode_manager
+    # 3. Loops: the ONLY tolerant block left
     try:
-        await mode_manager.ensure_config()
-        await mode_manager.reconcile_used_capital()
         await strategy_runner.start()
         await study_collector.start()
     except Exception as exc:

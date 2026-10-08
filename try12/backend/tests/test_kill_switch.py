@@ -32,7 +32,7 @@ def test_kill_switch_halts_squares_off_and_persists(sqlite_db, fake_redis):
     assert not ok and "Kill switch active" in reason
 
     # ensure_config (startup) must not clear the halt
-    run(fresh.ensure_config())
+    run(fresh.ensure_config(session_factory=sqlite_db))
     assert run(get_config_row(sqlite_db)).trading_halted is True
 
     status = run(routes.kill_switch_status())
