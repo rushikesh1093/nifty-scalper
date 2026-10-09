@@ -42,6 +42,7 @@ REASON_ENABLED = "enabled"
 REASON_REGIME_RULE = "regime_rule"
 REASON_USER_DISABLED = "user_disabled"
 REASON_TRANSITION_COOLDOWN = "transition_cooldown"
+REASON_DAILY_STRATEGY_HALT = "daily_strategy_halt"
 REASON_REGIME_UNAVAILABLE = "regime_unavailable"
 REASON_NOT_COMPUTED = "regime flags not yet computed"
 
@@ -59,6 +60,10 @@ class StrategyOrchestrator:
         self._current_regime: dict[str, str] = {}
         # underlying → {strategy: (enabled, reason)} from the last merge
         self._flag_state: dict[str, dict[str, tuple[bool, str]]] = {}
+        # (run_id, trading_day) → strategies halted for the day by the losing
+        # streak (design §9.4). A cache of state derived from closed positions
+        # by risk_state and pushed here; never a counter.
+        self._daily_halts: dict[tuple, frozenset] = {}
 
     # ── on_regime_detected ────────────────────────────────────────────────────
 
@@ -174,7 +179,16 @@ class StrategyOrchestrator:
         state = self._flag_state.get(underlying)
         if state is None:
             return False, REASON_NOT_COMPUTED
-        return state.get(strategy_name, (False, REASON_REGIME_RULE))
+        enabled, why = state.get(strategy_name, (False, REASON_REGIME_RULE))
+        if enabled and strategy_name in self._daily_halts.get(
+                (ctx().run_id, ctx().clock.trading_day()), frozenset()):
+            return False, REASON_DAILY_STRATEGY_HALT
+        return enabled, why
+
+    def set_daily_halts(self, strategies) -> None:
+        """Publish today's streak-halted strategies (risk_state.streak_state)."""
+        key = (ctx().run_id, ctx().clock.trading_day())
+        self._daily_halts = {key: frozenset(strategies)}
 
     # ── get_position_multiplier ───────────────────────────────────────────────
 

@@ -90,6 +90,7 @@ class StrategyRunner:
         self._seen: set[tuple] = set()
         self._seen_day: Optional[date] = None
         self._strategy_gate_last: dict[tuple, Optional[str]] = {}
+        self._cache_warned_at: float = float("-inf")
 
     async def start(self):
         self._running = True
@@ -134,14 +135,11 @@ class StrategyRunner:
     async def _pre_market_setup(self):
         """
         Fetch previous day OHLC and set PDH/PDL, CPR, prev_close on strategies.
-        Called on startup and at 9:00 daily. Also resets the daily trade counter.
+        Called on startup and at 9:00 daily. The daily trade count is DERIVED from
+        persisted positions (risk_state, design §9.2), so nothing is reset here:
+        a restart cannot clear it, and replay calls this once per replayed day
+        without writing trading_config.
         """
-        # Reset the daily counter only when the IST trading date changed, so a
-        # mid-day restart (or uvicorn --reload) does not wipe today's count.
-        await mode_manager.reset_daily_counter_if_new_day()
-        # Also reconcile used_capital against actual open positions to fix any
-        # drift caused by server restarts mid-session.
-        await mode_manager.reconcile_used_capital(session_factory=ctx().sessions)
         # Reset the signal aggregator cooldown map so yesterday's last-acted
         # timestamps don't suppress the first valid signals of the new session.
         # Without this, a signal fired at 14:55 yesterday would still be in
@@ -149,7 +147,7 @@ class StrategyRunner:
         # but must not carry across calendar days).
         from app.strategies.base import signal_aggregator
         signal_aggregator.reset()
-        logger.info("Daily trades counter checked (date-based) and signal aggregator cleared for new session.")
+        logger.info("Signal aggregator cleared for new session.")
         from app.db.models.market_study import MarketDailySnapshot
         from sqlalchemy import select, desc
 
@@ -220,10 +218,29 @@ class StrategyRunner:
                 await asyncio.sleep(CANDLE_CHECK_INTERVAL)
                 for underlying in ["NIFTY", "BANKNIFTY"]:
                     await self.run_cycle(underlying)
+                await self._refresh_display_caches()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Candle loop error: %s", e, exc_info=True)
+
+    async def _refresh_display_caches(self) -> None:
+        """Live loop only (replay drives run_cycle and never starts this loop, so
+        it never writes trading_config): recompute the PAPER display caches
+        (used_capital, daily_trades_count) and publish the streak-halted
+        strategies for GET /regime/strategy-map. Display only; a failure is a
+        rate-limited WARNING and never touches trading (design §20.4)."""
+        try:
+            await mode_manager.reconcile_used_capital(session_factory=ctx().sessions)
+            from app.services.trading import risk_state
+            async with sessions()() as db:
+                state = await risk_state.streak_state(db, ctx().run_id, trading_day())
+            strategy_orchestrator.set_daily_halts(state.halted_strategies)
+        except Exception as exc:
+            now = _time.monotonic()
+            if now - self._cache_warned_at >= 600:
+                self._cache_warned_at = now
+                logger.warning("Display cache refresh failed (display only): %s", exc)
 
     async def run_cycle(self, underlying: str) -> None:
         """One candle step for one underlying (design §14.2). The live loop and

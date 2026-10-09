@@ -41,6 +41,94 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def reset_singletons() -> None:
+    """Clear every in-memory singleton state — the conftest reset around each
+    test, and the 'simulated restart' in the derived-state tests (§9.2-§9.4)."""
+    from app.main import app as fastapi_app
+    from app.services.trading.mode_manager import mode_manager
+    from app.services.trading.paper_engine import paper_engine
+    from app.services.trading.regime_detector import regime_detector
+    from app.services.trading.strategy_orchestrator import strategy_orchestrator
+    from app.services.trading.strategy_runner import strategy_runner
+    from app.strategies.base import signal_aggregator
+
+    mode_manager._halted = False
+    paper_engine._last_known.clear()
+    paper_engine._last_persist.clear()
+    paper_engine._stale_warned.clear()
+    paper_engine._stale_deferred.clear()
+    paper_engine._square_off_cache = None
+    regime_detector._regime_history.clear()
+    regime_detector._last_log_time.clear()
+    strategy_orchestrator._regime_cooldown.clear()
+    strategy_orchestrator._flag_state.clear()
+    strategy_orchestrator._current_regime.clear()
+    getattr(strategy_orchestrator, "_daily_halts", {}).clear()
+    strategy_runner._oi_iv_warned.clear()
+    strategy_runner._seen.clear()
+    strategy_runner._seen_day = None
+    strategy_runner._strategy_gate_last.clear()
+    signal_aggregator.reset()
+    try:
+        from app.services.trading import risk_gate
+        risk_gate._sqlite_locks.clear()
+    except ImportError:            # fail-before runs against the pre-FEAT-005 tree
+        pass
+    fastapi_app.state.runtime_context = None    # a lifespan test must not leak its context
+
+
+def with_cfg(rc, **overrides):
+    """*rc* with RunConfig fields overridden, for ``using(...)``."""
+    import dataclasses
+    return dataclasses.replace(rc, cfg=dataclasses.replace(rc.cfg, **overrides))
+
+
+def with_params(rc, **overrides):
+    """*rc* with TradingParams fields overridden, for ``using(...)``."""
+    import dataclasses
+    from app.runtime.live import StaticParams
+    return dataclasses.replace(
+        rc, params=StaticParams(dataclasses.replace(rc.params.current(), **overrides)))
+
+
+class FakeInstruments:
+    """InstrumentPort over a fixed row list (the selector's universe)."""
+
+    def __init__(self, rows):
+        self.rows = list(rows)
+
+    async def instruments_for(self, db, underlying):
+        return [r for r in self.rows if r.name == underlying.upper()]
+
+    def invalidate(self):
+        pass
+
+
+def option_row(strike, expiry, *, name="NIFTY", kind="CE", token=None, lot_size=65):
+    """An OPTIDX instrument row (a SimpleNamespace with the Instrument columns the
+    selector reads)."""
+    from app.db.models.instrument import InstrumentType, OptionType
+    return SimpleNamespace(
+        name=name, instrument_type=InstrumentType.OPTIDX, option_type=OptionType[kind],
+        expiry=expiry, strike=float(strike), token=token or f"{name}-{kind}-{int(strike)}",
+        symbol=f"{name}{expiry:%d%b%y}{int(strike)}{kind}".upper(), lot_size=lot_size)
+
+
+def with_instruments(rc, rows):
+    import dataclasses
+    return dataclasses.replace(rc, instruments=FakeInstruments(rows))
+
+
+async def add_closed(Session, *, net: float, at: datetime, strategy: str = "VWAP_PULLBACK",
+                     run_id: str = "PAPER", **overrides) -> int:
+    """A closed position whose exit (and entry, 5 minutes earlier) is at *at*."""
+    fields = dict(is_open=False, net_pnl=float(net), gross_pnl=float(net), exit_time=at,
+                  entry_time=at - timedelta(minutes=5), exit_reason="SL" if net < 0 else "TARGET",
+                  strategy_name=strategy, run_id=run_id)
+    fields.update(overrides)
+    return await add_position(Session, **fields)
+
+
 def make_cfg(**overrides) -> SimpleNamespace:
     """TradingConfig-like object for code paths that only read attributes."""
     base = dict(CFG_DEFAULTS, trading_halted=False, halted_reason=None,
@@ -55,7 +143,8 @@ async def seed_config(Session, **overrides) -> None:
         await db.commit()
 
 
-async def add_position(Session, **overrides) -> int:
+def position_fields(**overrides) -> dict:
+    """Column values for one open 1-lot position (entry 100, SL 85, target 130)."""
     fields = dict(
         strategy_name="VWAP_PULLBACK",
         token="OPT1",
@@ -82,6 +171,11 @@ async def add_position(Session, **overrides) -> int:
         entry_time=datetime.now(timezone.utc),
     )
     fields.update(overrides)
+    return fields
+
+
+async def add_position(Session, **overrides) -> int:
+    fields = position_fields(**overrides)
     async with Session() as db:
         pos = PaperPosition(**fields)
         db.add(pos)
@@ -154,12 +248,41 @@ def allow_regime(monkeypatch, regime="BULL_TREND_NORMAL_VOL", underlying="NIFTY"
     return state
 
 
-def fake_candidate(ltp=40.0, lot_size=65, bid=0.0, ask=0.0, token="OPT1") -> SimpleNamespace:
+def fake_candidate(ltp=40.0, lot_size=65, bid=0.0, ask=0.0, token="OPT1",
+                   tick_age_s=None, tick_open=0.0) -> SimpleNamespace:
     return SimpleNamespace(
         token=token, symbol="NIFTY06OCT2622600CE", strike=22600.0, option_type="CE",
         expiry=date(2026, 10, 13), ltp=ltp, bid=bid, ask=ask, lot_size=lot_size,
-        delta_est=0.5,
+        delta_est=0.5, tick_age_s=tick_age_s, tick_open=tick_open,
     )
+
+
+def selection_result(candidate=None, rejections=None, expiry=None):
+    """What option_selector.select returns, around a (fake) candidate."""
+    from app.services.trading.option_selector import ExpiryChoice, SelectionResult
+    exp = expiry or ExpiryChoice(date(2026, 10, 13), 42, "PREFERRED", "PREFERRED band")
+    return SelectionResult(
+        candidate=candidate, rejections=dict(rejections or {}),
+        evaluated=1 if candidate is not None else 0, expiry=exp, ltp_only_fallbacks=0,
+        score_table=[], ranked=[candidate] if candidate is not None else [])
+
+
+def stub_select(monkeypatch, candidate, rejections=None):
+    """Make option_selector.select return *candidate* (None = no option)."""
+    from app.services.trading.option_selector import option_selector
+
+    async def _select(**kwargs):
+        return selection_result(candidate, rejections)
+
+    monkeypatch.setattr(option_selector, "select", _select)
+
+
+def pin_ist_time(monkeypatch, t):
+    """Pin the IST wall time seen by the risk gate's entry-cutoff check and the
+    paper engine, independent of the ctx clock."""
+    from app.services.trading import paper_engine as pe_mod, risk_gate
+    monkeypatch.setattr(pe_mod, "_ist_time", lambda: t)
+    monkeypatch.setattr(risk_gate, "_ist_time", lambda: t)
 
 
 class FrozenClock:
@@ -242,7 +365,8 @@ class FakeRedis:
 
     # helpers for tests
     def put_tick(self, token: str, ltp: Optional[float], bid: float = 0.0, ask: float = 0.0,
-                 age_s: float = 0.0, open_: Optional[float] = None) -> None:
+                 age_s: float = 0.0, open_: Optional[float] = None, oi: Optional[int] = None,
+                 volume: Optional[int] = None, iv: Optional[float] = None) -> None:
         now = self.clock.now_utc() if self.clock is not None else datetime.now(timezone.utc)
         ts = (now - timedelta(seconds=age_s)).replace(tzinfo=None)
         if ltp is None:
@@ -253,6 +377,9 @@ class FakeRedis:
             "token": token, "ltp": ltp or 0.0, "open": open_ if open_ is not None else (ltp or 0.0),
             "best_bid": bid, "best_ask": ask, "ts": ts.isoformat(),
         }
+        for key, val in (("oi", oi), ("volume", volume), ("iv", iv)):
+            if val is not None:
+                self.kv[f"tick:{token}"][key] = val
 
     def drop_price(self, token: str) -> None:
         self.kv.pop(f"ltp:{token}", None)

@@ -64,36 +64,11 @@ def _block_db(monkeypatch):
 @pytest.fixture(autouse=True)
 def _reset_singletons():
     """Singletons keep in-memory state; reset it around every test."""
-    from app.main import app as fastapi_app
-    from app.services.trading.mode_manager import mode_manager
-    from app.services.trading.paper_engine import paper_engine
-    from app.services.trading.regime_detector import regime_detector
-    from app.services.trading.strategy_orchestrator import strategy_orchestrator
-    from app.services.trading.strategy_runner import strategy_runner
-    from app.strategies.base import signal_aggregator
+    from tests.helpers import reset_singletons
 
-    def _reset():
-        mode_manager._halted = False
-        paper_engine._last_known.clear()
-        paper_engine._last_persist.clear()
-        paper_engine._stale_warned.clear()
-        paper_engine._stale_deferred.clear()
-        paper_engine._square_off_cache = None
-        regime_detector._regime_history.clear()
-        regime_detector._last_log_time.clear()
-        strategy_orchestrator._regime_cooldown.clear()
-        strategy_orchestrator._flag_state.clear()
-        strategy_orchestrator._current_regime.clear()
-        strategy_runner._oi_iv_warned.clear()
-        strategy_runner._seen.clear()
-        strategy_runner._seen_day = None
-        strategy_runner._strategy_gate_last.clear()
-        signal_aggregator.reset()
-        fastapi_app.state.runtime_context = None    # a lifespan test must not leak its context
-
-    _reset()
+    reset_singletons()
     yield
-    _reset()
+    reset_singletons()
 
 
 @pytest.fixture(autouse=True)
