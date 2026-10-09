@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     # No default: unset means those routes return 503, while engaging a halt
     # always works (design §17.4). Never logged or returned by any route.
     ADMIN_API_KEY: Optional[str] = None
+    # Recorded as risk_halts.released_by on a release — the label, never the key.
+    ADMIN_API_KEY_LABEL: str = "admin"
 
     # Replay engine knobs (design §14.6). The seed default is a recorded
     # constant, never "random", so an unseeded run is still reproducible.

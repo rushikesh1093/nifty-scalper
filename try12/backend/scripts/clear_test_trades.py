@@ -1,64 +1,74 @@
 """
-Clear all test trades, paper positions, strategy signals, and daily P&L summaries.
-Resets used capital and daily trade counters back to 0.
+Clear ONE run's paper positions, strategy signals and daily P&L summaries.
+
+    python scripts/clear_test_trades.py --run-id PAPER
+    python scripts/clear_test_trades.py --run-id RPL-01J...
+
+``--run-id`` is required with no default (design §17.2): wiping every run —
+including the replay runs a validation report cites — must not be the
+accidental case. The legacy paper Order/Trade bookkeeping is not run-shared
+and is still cleared unscoped. The trading_config display caches are then
+recomputed from what is left (reconcile_used_capital), never zeroed.
 """
+import argparse
 import asyncio
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete
 from app.db.base import AsyncSessionLocal
-from app.db.models.paper_trade import (
-    PaperPosition, StrategySignal, DailyPnLSummary, TradingConfig,
-)
+from app.db.models.paper_trade import PaperPosition, StrategySignal, DailyPnLSummary
 from app.db.models.trade import Trade
 from app.db.models.order import Order
 from app.services.cache.redis_client import redis_cache
 
+RUN_ID_PATTERN = re.compile(r"^(PAPER|RPL-[A-Za-z0-9]{1,26})$")
 
-async def clear_all_test_trades():
+
+def parse_args(argv=None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--run-id", required=True,
+                    help="the run to clear: PAPER or RPL-<id> (no default)")
+    args = ap.parse_args(argv)
+    if not RUN_ID_PATTERN.match(args.run_id):
+        ap.error(f"--run-id must match {RUN_ID_PATTERN.pattern}")
+    return args
+
+
+async def clear_run(run_id: str, session_factory=None):
+    session_factory = session_factory or AsyncSessionLocal
     print("=" * 60)
-    print("         CLEARING ALL TEST TRADES AND SIGNALS")
+    print(f"         CLEARING RUN {run_id}")
     print("=" * 60)
 
-    # 1. Database cleanup
-    async with AsyncSessionLocal() as db:
-        r_pos = await db.execute(delete(PaperPosition))
-        pos_deleted = r_pos.rowcount
-
-        r_sig = await db.execute(delete(StrategySignal))
-        sig_deleted = r_sig.rowcount
-
-        r_pnl = await db.execute(delete(DailyPnLSummary))
-        pnl_deleted = r_pnl.rowcount
-
-        r_orders = await db.execute(delete(Order).where(Order.is_paper == True))
-        orders_deleted = r_orders.rowcount
-
-        r_trades = await db.execute(delete(Trade).where(Trade.is_paper == True))
-        trades_deleted = r_trades.rowcount
-
-        # Reset TradingConfig
-        await db.execute(
-            update(TradingConfig)
-            .where(TradingConfig.id == 1)
-            .values(
-                daily_trades_count=0,
-                used_capital=0.0,
-            )
-        )
+    async with session_factory() as db:
+        pos_deleted = (await db.execute(
+            delete(PaperPosition).where(PaperPosition.run_id == run_id))).rowcount
+        sig_deleted = (await db.execute(
+            delete(StrategySignal).where(StrategySignal.run_id == run_id))).rowcount
+        pnl_deleted = (await db.execute(
+            delete(DailyPnLSummary).where(DailyPnLSummary.run_id == run_id))).rowcount
+        # not run-shared (no replay path writes them): unscoped by design
+        orders_deleted = (await db.execute(delete(Order).where(Order.is_paper == True))).rowcount
+        trades_deleted = (await db.execute(delete(Trade).where(Trade.is_paper == True))).rowcount
         await db.commit()
 
-    print(f"  [DB] Deleted {pos_deleted} paper positions.")
-    print(f"  [DB] Deleted {sig_deleted} strategy signals.")
-    print(f"  [DB] Deleted {pnl_deleted} daily P&L summaries.")
+    from app.services.trading.mode_manager import mode_manager
+    await mode_manager.reconcile_used_capital(session_factory=session_factory)
+
+    print(f"  [DB] Deleted {pos_deleted} paper positions of {run_id}.")
+    print(f"  [DB] Deleted {sig_deleted} strategy signals of {run_id}.")
+    print(f"  [DB] Deleted {pnl_deleted} daily P&L summaries of {run_id}.")
     print(f"  [DB] Deleted {orders_deleted} paper orders.")
     print(f"  [DB] Deleted {trades_deleted} paper trades.")
-    print("  [DB] Reset TradingConfig: daily_trades_count=0, used_capital=0.0")
+    print("  [DB] Recomputed the PAPER display caches from the remaining positions.")
+    return pos_deleted, sig_deleted, pnl_deleted
 
-    # 2. Redis cleanup
+
+async def clear_redis_positions():
     try:
         await redis_cache.connect()
         pos_keys = await redis_cache._redis.keys("pos:*")
@@ -71,11 +81,15 @@ async def clear_all_test_trades():
     except Exception as e:
         print(f"  [REDIS] Warning clearing redis: {e}")
 
+
+async def main(argv=None):
+    args = parse_args(argv)
+    await clear_run(args.run_id)
+    await clear_redis_positions()
     print("\n" + "=" * 60)
-    print("  [SUCCESS] All test trades and signals cleared successfully!")
+    print(f"  [SUCCESS] Run {args.run_id} cleared.")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    asyncio.run(clear_all_test_trades())
-
+    asyncio.run(main())

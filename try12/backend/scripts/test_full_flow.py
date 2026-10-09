@@ -468,7 +468,8 @@ async def _run_paper_trade(cfg, selected, spot):
     async with AsyncSessionLocal() as db:
         await db.execute(
             update(PaperPosition)
-            .where(PaperPosition.strategy_name == "TEST_ORB_VWAP")
+            .where(PaperPosition.run_id == "PAPER",
+                   PaperPosition.strategy_name == "TEST_ORB_VWAP")
             .values(strategy_name="TEST_ORB_VWAP_DONE")
         )
         await db.commit()

@@ -23,10 +23,16 @@ Trading API routes:
   GET  /trading/market-study/vix        — VIX history
   POST /trading/kill-switch             — halt new entries + square off all (paper)
   GET  /trading/kill-switch             — kill switch status
-  POST /trading/kill-switch/release     — lift the halt
+  POST /trading/kill-switch/release     — lift the halt (admin key)
+  POST /trading/halt                    — engage a MANUAL halt (key only if configured)
+  POST /trading/halt/release            — release a halt for today (admin key)
   WS   /trading/ws/signals              — live signal stream
 
-NOTE: no route in this module is authenticated yet (see live-fixes-decisions.md §3).
+Authentication (design §17.4) is asymmetric: engaging a halt is always allowed;
+releasing one, resetting the daily counter and clearing a run's trades need
+X-API-Key and return 503 until ADMIN_API_KEY is configured. Every query against
+a run-shared table takes ``run_id`` (default PAPER). Other routes stay
+unauthenticated (requirements, out of scope 10).
 """
 import asyncio
 import json
@@ -39,11 +45,15 @@ from pydantic import BaseModel
 from sqlalchemy import select, desc, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.guards import (
+    LIVE_RUN_ID, optional_admin_key, require_admin_key, run_id_query, validate_run_id,
+)
 from app.db.base import get_db
 from app.db.models.paper_trade import (
     StrategySignal, PaperPosition, DailyPnLSummary, TradingConfig,
     TradingMode, SignalStatus,
 )
+from app.services.trading.mode_manager import ConfigValidationError
 from app.db.models.market_study import IntradayMarketFeature, MarketDailySnapshot, VIXData
 from app.schemas.diagnostics import SignalDiagnosticsResponse
 from app.services.trading.mode_manager import mode_manager
@@ -111,13 +121,75 @@ async def switch_live(confirm: bool = Query(False)):
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
+# RunConfig keys are frozen at process start (design §14.1); everything else that
+# overlays TradingParams is re-read within params_cache_ttl_s.
+RUN_CONFIG_KEYS = ("capital", "max_trades_per_day", "max_open_positions", "max_lots_per_trade",
+                   "max_daily_loss", "max_daily_loss_pct", "open_exposure_cap_pct",
+                   "square_off_time", "entry_cutoff_buffer_min")
+# Kept in the payload for compatibility, read by nothing (design §5, R18.4).
+DEPRECATED_KEYS = {"regime_transition_window": True}
+
+
+def _effective_from(keys) -> dict:
+    from app.runtime.context import params as _params
+    ttl = _params().params_cache_ttl_s
+    return {k: ("next_process_start" if k in RUN_CONFIG_KEYS else f"within_{ttl}s")
+            for k in keys}
+
+
+def _pending_restart(row) -> dict:
+    """Every RunConfig key whose stored value differs from the running ctx().cfg."""
+    from app.runtime.context import ctx
+    cfg = ctx().cfg
+    out = {}
+    for k in RUN_CONFIG_KEYS:
+        stored = getattr(row, k, None)
+        if stored is None:
+            continue
+        running = getattr(cfg, k)
+        differs = (str(stored) != str(running)) if isinstance(running, str) \
+            else abs(float(stored) - float(running)) > 1e-9
+        if differs:
+            out[k] = {"stored": stored, "running": running}
+    return out
+
+
+def _convert_trade_amount(updates: dict, row) -> None:
+    """trade_amount is a display cache since 0013; the stored knob is
+    fixed_fraction_pct = 100 × trade_amount / capital (design §14.1 table)."""
+    if updates.get("trade_amount") is None:
+        return
+    capital = float(updates.get("capital") or row.capital)
+    if capital <= 0:
+        raise HTTPException(status_code=400, detail="capital must be > 0")
+    fraction = 100.0 * float(updates["trade_amount"]) / capital
+    updates["fixed_fraction_pct"] = round(fraction, 6)
+    updates["trade_amount"] = round(fraction / 100.0 * capital, 2)
+
+
+def _write_error(exc: ValueError) -> HTTPException:
+    if isinstance(exc, ConfigValidationError):
+        return HTTPException(status_code=400, detail={"violations": exc.violations})
+    return HTTPException(status_code=409, detail=str(exc))
+
+
 @router.get("/config")
 async def get_config():
+    import dataclasses as _dc
+    from app.runtime.context import ctx, params as _params
+
     cfg = await mode_manager.get_config()
     if not cfg:
         raise HTTPException(status_code=404, detail="Config not found")
     capital, used, daily_trades = await mode_manager.capital_figures()
+    p = _params()
+    violations = p.validate()
+    port = ctx().params
+    columns = {c.key: getattr(cfg, c.key) for c in TradingConfig.__table__.columns
+               if c.key not in ("used_capital", "daily_trades_count", "mode", "updated_at",
+                                "halted_at")}
     return {
+        **columns,
         "mode":                cfg.mode,
         "max_daily_loss":      cfg.max_daily_loss,
         "max_daily_loss_pct":  cfg.max_daily_loss_pct,
@@ -135,6 +207,16 @@ async def get_config():
         "max_trades_per_day":  cfg.max_trades_per_day,
         "daily_trades_count":  daily_trades,
         "trading_halted":      cfg.trading_halted,
+        "halted_at":           cfg.halted_at.isoformat() if cfg.halted_at else None,
+        "params": {
+            "resolved": json.loads(json.dumps(_dc.asdict(p), default=str)),
+            "cache_age_s": round(getattr(port, "cache_age_s", 0.0), 1),
+        },
+        "run_config": json.loads(json.dumps(_dc.asdict(ctx().cfg), default=str)),
+        "pending_restart": _pending_restart(cfg),
+        "config_valid": not violations,
+        "config_violations": violations,
+        "deprecated": DEPRECATED_KEYS,
     }
 
 @router.put("/config")
@@ -142,16 +224,26 @@ async def update_config(body: ConfigUpdate):
     updates = {k: v for k, v in body.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No updates provided")
+    row = await mode_manager.get_config()
+    if row is not None:
+        _convert_trade_amount(updates, row)
     try:
         cfg = await mode_manager.update_config(**updates)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "updated", "mode": cfg.mode}
+        raise _write_error(exc) from exc
+    return {"status": "updated", "mode": cfg.mode,
+            "effective_from": _effective_from(updates),
+            "pending_restart": _pending_restart(cfg)}
 
 @router.put("/config/strategy-flag")
 async def update_strategy_flag(body: StrategyFlagUpdate):
+    from app.runtime.context import params as _params
+    if body.strategy_name not in ALL_STRATEGY_NAMES:
+        raise HTTPException(status_code=400,
+                            detail=f"strategy_name must be one of {sorted(ALL_STRATEGY_NAMES)}")
     await mode_manager.update_strategy_flag(body.strategy_name, body.enabled)
-    return {"status": "updated", "strategy": body.strategy_name, "enabled": body.enabled}
+    return {"status": "updated", "strategy": body.strategy_name, "enabled": body.enabled,
+            "effective_within_s": _params().params_cache_ttl_s}
 
 
 # ── Capital endpoints ─────────────────────────────────────────────────────────
@@ -183,6 +275,8 @@ async def set_trade_amount(body: TradeAmountUpdate):
       lots = floor(10000 / 7500) = 1
       capital_deployed = ₹7,500
     """
+    from app.runtime.context import params as _params
+
     if body.trade_amount <= 0:
         raise HTTPException(status_code=400, detail="trade_amount must be > 0")
 
@@ -192,44 +286,57 @@ async def set_trade_amount(body: TradeAmountUpdate):
             raise HTTPException(status_code=400, detail="capital must be > 0")
         updates["capital"] = body.capital
 
-    cfg = await mode_manager.update_config(**updates)
+    row = await mode_manager.get_config()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Config not found")
+    _convert_trade_amount(updates, row)       # → fixed_fraction_pct, the stored knob
+    try:
+        cfg = await mode_manager.update_config(**updates)
+    except ValueError as exc:
+        raise _write_error(exc) from exc
 
     # Preview: calculate lots for current ATM option price (approximate)
     preview = _trade_amount_preview(body.trade_amount, cfg.max_lots_per_trade)
-    _, used, _n = await mode_manager.capital_figures()
+    capital, used, _n = await mode_manager.capital_figures()
 
     return {
         "status":           "updated",
         "trade_amount":     cfg.trade_amount,
         "capital":          cfg.capital,
-        "available_capital": round(cfg.capital - used, 2),
+        "available_capital": round(capital - used, 2),
         "preview":          preview,
+        "fixed_fraction_pct": cfg.fixed_fraction_pct,
+        "effective_from":   _effective_from(updates),
+        "effective_within_s": _params().params_cache_ttl_s,
     }
 
 
 @router.put("/capital/set")
 async def set_capital(capital: float = Query(..., gt=0, description="Total paper trading capital in ₹")):
-    """Update total capital (funds available for trading)."""
+    """Update total capital (funds available for trading). Capital is a RunConfig
+    key: the running process keeps its value until the next start (design §14.1)."""
     try:
         cfg = await mode_manager.update_config(capital=capital)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    _, used, _n = await mode_manager.capital_figures()
+        raise _write_error(exc) from exc
+    running, used, _n = await mode_manager.capital_figures()
     return {
         "status":          "updated",
         "capital":         cfg.capital,
         "used_capital":    round(used, 2),
-        "available":       round(cfg.capital - used, 2),
+        "available":       round(running - used, 2),
         "trade_amount":    cfg.trade_amount,
+        "effective_from":  "next_process_start",
+        "pending":         {"capital": cfg.capital, "running_capital": running},
     }
 
 
 @router.post("/capital/reset-daily")
-async def reset_daily_counter():
+async def reset_daily_counter(operator: str = Depends(require_admin_key)):
     """Reset the daily trades DISPLAY counter. The trade cap itself is derived from
-    persisted positions and cannot be reset here (design §9.2); this endpoint stays
-    for the display cache and its admin-key gating lands with the analytics API."""
+    persisted positions and cannot be reset here (design §9.2). Admin key required."""
     await mode_manager.reset_daily_counter()
+    logger.warning("Daily trade display counter reset by operator %s", operator)
     return {"status": "reset", "daily_trades_count": 0}
 
 
@@ -271,9 +378,11 @@ async def get_signals(
     status:      Optional[str]  = None,
     today_only:  bool           = Query(True,  description="Only return today's signals (default true)"),
     limit:       int            = Query(50, ge=1, le=500),
+    run_id:      str            = Depends(run_id_query),
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(StrategySignal).order_by(desc(StrategySignal.signal_time))
+    q = select(StrategySignal).where(StrategySignal.run_id == run_id) \
+        .order_by(desc(StrategySignal.signal_time))
     if strategy:
         q = q.where(StrategySignal.strategy_name == strategy)
     if underlying:
@@ -320,6 +429,10 @@ async def get_signals(
             "time":             r.signal_time.isoformat() if r.signal_time else None,
             "indicators":       r.indicators,
             "skip_reason":      r.skip_reason,
+            "run_id":           r.run_id,
+            "no_trade_decision_id": r.no_trade_decision_id,
+            "expiry_band":      r.expiry_band,
+            "selection_rejections": r.selection_rejections,
         }
         for r in rows
     ]
@@ -415,23 +528,28 @@ async def get_signal_diagnostics():
     day_start_utc = datetime.combine(now_ist.date(), datetime.min.time()).replace(tzinfo=IST).astimezone(timezone.utc)
     try:
         async with AsyncSessionLocal() as db:
+            # live paper diagnostics: scoped to the live run (design §17.2)
             rows = (await db.execute(
                 select(StrategySignal.status, _func.count())
-                .where(StrategySignal.signal_time >= day_start_utc)
+                .where(StrategySignal.run_id == LIVE_RUN_ID,
+                       StrategySignal.signal_time >= day_start_utc)
                 .group_by(StrategySignal.status)
             )).all()
             by_status = {(s.value if hasattr(s, "value") else str(s)): int(n) for s, n in rows}
             signals["by_status"] = by_status
             signals["today_count"] = sum(by_status.values())
-            last = (await db.execute(select(_func.max(StrategySignal.signal_time)))).scalar()
+            last = (await db.execute(select(_func.max(StrategySignal.signal_time))
+                                     .where(StrategySignal.run_id == LIVE_RUN_ID))).scalar()
             if last is not None:
                 signals["last_signal_at"] = last.astimezone(IST).isoformat()
                 signals["last_signal_age_secs"] = max(0, int((now_ist - last).total_seconds()))
             positions["open"] = int((await db.execute(
-                select(_func.count()).select_from(PaperPosition).where(PaperPosition.is_open == True)  # noqa: E712
+                select(_func.count()).select_from(PaperPosition).where(
+                    PaperPosition.run_id == LIVE_RUN_ID, PaperPosition.is_open == True)  # noqa: E712
             )).scalar() or 0)
             positions["today_total"] = int((await db.execute(
-                select(_func.count()).select_from(PaperPosition).where(PaperPosition.entry_time >= day_start_utc)
+                select(_func.count()).select_from(PaperPosition).where(
+                    PaperPosition.run_id == LIVE_RUN_ID, PaperPosition.entry_time >= day_start_utc)
             )).scalar() or 0)
     except Exception as exc:
         logger.error("diagnostics: database unreachable: %s", exc)
@@ -597,9 +715,11 @@ async def get_positions(
     strategy:   Optional[str] = None,
     underlying: Optional[str] = None,
     limit:      int = Query(100, ge=1, le=500),
+    run_id:     str = Depends(run_id_query),
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(PaperPosition).order_by(desc(PaperPosition.entry_time))
+    q = select(PaperPosition).where(PaperPosition.run_id == run_id) \
+        .order_by(desc(PaperPosition.entry_time))
     if is_open is not None:
         q = q.where(PaperPosition.is_open == is_open)
     if strategy:
@@ -681,27 +801,142 @@ async def kill_switch_status():
 
 
 @router.post("/kill-switch/release")
-async def kill_switch_release():
-    """Lift the halt so paper entries can resume. No authentication yet."""
-    persisted = await mode_manager.set_trading_halted(False, None)
-    if not persisted:
-        raise HTTPException(status_code=500, detail="Failed to persist kill switch release")
-    return {"halted": False}
+async def kill_switch_release(operator: str = Depends(require_admin_key)):
+    """Lift the kill switch so paper entries can resume. Resuming trading needs the
+    admin key (design §17.4); this is the same release as POST /halt/release MANUAL."""
+    res = await _release_halt(HaltRelease(halt_type="MANUAL"), operator)
+    return {"halted": res["halted"]}          # the pre-existing response shape
+
+
+# ── Halt control (design §17.4): engaging only stops trading, releasing resumes it ──
+
+HALT_TYPES = ("MANUAL", "DAILY_LOSS", "LOSING_STREAK", "STRATEGY_STREAK")
+
+
+class HaltEngage(BaseModel):
+    reason: Optional[str] = None
+
+
+class HaltRelease(BaseModel):
+    halt_type: str = "MANUAL"
+    scope: Optional[str] = None          # strategy name for STRATEGY_STREAK
+    note: Optional[str] = None
+
+
+async def _halt_state() -> dict:
+    from app.runtime.context import ctx
+    from app.db.models.risk import RiskHalt
+    from app.runtime.context import sessions
+    rc = ctx()
+    async with sessions()() as db:
+        rows = (await db.execute(select(RiskHalt).where(
+            RiskHalt.run_id == rc.run_id, RiskHalt.trading_day == rc.clock.trading_day())
+            .order_by(RiskHalt.id))).scalars().all()
+    halted, why = await mode_manager.kill_switch_state()
+    return {
+        "kill_switch": {"halted": halted, "reason": why or None},
+        "halts": [{"halt_type": h.halt_type, "scope": h.scope, "reason": h.reason,
+                   "engaged_at": h.engaged_at.isoformat() if h.engaged_at else None,
+                   "released_at": h.released_at.isoformat() if h.released_at else None,
+                   "released_by": h.released_by, "release_note": h.release_note}
+                  for h in rows],
+    }
+
+
+@router.post("/halt")
+async def engage_halt(body: Optional[HaltEngage] = None,
+                      operator: str = Depends(optional_admin_key)):
+    """Engage a MANUAL halt: blocks new entries for the trading day (open positions
+    keep their own exits). Allowed even when no admin key is configured."""
+    from app.db.models.risk import RiskHalt
+    from app.runtime.context import ctx, sessions
+    reason = (body.reason if body and body.reason else None) or "manual halt"
+    persisted = await mode_manager.set_trading_halted(True, reason)
+    rc = ctx()
+    day = rc.clock.trading_day()
+    async with sessions()() as db:
+        row = (await db.execute(select(RiskHalt).where(
+            RiskHalt.run_id == rc.run_id, RiskHalt.trading_day == day,
+            RiskHalt.halt_type == "MANUAL", RiskHalt.scope.is_(None)))).scalar_one_or_none()
+        if row is None:
+            db.add(RiskHalt(run_id=rc.run_id, trading_day=day, halt_type="MANUAL", scope=None,
+                            reason=reason, context={"engaged_by": operator},
+                            engaged_at=rc.clock.now_utc()))
+        else:                                  # re-engage after a release, same day
+            row.reason, row.engaged_at = reason, rc.clock.now_utc()
+            row.released_at = row.released_by = row.release_note = None
+        await db.commit()
+    logger.warning("HALT ENGAGED by %s: %s", operator, reason)
+    return {"halted": True, "reason": reason, "persisted": persisted, **(await _halt_state())}
+
+
+async def _release_halt(body: HaltRelease, operator: str) -> dict:
+    from app.db.models.risk import RiskHalt
+    from app.runtime.context import ctx, sessions
+    halt_type = (body.halt_type or "MANUAL").upper()
+    if halt_type not in HALT_TYPES:
+        raise HTTPException(status_code=400, detail=f"halt_type must be one of {HALT_TYPES}")
+    if halt_type == "STRATEGY_STREAK" and body.scope not in ALL_STRATEGY_NAMES:
+        raise HTTPException(status_code=400, detail="scope must name a strategy for STRATEGY_STREAK")
+    scope = body.scope if halt_type == "STRATEGY_STREAK" else None
+    rc = ctx()
+    day = rc.clock.trading_day()
+    if halt_type == "MANUAL":
+        if not await mode_manager.set_trading_halted(False, None):
+            raise HTTPException(status_code=500, detail="Failed to persist kill switch release")
+    async with sessions()() as db:
+        q = select(RiskHalt).where(RiskHalt.run_id == rc.run_id, RiskHalt.trading_day == day,
+                                   RiskHalt.halt_type == halt_type)
+        q = q.where(RiskHalt.scope.is_(None) if scope is None else RiskHalt.scope == scope)
+        row = (await db.execute(q)).scalar_one_or_none()
+        if row is None and halt_type != "MANUAL":
+            raise HTTPException(status_code=404, detail=f"no {halt_type} halt engaged today")
+        if row is not None:
+            row.released_at = rc.clock.now_utc()
+            row.released_by = operator
+            row.release_note = body.note
+            await db.commit()
+    state = await _halt_state()
+    logger.warning("HALT RELEASED by %s: %s%s — state now %s", operator, halt_type,
+                   f"/{scope}" if scope else "", state["kill_switch"])
+    return {"released": halt_type, "scope": scope, "halted": state["kill_switch"]["halted"],
+            **state}
+
+
+@router.post("/halt/release")
+async def release_halt(body: Optional[HaltRelease] = None,
+                       operator: str = Depends(require_admin_key)):
+    """Release a halt for today. Requires the admin key; 503 when none is configured."""
+    return await _release_halt(body or HaltRelease(), operator)
+
+
+class ClearTestTrades(BaseModel):
+    run_id: Optional[str] = None
 
 
 @router.post("/clear-test-trades")
-async def clear_test_trades(db: AsyncSession = Depends(get_db)):
-    """Clear all test/paper trades, positions, signals, and reset daily stats."""
+async def clear_test_trades(body: Optional[ClearTestTrades] = None,
+                            operator: str = Depends(require_admin_key),
+                            db: AsyncSession = Depends(get_db)):
+    """Delete ONE run's positions, signals and daily P&L summaries (design §17.2).
+    ``run_id`` is required, with no default: wiping every run must not be the
+    accidental case. Admin key required."""
     from sqlalchemy import delete, update
     from app.db.models.order import Order
     from app.db.models.trade import Trade
     from app.services.cache.redis_client import redis_cache
 
-    r_pos = await db.execute(delete(PaperPosition))
-    r_sig = await db.execute(delete(StrategySignal))
-    r_pnl = await db.execute(delete(DailyPnLSummary))
+    if body is None or not body.run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+    run_id = validate_run_id(body.run_id)
+    r_pos = await db.execute(delete(PaperPosition).where(PaperPosition.run_id == run_id))
+    r_sig = await db.execute(delete(StrategySignal).where(StrategySignal.run_id == run_id))
+    r_pnl = await db.execute(delete(DailyPnLSummary).where(DailyPnLSummary.run_id == run_id))
+    # Order / Trade are legacy paper-order bookkeeping, not run-shared: no replay
+    # path writes either, so these two deletes are unscoped by design (§17.2).
     r_orders = await db.execute(delete(Order).where(Order.is_paper == True))
     r_trades = await db.execute(delete(Trade).where(Trade.is_paper == True))
+    logger.warning("clear-test-trades run_id=%s by %s", run_id, operator)
 
     await db.commit()
     # Recompute the display caches from what is left (design §9.2); the old
@@ -722,6 +957,7 @@ async def clear_test_trades(db: AsyncSession = Depends(get_db)):
 
     return {
         "status": "cleared",
+        "run_id": run_id,
         "positions_deleted": r_pos.rowcount,
         "signals_deleted": r_sig.rowcount,
         "pnl_summaries_deleted": r_pnl.rowcount,
@@ -734,10 +970,12 @@ async def clear_test_trades(db: AsyncSession = Depends(get_db)):
 # ── P&L ───────────────────────────────────────────────────────────────────────
 
 @router.get("/pnl")
-async def get_pnl_today(db: AsyncSession = Depends(get_db)):
+async def get_pnl_today(run_id: str = Depends(run_id_query),
+                        db: AsyncSession = Depends(get_db)):
     today = date.today()
     result = await db.execute(
-        select(DailyPnLSummary).where(DailyPnLSummary.date == today)
+        select(DailyPnLSummary).where(DailyPnLSummary.run_id == run_id,
+                                      DailyPnLSummary.date == today)
         .order_by(desc(DailyPnLSummary.net_pnl))
     )
     rows = result.scalars().all()
@@ -768,12 +1006,13 @@ async def get_pnl_today(db: AsyncSession = Depends(get_db)):
 @router.get("/pnl/history")
 async def get_pnl_history(
     days: int = Query(22, ge=1, le=90),
+    run_id: str = Depends(run_id_query),
     db: AsyncSession = Depends(get_db),
 ):
     since = date.today() - timedelta(days=days)
     result = await db.execute(
         select(DailyPnLSummary)
-        .where(DailyPnLSummary.date >= since)
+        .where(DailyPnLSummary.run_id == run_id, DailyPnLSummary.date >= since)
         .order_by(DailyPnLSummary.date)
     )
     rows = result.scalars().all()
@@ -784,8 +1023,11 @@ async def get_pnl_history(
         d = str(r.date)
         if d not in by_date:
             by_date[d] = {"date": d, "net_pnl": 0, "trades": 0, "wins": 0,
+                          "statutory_charges": 0.0,
                           "worst_trade_loss": None, "max_equity_drawdown": None}
         by_date[d]["net_pnl"]  = round(by_date[d]["net_pnl"] + r.net_pnl, 2)
+        by_date[d]["statutory_charges"] = round(
+            by_date[d]["statutory_charges"] + (r.statutory_charges or 0.0), 2)
         by_date[d]["trades"]  += r.total_trades
         by_date[d]["wins"]    += r.winning_trades
         # per-strategy maxima for the day (R15.4: worst_trade_loss is the

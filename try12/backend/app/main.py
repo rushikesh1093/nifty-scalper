@@ -21,6 +21,7 @@ from app.services.market_data.market_manager import market_manager
 from app.api.routes import auth, market, instruments, trading
 from app.api.routes.report import router as report_router
 from app.api.routes.regime import router as regime_router
+from app.api.routes.analytics import router as analytics_router
 
 setup_logging("DEBUG" if settings.DEBUG else "INFO")
 logger = logging.getLogger(__name__)
@@ -105,6 +106,14 @@ async def lifespan(app: FastAPI):
     import asyncio as _asyncio
     _token_refresh_task = _asyncio.create_task(_token_refresh_loop())
 
+    # ── Admin key posture (design §17.4, §20.1) ───────────────────────────────
+    from app.api.guards import ADMIN_ONLY_ENDPOINTS, admin_key_configured
+    if not admin_key_configured():
+        logger.warning(
+            "ADMIN_API_KEY is not set: %s return 503 until it is. Engaging a halt "
+            "(POST /api/v1/trading/halt) still works; releasing one needs a restart "
+            "with a key.", ", ".join(ADMIN_ONLY_ENDPOINTS))
+
     # ── Study-phase gate warning ──────────────────────────────────────────────
     try:
         from app.services.trading.mode_manager import mode_manager as _mm
@@ -175,6 +184,7 @@ app.include_router(instruments.router, prefix="/api/v1")
 app.include_router(trading.router,     prefix="/api/v1")
 app.include_router(report_router,      prefix="/api/v1")
 app.include_router(regime_router,      prefix="/api/v1/regime")
+app.include_router(analytics_router,   prefix="/api/v1")
 
 
 @app.get("/")

@@ -20,6 +20,41 @@ logger = logging.getLogger(__name__)
 LIVE_RUN = "PAPER"      # the live paper run id; display methods are scoped to it
 IST = timezone(timedelta(hours=5, minutes=30))
 
+
+class ConfigValidationError(ValueError):
+    """A trading_config write would introduce TradingParams violations (design §17.2,
+    §21): nothing is persisted and the API answers 400 naming each key."""
+
+    def __init__(self, violations: list[str]):
+        self.violations = list(violations)
+        super().__init__("; ".join(self.violations))
+
+
+def _params_overlay(row) -> dict:
+    """The row's TradingParams-backed columns (the same overlay DbTradingParams reads)."""
+    from app.runtime.live import _overlay_columns
+    return {k: getattr(row, k) for k in _overlay_columns() if getattr(row, k, None) is not None}
+
+
+def config_write_violations(row, updates: dict) -> list[str]:
+    """Violations the merged row would have that the current row does not. Only
+    NEW violations block a write, so an unrelated pre-existing problem (which
+    startup check 6 reports) never makes the row uneditable."""
+    from app.core.trading_params import validate_overrides
+    from app.runtime.live import _overlay_columns
+
+    base = _params_overlay(row)
+    cols = set(_overlay_columns())
+    merged = dict(base)
+    for k, v in updates.items():
+        if k in cols:
+            if v is None:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+    before = set(validate_overrides(base))
+    return [v for v in validate_overrides(merged) if v not in before]
+
 class ModeManager:
 
     def __init__(self) -> None:
@@ -219,6 +254,21 @@ class ModeManager:
                 )
                 if (result.scalar() or 0) > 0:
                     raise ValueError("Cannot change capital while positions are open")
+
+        # Validation precondition (design §17.2): the proposed merged row must not
+        # introduce a TradingParams violation, whoever the caller is.
+        from app.runtime.live import _overlay_columns
+        if set(kwargs) & set(_overlay_columns()):
+            current = await self.get_config()
+            if current is not None:
+                if ("capital" in kwargs and "trade_amount" not in kwargs
+                        and current.trade_amount is not None):
+                    # keep the display cache equal to fixed_fraction × capital (§9.5)
+                    frac = kwargs.get("fixed_fraction_pct", current.fixed_fraction_pct)
+                    kwargs["trade_amount"] = round(float(frac) / 100.0 * float(kwargs["capital"]), 2)
+                violations = config_write_violations(current, kwargs)
+                if violations:
+                    raise ConfigValidationError(violations)
 
         kwargs["mode"] = TradingMode.PAPER
         kwargs["live_mode_confirmed"] = False

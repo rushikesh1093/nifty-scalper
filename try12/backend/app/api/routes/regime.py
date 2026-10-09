@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.guards import LIVE_RUN_ID, run_id_query
 from app.db.base import get_db
 from app.db.models.regime import RegimePerformanceModel, RegimeStateModel
 from app.services.cache.redis_client import redis_cache
@@ -27,17 +28,19 @@ async def get_regime_performance(
     underlying: Optional[str] = Query(None, description="Filter by underlying (e.g. NIFTY, BANKNIFTY)"),
     date_from:  Optional[str] = Query(None, description="ISO date string — include rows with last_trade_at >= this date"),
     date_to:    Optional[str] = Query(None, description="ISO date string — include rows with last_trade_at <= this date"),
+    run_id:     str = Depends(run_id_query),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Return regime performance statistics.
+    Return regime performance statistics for one run (default PAPER).
 
     Computes win_rate dynamically from winning_trades / total_trades so the
     value is always current even when the stored column is stale or NULL.
     Results are ordered by total_pnl DESC.
     """
     try:
-        q = select(RegimePerformanceModel).order_by(desc(RegimePerformanceModel.total_pnl))
+        q = select(RegimePerformanceModel).where(RegimePerformanceModel.run_id == run_id) \
+            .order_by(desc(RegimePerformanceModel.total_pnl))
 
         if underlying:
             q = q.where(RegimePerformanceModel.underlying == underlying.upper())
@@ -208,6 +211,7 @@ async def get_regime_history(
     hours: int = Query(24, ge=1, le=168, description="Number of hours to look back"),
     limit: int = Query(500, ge=1, le=2000, description="Max rows scanned before collapsing (most recent kept)"),
     collapse: bool = Query(True, description="Merge consecutive equal regimes into spans"),
+    run_id: str = Depends(run_id_query),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -232,6 +236,7 @@ async def get_regime_history(
         q = (
             select(RegimeStateModel)
             .where(
+                RegimeStateModel.run_id == run_id,
                 RegimeStateModel.underlying == u,
                 RegimeStateModel.timestamp >= cutoff,
             )
@@ -257,6 +262,8 @@ async def get_regime_history(
         if not collapse:
             return [{**r, "timestamp": r["timestamp"].isoformat()} for r in db_rows]   # descending, as before
         return _collapse_spans(list(reversed(db_rows)), "db", now)
+    if run_id != LIVE_RUN_ID and db_error is None:
+        return []          # the Redis keys hold the LIVE regime; never mix runs (D12)
 
     # Redis fallback (regime_states empty or unreachable)
     try:

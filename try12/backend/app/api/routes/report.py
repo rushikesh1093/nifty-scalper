@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.guards import run_id_query
 from app.db.base import get_db
 from app.db.models.paper_trade import (
     PaperPosition, DailyPnLSummary, TradingConfig, TradingMode,
@@ -634,9 +635,10 @@ async def download_trade_report(
     days:      int           = Query(30,  ge=1, le=365),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
     date_to:   Optional[str] = Query(None, description="YYYY-MM-DD"),
+    run_id:    str           = Depends(run_id_query),
     db: AsyncSession = Depends(get_db),
 ):
-    """Download a PDF trade report covering all closed positions and daily P&L."""
+    """Download a PDF trade report covering one run's closed positions and daily P&L."""
     d_to   = date.fromisoformat(date_to)   if date_to   else date.today()
     d_from = date.fromisoformat(date_from) if date_from else d_to - timedelta(days=days - 1)
     mode_filter = mode.upper()
@@ -644,6 +646,7 @@ async def download_trade_report(
     q = (
         select(PaperPosition)
         .where(
+            PaperPosition.run_id == run_id,
             PaperPosition.is_open == False,
             PaperPosition.entry_time >= datetime.combine(d_from, datetime.min.time()),
             PaperPosition.entry_time <= datetime.combine(d_to,   datetime.max.time()),
@@ -659,7 +662,8 @@ async def download_trade_report(
 
     dq = (
         select(DailyPnLSummary)
-        .where(DailyPnLSummary.date >= d_from, DailyPnLSummary.date <= d_to)
+        .where(DailyPnLSummary.run_id == run_id,
+               DailyPnLSummary.date >= d_from, DailyPnLSummary.date <= d_to)
         .order_by(DailyPnLSummary.date)
     )
     if mode_filter != "ALL":
