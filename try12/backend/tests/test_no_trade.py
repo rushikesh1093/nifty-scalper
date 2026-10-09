@@ -416,3 +416,99 @@ def test_signals_emitted_counts_published_signals(quiet_runner, sqlite_db, monke
     run(runner.run_cycle("NIFTY"))
     (cs,) = run(_cycle_stats(sqlite_db))
     assert cs.signals_emitted == 1
+
+
+# ── completeness, the other direction (plan decision 2, item 6.4) ────────────
+
+def test_every_declared_reason_code_is_referenced():
+    """Every declared member has at least one write site (a ReasonCode.<MEMBER>
+    reference under app/, outside the declaration itself)."""
+    from app.services.trading.no_trade import ReasonCode
+    refs = set()
+    for path in APP.rglob("*.py"):
+        if path == NO_TRADE:
+            continue
+        refs |= {m.group(1) for m in _REF.finditer(path.read_text(encoding="utf-8"))}
+    unreferenced = set(ReasonCode.__members__) - refs
+    assert not unreferenced, f"declared but never written: {sorted(unreferenced)}"
+
+
+def test_a_strategy_in_its_own_cooldown_is_recorded_once_per_episode(
+        quiet_runner, sqlite_db, runtime_ctx):
+    """STRATEGY_COOLDOWN: BaseStrategy._cooldown_ok is False -> one STRATEGY_GATE
+    row per cooldown episode, and the strategy is not counted as evaluated."""
+    runner, stubs, feed = quiet_runner
+    cooling = {"on": True}
+    stubs[0]._cooldown_minutes = 5
+    stubs[0]._cooldown_ok = lambda: not cooling["on"]
+    for i in range(3):
+        feed(i)
+        run(runner.run_cycle("NIFTY"))
+    cooling["on"] = False
+    feed(3)
+    run(runner.run_cycle("NIFTY"))
+    rows = [(r.code, r.strategy_name) for r in run(_rows(sqlite_db, stage="STRATEGY_GATE"))]
+    assert rows == [("STRATEGY_COOLDOWN", stubs[0].name)]
+    assert stubs[0].calls == 1                      # evaluated only once the cooldown ended
+    (cs,) = run(_cycle_stats(sqlite_db))
+    assert cs.strategies_evaluated == 4 * 12 - 3
+
+
+# ── R12.8a: every gate type fires; the rows alone explain the empty book ────
+
+def test_r12_8a_every_gate_type_fires_and_the_rows_account_for_no_trades(
+        quiet_runner, sqlite_db, runtime_ctx, monkeypatch):
+    """A synthetic session with zero trades. Each stage-level gate fires at least
+    once, and every emitted signal is matched by exactly one signal-level
+    rejection row, so the empty book is explained without reading a log."""
+    from dataclasses import replace
+
+    from app.db.models.paper_trade import PaperPosition
+    from app.runtime.context import ctx, using
+    from app.runtime.live import FrozenUserFlags
+    from app.services.trading import strategy_runner as sr
+    from app.services.trading.mode_manager import mode_manager
+    from app.services.trading.wiring import wire_signal_handlers
+    from app.strategies.base import Direction, SignalBus
+    from tests.helpers import allow_regime, stub_select
+
+    runner, stubs, feed = quiet_runner
+    monkeypatch.setattr(sr, "MIN_TODAY_CANDLES", 3)          # candles 0-1: CYCLE gate
+    monkeypatch.setattr(SignalBus, "_handlers", [])
+    wire_signal_handlers()                                   # the real handle_signal
+    allow_regime(monkeypatch)                                # BULL_TREND_NORMAL_VOL: BUY only
+    stub_select(monkeypatch, None)                           # selection finds nothing
+    script = {3: Direction.BUY, 4: Direction.SELL, 5: Direction.BUY}
+    current = {"i": -1}
+
+    async def _emit(candles, indicators):
+        d = script.get(current["i"])
+        if d is not None:
+            await SignalBus.publish(make_signal(strategy="VWAP_PULLBACK", direction=d))
+
+    emitter = next(s for s in stubs if s.name == "VWAP_PULLBACK")
+    emitter.on_candle = _emit
+    with using(replace(ctx(), user_flags=FrozenUserFlags({"ORB_VWAP": False}))):
+        for i in range(6):
+            current["i"] = i
+            if i == 5:
+                monkeypatch.setattr(mode_manager, "_halted", True)    # kill switch
+            feed(i)
+            run(runner.run_cycle("NIFTY"))
+
+    rows = run(_rows(sqlite_db))
+    pairs = {(r.stage, r.code) for r in rows}
+    assert {s for s, _ in pairs} >= {"CYCLE", "STRATEGY_GATE", "SIGNAL_GATE", "RISK_GATE",
+                                     "SELECTION"}
+    assert {("CYCLE", "INSUFFICIENT_CANDLES"), ("STRATEGY_GATE", "STRATEGY_USER_DISABLED"),
+            ("SELECTION", "NO_OPTION_AVAILABLE"), ("SIGNAL_GATE", "REGIME_DIRECTION_MISMATCH"),
+            ("RISK_GATE", "KILL_SWITCH")} <= pairs
+
+    async def _n_positions():
+        async with sqlite_db() as db:
+            return len((await db.execute(select(PaperPosition))).scalars().all())
+    assert run(_n_positions()) == 0
+    (cs,) = run(_cycle_stats(sqlite_db))
+    signal_level = [r for r in rows
+                    if r.stage in ("SIGNAL_GATE", "RISK_GATE", "SELECTION", "SIZING", "ENTRY")]
+    assert cs.signals_emitted == len(signal_level) == 3

@@ -570,6 +570,17 @@ class StrategyRunner:
                     f"{EXPIRY_MIN_SL_PCT:.2f}",
                 )
                 continue
+            # The strategy's own post-signal cooldown (BaseStrategy._cooldown_ok):
+            # on_candle would return before evaluate(), so record it instead of
+            # counting the strategy as evaluated. One row per cooldown episode.
+            cooldown_ok = getattr(strat, "_cooldown_ok", None)
+            if cooldown_ok is not None and not cooldown_ok():
+                self._queue_strategy_gate(
+                    tally, underlying, strat.name, ReasonCode.STRATEGY_COOLDOWN,
+                    f"{strat.name} in its {getattr(strat, '_cooldown_minutes', '?')}-minute "
+                    f"post-signal cooldown",
+                )
+                continue
             self._queue_strategy_gate(tally, underlying, strat.name, None)   # evaluated
             tally.strategies_evaluated += 1
             try:
