@@ -78,6 +78,25 @@ class FrozenUserFlags:
         return dict(self._flags)
 
 
+class FrozenRunControl:
+    """RunControlPort over the run's frozen RunConfig; never the shared
+    trading_config row (review R1). A params-file halt reads as a halt."""
+
+    def __init__(self, cfg) -> None:
+        self._cfg = cfg
+
+    async def persisted_halt(self) -> tuple[bool, str]:
+        if self._cfg.trading_halted:
+            return True, "trading_halted in the run config"
+        return False, ""
+
+    async def study_phase(self) -> bool:
+        return bool(self._cfg.study_phase)
+
+    async def square_off_time(self) -> Optional[str]:
+        return self._cfg.square_off_time
+
+
 class ReplayRegimeConfig:
     """RegimeConfigPort: one frozen RegimeConfig per underlying for the whole run."""
 

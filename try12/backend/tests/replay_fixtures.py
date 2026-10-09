@@ -213,7 +213,8 @@ def four_trade(tmp_path_factory):
             (capital 200,000, used_capital 0) and one OPEN live PAPER position
             using 60,000 of capital;
       run2  DAY1 again, after mutating that row to capital 50,000 /
-            used_capital 150,000;
+            used_capital 150,000 and the three run controls (trading_halted,
+            study_phase, square_off_time 09:30) that review R1 found leaking;
       run3  DAY2 only (the shifted window);
       runB  DAY1 against DB B: identical market data, no row, no live position.
     """
@@ -257,7 +258,9 @@ def four_trade(tmp_path_factory):
         async def _mutate():
             async with SessA() as db:
                 await db.execute(update(TradingConfig).where(TradingConfig.id == 1)
-                                 .values(capital=50_000.0, used_capital=150_000.0))
+                                 .values(capital=50_000.0, used_capital=150_000.0,
+                                         trading_halted=True, halted_reason="live halt",
+                                         study_phase=True, square_off_time="09:30"))
                 await db.commit()
         run(_mutate())
         out.run2 = replay(SessA, DAY1, DAY1, factory, overrides=flags)

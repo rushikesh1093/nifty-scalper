@@ -198,6 +198,36 @@ class FrozenUserFlags:
         return dict(self._flags)
 
 
+class DbRunControl:
+    """RunControlPort over the trading_config row, read at every call: a manual
+    halt, a study_phase toggle or a square_off_time edit applies at once. An
+    absent row is not halted, not study phase, and has no square-off override."""
+
+    def __init__(self, session_factory: Callable) -> None:
+        self._sessions = session_factory
+
+    async def _row(self):
+        from app.db.models.paper_trade import TradingConfig
+        async with self._sessions() as db:
+            return (await db.execute(
+                select(TradingConfig).where(TradingConfig.id == 1)
+            )).scalar_one_or_none()
+
+    async def persisted_halt(self) -> tuple[bool, str]:
+        row = await self._row()
+        if row is not None and getattr(row, "trading_halted", False):
+            return True, row.halted_reason or "manual halt"
+        return False, ""
+
+    async def study_phase(self) -> bool:
+        row = await self._row()
+        return bool(row.study_phase) if row is not None else False
+
+    async def square_off_time(self) -> Optional[str]:
+        row = await self._row()
+        return row.square_off_time if row is not None else None
+
+
 class StaticParams:
     """ParamsPort over a fixed TradingParams (replay, tests)."""
 
@@ -281,6 +311,7 @@ def script_context(session_factory: Optional[Callable] = None) -> RuntimeContext
         ),
         user_flags=FrozenUserFlags({}),
         instruments=LiveInstruments(),
+        control=DbRunControl(session_factory),
         is_replay=False,
     )
 
@@ -302,5 +333,6 @@ def live_context(row, session_factory: Callable) -> RuntimeContext:
         user_flags=DbUserFlags(session_factory, initial_row=row,
                                ttl_s=params.current().params_cache_ttl_s),
         instruments=LiveInstruments(),
+        control=DbRunControl(session_factory),
         is_replay=False,
     )

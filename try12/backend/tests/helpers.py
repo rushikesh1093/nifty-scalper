@@ -327,7 +327,8 @@ def make_test_context(*, clock=None, market=None, sessions=None, params=None,
     from app.core.trading_params import TradingParams
     from app.runtime.context import RunConfig, RuntimeContext
     from app.runtime.live import (
-        DbRegimeConfig, FrozenUserFlags, LiveClock, LiveInstruments, RedisMarketData, StaticParams,
+        DbRegimeConfig, DbRunControl, FrozenUserFlags, LiveClock, LiveInstruments,
+        RedisMarketData, StaticParams,
     )
     from app.services.cache.redis_client import redis_cache
 
@@ -350,6 +351,7 @@ def make_test_context(*, clock=None, market=None, sessions=None, params=None,
         cfg=cfg,
         user_flags=user_flags or FrozenUserFlags({}),
         instruments=instruments or LiveInstruments(),
+        control=DbRunControl(sessions or _LazySessions()),
         is_replay=False,
     )
 

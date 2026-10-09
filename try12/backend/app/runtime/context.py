@@ -22,7 +22,8 @@ if TYPE_CHECKING:
 
     from app.core.trading_params import TradingParams
     from app.runtime.ports import (
-        Clock, InstrumentPort, MarketDataPort, ParamsPort, RegimeConfigPort, UserFlagsPort,
+        Clock, InstrumentPort, MarketDataPort, ParamsPort, RegimeConfigPort, RunControlPort,
+        UserFlagsPort,
     )
 
 
@@ -43,6 +44,11 @@ class RunConfig:
     entry_cutoff_buffer_min: int
     user_strategy_flags: dict[str, bool] = field(default_factory=dict)
     underlyings: tuple[str, ...] = ("NIFTY", "BANKNIFTY")
+    # Run controls read through ctx().control. Replay's FrozenRunControl serves
+    # these (and square_off_time) from --params-file, so they are in params_hash.
+    # Live's DbRunControl reads the row at every call and ignores them.
+    study_phase: bool = False
+    trading_halted: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,7 @@ class RuntimeContext:
     cfg: RunConfig
     user_flags: "UserFlagsPort"
     instruments: "InstrumentPort"
+    control: "RunControlPort"                 # kill switch, study_phase, square_off_time
     is_replay: bool
 
 

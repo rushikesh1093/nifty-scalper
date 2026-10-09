@@ -82,10 +82,46 @@ def test_a_replay_beside_a_live_open_position_matches_a_clean_database(four_trad
 # ── case (b): mutating the live row between two replays changes nothing ─────
 
 def test_two_replays_ignore_the_live_rows_capital_and_used_capital(four_trade):
-    assert four_trade.row_after_run2.capital == 50_000.0
-    assert four_trade.row_after_run2.used_capital == 150_000.0
+    row = four_trade.row_after_run2
+    assert row.capital == 50_000.0
+    assert row.used_capital == 150_000.0
+    # the decision-changing run controls (review R1): a halted, study-phase row
+    # squaring off at 09:30 would refuse or skip every replay entry if read
+    assert (row.trading_halted, row.study_phase, row.square_off_time) == (True, True, "09:30")
     assert four_trade.run1.params_hash == four_trade.run2.params_hash
     assert four_trade.run1.determinism_hash == four_trade.run2.determinism_hash
+    assert four_trade.run2.metrics.trades == four_trade.run1.metrics.trades == 4
+
+
+def test_replay_run_controls_come_from_the_run_config_not_the_row(runtime_ctx, sqlite_db):
+    """Review R1: the kill switch, study_phase and square_off_time a replay reads
+    are the frozen RunConfig's; a halted, study-phase row is invisible to it.
+    Live (DbRunControl) still reads the row at every call."""
+    import dataclasses
+    from app.services.replay.ports_impl import FrozenRunControl
+    from app.services.trading.paper_engine import paper_engine
+
+    run(seed_config(sqlite_db, trading_halted=True, halted_reason="live halt",
+                    study_phase=True, square_off_time="09:30"))
+    mode_manager._halted = False
+    assert run(mode_manager.kill_switch_state()) == (True, "live halt")
+    assert run(runtime_ctx.control.study_phase()) is True
+    assert run(runtime_ctx.control.square_off_time()) == "09:30"
+
+    replay_like = dataclasses.replace(runtime_ctx, control=FrozenRunControl(runtime_ctx.cfg))
+    try:
+        with using(replay_like):
+            paper_engine._square_off_cache = None
+            assert run(mode_manager.kill_switch_state()) == (False, "")
+            assert run(replay_like.control.study_phase()) is False
+            assert run(paper_engine._get_square_off()) == dtime(15, 15)
+        halted = with_cfg(runtime_ctx, trading_halted=True, study_phase=True)
+        halted = dataclasses.replace(halted, control=FrozenRunControl(halted.cfg))
+        with using(halted):
+            assert run(mode_manager.kill_switch_state())[0] is True
+            assert run(halted.control.study_phase()) is True
+    finally:
+        paper_engine._square_off_cache = None
 
 
 # ── case (c): a FAILED run's leftover open position is invisible to live ────

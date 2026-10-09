@@ -107,7 +107,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="comma-separated: NIFTY,BANKNIFTY")
     ap.add_argument("--params-file", type=Path, default=None,
                     help="JSON object of TradingParams overrides (+ square_off_time, "
-                         "user_strategy_flags)")
+                         "user_strategy_flags, study_phase, trading_halted)")
     ap.add_argument("--seed", type=int, default=settings.REPLAY_DEFAULT_SEED)
     ap.add_argument("--oos-split", type=float, default=0.70)
     ap.add_argument("--walk-forward", type=int, default=0)

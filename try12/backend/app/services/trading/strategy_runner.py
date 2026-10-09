@@ -254,14 +254,14 @@ class StrategyRunner:
         to the cycle_stats row — the positive evidence of evaluation (§12)."""
         ist_t = self._ist_now().time().replace(tzinfo=None)
 
-        cfg = await mode_manager.get_config()
         # Only run during the signal window (settings.SESSION_*_IST,
         # 9:15 – 15:25) and stop evaluating strategies at the entry
         # cutoff (configured square-off − 10 min).
         # paper_engine.handle_signal enforces the same cutoff as the
-        # authoritative gate.
+        # authoritative gate. square_off_time comes through ctx().control
+        # (live row / replay RunConfig), never the shared row in replay.
         start_t, end_t = settings.SESSION_START_IST, settings.SESSION_END_IST
-        cutoff = entry_cutoff(cfg.square_off_time if cfg else None)
+        cutoff = entry_cutoff(await ctx().control.square_off_time())
         if ist_t < start_t or ist_t > end_t:
             await self._record_day_gate(
                 underlying, ReasonCode.OUTSIDE_SESSION_WINDOW,
@@ -756,8 +756,7 @@ class StrategyRunner:
                 ist_h = ist.hour
                 ist_m = ist.minute
 
-                cfg = await mode_manager.get_config()
-                square_off = parse_square_off(cfg.square_off_time if cfg else None)
+                square_off = parse_square_off(await ctx().control.square_off_time())
                 if (ist.weekday() < 5
                         and ist.time().replace(tzinfo=None) >= square_off
                         and self._eod_done_date != ist.date()):

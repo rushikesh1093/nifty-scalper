@@ -488,13 +488,12 @@ class ModeManager:
     # ── Pre-trade checks ──────────────────────────────────────────────────────
 
     async def kill_switch_state(self) -> Tuple[bool, str]:
-        """(halted, reason): the in-memory flag or the persisted halt (gate check 2)."""
+        """(halted, reason): the in-memory flag or the run's persisted halt (gate
+        check 2). The persisted halt comes through ctx().control: the live row in
+        live, the frozen RunConfig in replay (never the shared row)."""
         if self._halted:
             return True, "manual halt"
-        cfg = await self.get_config()
-        if cfg is not None and getattr(cfg, "trading_halted", False):
-            return True, cfg.halted_reason or "manual halt"
-        return False, ""
+        return await ctx().control.persisted_halt()
 
     async def pre_trade_check(self, underlying: str) -> Tuple[bool, str]:
         """(True, "") if a new entry would pass the risk gate's phase one,

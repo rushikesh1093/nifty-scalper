@@ -55,7 +55,8 @@ from app.services.metrics import trade_metrics as tm
 from app.services.replay import coverage as coverage_mod
 from app.services.replay.data_loader import SPOT_TOKENS, load_day, spot_token
 from app.services.replay.ports_impl import (
-    CANDLE, IST, FrozenUserFlags, ReplayClock, ReplayInstruments, ReplayMarketData,
+    CANDLE, IST, FrozenRunControl, FrozenUserFlags, ReplayClock, ReplayInstruments,
+    ReplayMarketData,
     ReplayRegimeConfig, ReplayTradingParams, utc,
 )
 from app.services.trading import no_trade, risk_state
@@ -70,7 +71,8 @@ from app.strategies.strategies import build_strategies
 logger = logging.getLogger(__name__)
 
 INTRA_CANDLE_ORDER = "PESSIMISTIC_LOW_FIRST"
-RUN_CONFIG_ONLY_KEYS = ("square_off_time", "user_strategy_flags")
+RUN_CONFIG_ONLY_KEYS = ("square_off_time", "user_strategy_flags", "study_phase",
+                        "trading_halted")
 EXIT_OK, EXIT_FAILED, EXIT_NO_TRADEABLE_DAY, EXIT_STARTUP_ASSERTION = 0, 1, 2, 3
 _CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -160,6 +162,8 @@ def run_config_for(p: TradingParams, extra: dict, underlyings) -> RunConfig:
         entry_cutoff_buffer_min=p.entry_cutoff_buffer_min,
         user_strategy_flags=dict(extra.get("user_strategy_flags") or {}),
         underlyings=tuple(u.upper() for u in underlyings),
+        study_phase=bool(extra.get("study_phase", False)),
+        trading_halted=bool(extra.get("trading_halted", False)),
     )
 
 
@@ -231,7 +235,7 @@ class ReplayEngine:
             run_id=run_id, clock=self.clock, market=self.market, sessions=self.sessions,
             regime_config=ReplayRegimeConfig(), params=ReplayTradingParams(p), cfg=cfg,
             user_flags=FrozenUserFlags(cfg.user_strategy_flags),
-            instruments=ReplayInstruments(), is_replay=True,
+            instruments=ReplayInstruments(), control=FrozenRunControl(cfg), is_replay=True,
         )
 
     # ── run ──────────────────────────────────────────────────────────────────

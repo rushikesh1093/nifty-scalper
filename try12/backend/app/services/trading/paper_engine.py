@@ -144,12 +144,10 @@ class PaperEngine:
         """
         from app.services.trading.mode_manager import mode_manager
 
-        # The row is read only for study_phase. Live always has it (ensure_config);
-        # a replay database may not (run_startup_checks(require_config_row=False)),
-        # and an absent row is not a study-phase row. Every cap and the capital
-        # come from ctx().cfg, never from this row.
-        cfg = await mode_manager.get_config()
-        study_phase = bool(cfg.study_phase) if cfg is not None else False
+        # study_phase comes through ctx().control: the live row (an operator
+        # toggle applies at once) or, in replay, the frozen RunConfig — never the
+        # shared row. Every cap and the capital come from ctx().cfg.
+        study_phase = await ctx().control.study_phase()
 
         # Strategy enabled? Re-check the orchestrator's last merged flags (regime
         # rule AND user flag AND today's streak halt) rather than trusting
@@ -525,9 +523,7 @@ class PaperEngine:
         if self._square_off_cache and now_m - self._square_off_cache[1] < 30:
             return self._square_off_cache[0]
         try:
-            from app.services.trading.mode_manager import mode_manager
-            cfg = await mode_manager.get_config()
-            sq = parse_square_off(cfg.square_off_time if cfg else None)
+            sq = parse_square_off(await ctx().control.square_off_time())
         except Exception as exc:
             logger.debug("square_off_time lookup failed (%s) — using default", exc)
             sq = DEFAULT_SQUARE_OFF

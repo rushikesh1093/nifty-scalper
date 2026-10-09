@@ -46,6 +46,16 @@ class UserFlagsPort(Protocol):
     def current(self) -> dict[str, bool]: ...      # live: TTL-cached strategy_flags. replay: frozen
 
 
+class RunControlPort(Protocol):
+    """The operator run controls a decision reads: the persisted kill switch,
+    study_phase and square_off_time. Live: the trading_config row, read at
+    every call, so an operator toggle applies at once (today's semantics).
+    Replay: the frozen RunConfig, never the shared row (review R1)."""
+    async def persisted_halt(self) -> tuple[bool, str]: ...
+    async def study_phase(self) -> bool: ...
+    async def square_off_time(self) -> str | None: ...
+
+
 class InstrumentPort(Protocol):                    # §10.4: universe resolution, no wall clock
     async def instruments_for(self, db, underlying: str) -> list["Instrument"]: ...
     def invalidate(self) -> None: ...
