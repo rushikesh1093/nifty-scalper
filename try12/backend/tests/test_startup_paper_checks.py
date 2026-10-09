@@ -80,6 +80,30 @@ def test_unparseable_mode_refuses_to_start_naming_mode(sqlite_db, caplog):
     assert run(_raw_row(sqlite_db))[0] == "FOO"
 
 
+def test_a_fresh_row_takes_the_section_19_1_defaults_and_starts(sqlite_db):
+    """Item 6.5 / D2: no row -> ensure_config creates the conservative set, and the
+    full startup path (all seven checks) accepts it unchanged."""
+    from app.core.trading_params import TradingParams
+    from tests.helpers import get_config_row
+
+    run(_full_startup_path(sqlite_db))
+    row = run(get_config_row(sqlite_db))
+    assert (row.mode, row.live_mode_confirmed, row.study_phase) == (TradingMode.PAPER, False, False)
+    assert row.capital == 200_000.0 and row.fixed_fraction_pct == 10.0
+    assert row.trade_amount is None                    # derived: 10% x 200,000 = 20,000
+    assert (row.max_trades_per_day, row.max_open_positions, row.max_lots_per_trade) == (6, 3, 3)
+    assert (row.max_daily_loss, row.max_daily_loss_pct) == (6_000.0, 3.0)
+    assert row.open_exposure_cap_pct == 40.0 and row.min_rr == 2.0
+    assert (row.losing_streak_halt_n, row.strategy_streak_halt_n,
+            row.post_loss_cooldown_minutes) == (3, 2, 15)
+    assert (row.kelly_multiplier, row.kelly_fraction_cap_pct, row.kelly_min_trades) == \
+        (0.25, 15.0, 30)
+    tp = TradingParams()
+    assert all(getattr(row, k) == getattr(tp, k)
+               for k in ("capital", "max_trades_per_day", "max_daily_loss", "slippage_pct",
+                         "stale_tick_seconds", "entry_cutoff_buffer_min"))
+
+
 def test_ensure_config_on_live_row_halts_and_does_not_patch(sqlite_db, caplog):
     run(seed_config(sqlite_db, mode=TradingMode.LIVE, live_mode_confirmed=True))
     caplog.set_level(logging.ERROR)

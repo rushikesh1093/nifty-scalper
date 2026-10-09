@@ -136,12 +136,14 @@ class ModeManager:
         is still created as PAPER / not confirmed, and update_config still
         forces both on every write.
 
-        All risk parameters are computed as fractions of capital so the system
-        behaves correctly from ₹15,000 to ₹10,00,000 without manual tuning:
-          trade_amount      = 20% of capital  (fallback before Kelly kicks in)
+        A fresh row is created with the §19.1 conservative defaults (the
+        TradingParams defaults: capital ₹200,000, 10% fixed fraction, 6 trades
+        a day, 3 open positions, 3 lots, ₹6,000 / 3% daily loss). The legacy
+        patches below apply to an existing row only and are fractions of its
+        capital:
           max_open_positions = max(2, floor(capital / trade_amount × 0.6))
                              → 60% max deployment across concurrent positions
-          max_daily_loss    = 5% of capital
+          max_daily_loss    = 5% of capital when out of range
         """
         async with session_factory() as db:
             result = await db.execute(
@@ -149,30 +151,34 @@ class ModeManager:
             )
             cfg = result.scalar_one_or_none()
             if not cfg:
-                capital      = 100_000.0
-                trade_amount = round(capital * 0.20 / 500) * 500   # 20% — sizes max_pos only
-                max_pos      = max(2, int(capital / trade_amount * 0.6))
+                # A fresh row takes the §19.1 conservative set (D2: ₹200,000),
+                # i.e. TradingParams' own defaults for every column that
+                # carries a TradingParams field, so the row and the code
+                # defaults can never disagree on day one.
+                from app.core.trading_params import TradingParams
+                tp = TradingParams()
+                overlay = {c.name: getattr(tp, c.name)
+                           for c in TradingConfig.__table__.columns
+                           if c.name in TradingParams.field_names()}
                 cfg = TradingConfig(
                     id=1,
                     mode=TradingMode.PAPER,
                     live_mode_confirmed=False,
                     study_phase=False,
-                    capital=capital,
                     # trade_amount is a nullable display cache since 0013 (§9.5);
                     # the per-trade budget is fixed_fraction_pct × capital.
-                    trade_amount=None,
-                    max_lots_per_trade=5,
-                    max_open_positions=max_pos,
-                    max_daily_loss=round(capital * 0.05),
-                    max_daily_loss_pct=5.0,
+                    **dict(overlay, trade_amount=None),
                 )
                 db.add(cfg)
                 await db.commit()
                 await db.refresh(cfg)
                 logger.info(
-                    "TradingConfig row created — capital=₹%.0f trade_amount=₹%.0f "
-                    "max_open_positions=%d max_daily_loss=₹%.0f",
-                    capital, trade_amount, max_pos, capital * 0.05,
+                    "TradingConfig row created (design §19.1 defaults) — capital=₹%.0f "
+                    "fixed_fraction=%.1f%% max_trades_per_day=%d max_open_positions=%d "
+                    "max_lots_per_trade=%d max_daily_loss=₹%.0f (%.1f%%)",
+                    tp.capital, tp.fixed_fraction_pct, tp.max_trades_per_day,
+                    tp.max_open_positions, tp.max_lots_per_trade, tp.max_daily_loss,
+                    tp.max_daily_loss_pct,
                 )
                 return cfg
 
