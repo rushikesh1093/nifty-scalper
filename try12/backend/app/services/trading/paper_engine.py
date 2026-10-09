@@ -144,9 +144,12 @@ class PaperEngine:
         """
         from app.services.trading.mode_manager import mode_manager
 
+        # The row is read only for study_phase. Live always has it (ensure_config);
+        # a replay database may not (run_startup_checks(require_config_row=False)),
+        # and an absent row is not a study-phase row. Every cap and the capital
+        # come from ctx().cfg, never from this row.
         cfg = await mode_manager.get_config()
-        if not cfg:
-            return False
+        study_phase = bool(cfg.study_phase) if cfg is not None else False
 
         # Strategy enabled? Re-check the orchestrator's last merged flags (regime
         # rule AND user flag AND today's streak halt) rather than trusting
@@ -164,7 +167,7 @@ class PaperEngine:
             return False
 
         # Study phase: record signal but do not open any position.
-        if cfg.study_phase:
+        if study_phase:
             await self._save_signal(signal, SignalStatus.SKIPPED, reason="study_phase=True — observing only")
             logger.info(
                 "[PaperEngine] STUDY PHASE — signal recorded, no trade: %s %s %s",

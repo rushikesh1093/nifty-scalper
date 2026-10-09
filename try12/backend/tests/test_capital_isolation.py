@@ -2,8 +2,9 @@
 reserved, so nothing can leak; one run's capital never constrains another's; and the
 checks that make it so are enforced by static scans.
 
-Cases (d) and (e) of §23 R5 finding 2 live here. Cases (a)-(c) need the replay
-engine and land with it."""
+All five cases of §23 R5 finding 2 live here: (a) and (b) read the shared
+four-trade replay runs (tests/replay_fixtures.py), (c) restarts the lifespan
+over a FAILED replay's leftover open position, (d) and (e) are below them."""
 import ast
 import asyncio
 from datetime import time as dtime
@@ -60,6 +61,87 @@ def _enter(Session, ctx, *, capital_used, advisory_used=0.0, insert=None, timeou
                 capital_used=capital_used, advisory_used=advisory_used,
                 insert=insert or _insert, lock_timeout_s=timeout)
     return _go()
+
+
+# ── case (a): a live open position does not constrain a replay ───────────────
+
+def test_a_replay_beside_a_live_open_position_matches_a_clean_database(four_trade):
+    """DB A holds an open PAPER position using ₹60,000 of a ₹200,000 row; DB B has
+    neither. The replay (capital ₹200,000) completes and trades identically, and
+    the live figures are untouched."""
+    from tests.replay_fixtures import assert_complete
+    assert_complete(four_trade.run1)
+    assert_complete(four_trade.runB)
+    assert four_trade.run1.metrics.trades == four_trade.runB.metrics.trades == 4
+    assert four_trade.run1.determinism_hash == four_trade.runB.determinism_hash
+    assert four_trade.row_after_run1.used_capital == 0.0          # never written by replay
+    assert _used(four_trade.SessA, "PAPER") == 60_000.0
+    assert _used(four_trade.SessA, four_trade.run1.run_id) == 0.0  # squared off
+
+
+# ── case (b): mutating the live row between two replays changes nothing ─────
+
+def test_two_replays_ignore_the_live_rows_capital_and_used_capital(four_trade):
+    assert four_trade.row_after_run2.capital == 50_000.0
+    assert four_trade.row_after_run2.used_capital == 150_000.0
+    assert four_trade.run1.params_hash == four_trade.run2.params_hash
+    assert four_trade.run1.determinism_hash == four_trade.run2.determinism_hash
+
+
+# ── case (c): a FAILED run's leftover open position is invisible to live ────
+
+FAILED_RUN = "RPL-01FAILEDRUN000000000000000"[:30]
+
+
+def test_a_failed_runs_open_position_is_ignored_after_a_lifespan_restart(
+        sqlite_db, lifespan_spies, monkeypatch):
+    from datetime import date
+    from app.db.models.replay import ReplayRun
+    from app.main import app, lifespan
+    from app.runtime.context import using
+    from app.services.trading.paper_engine import paper_engine
+    from tests.helpers import get_config_row, get_position
+    import httpx
+
+    run(seed_config(sqlite_db, capital=200_000.0, used_capital=0.0, max_lots_per_trade=3,
+                    max_open_positions=3, max_daily_loss=6_000.0, max_daily_loss_pct=3.0,
+                    max_trades_per_day=6))
+    leftover = run(add_position(sqlite_db, run_id=FAILED_RUN, trade_amount_used=50_000.0))
+
+    async def _failed_run():
+        async with sqlite_db() as db:
+            db.add(ReplayRun(run_id=FAILED_RUN, date_from=date(2026, 9, 1),
+                             date_to=date(2026, 9, 1), underlyings=["NIFTY"], params={},
+                             params_hash="x", seed=1, code_version="test", status="FAILED",
+                             notes="Traceback: simulated"))
+            await db.commit()
+    run(_failed_run())
+
+    checked = []
+
+    async def _spy_check(pos, now_ist, square_off=None):
+        checked.append(pos.id)
+
+    monkeypatch.setattr(paper_engine, "_check_position", _spy_check)
+
+    async def _restart_and_probe():
+        async with lifespan(app):                    # ensure_config + reconcile_used_capital
+            with using(app.state.runtime_context):
+                await paper_engine.monitor_once()    # the live open-position load
+                squared = await paper_engine.square_off_all("EOD")   # the EOD site
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url="http://test") as c:
+                resp = await c.put("/api/v1/trading/capital/set", params={"capital": 250_000})
+        return squared, resp
+    squared, resp = run(_restart_and_probe())
+
+    assert run(get_config_row(sqlite_db)).used_capital == 0.0      # reconcile ignored it
+    assert checked == []                                          # monitor never loaded it
+    assert squared == {"closed": 0, "stale": [], "failed": []}   # EOD never saw it
+    assert run(get_position(sqlite_db, leftover)).is_open is True
+    assert resp.status_code == 200, resp.text                     # not blocked by it
+    assert run(get_config_row(sqlite_db)).capital == 250_000.0
+    assert _used(sqlite_db, FAILED_RUN) == 50_000.0               # left under its own run id
 
 
 # ── the four mutators are gone ───────────────────────────────────────────────

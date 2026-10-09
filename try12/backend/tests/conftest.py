@@ -41,6 +41,7 @@ import app.services.trading.paper_engine  # noqa: E402,F401
 import app.services.trading.strategy_runner  # noqa: E402,F401
 
 from tests.helpers import FakeRedis  # noqa: E402
+from tests.replay_fixtures import four_trade  # noqa: E402,F401  (session-scoped replay dataset)
 
 
 def _blocked_session(*args, **kwargs):

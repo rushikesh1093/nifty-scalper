@@ -151,7 +151,9 @@ class StrategyRunner:
         from app.db.models.market_study import MarketDailySnapshot
         from sqlalchemy import select, desc
 
-        for underlying in ["NIFTY", "BANKNIFTY"]:
+        # The run's underlyings (live: both; a replay: the ones it replays), so a
+        # NIFTY-only replay does not record a BANKNIFTY NO_PREV_DAY_SNAPSHOT gate.
+        for underlying in ctx().cfg.underlyings:
             try:
                 async with sessions()() as db:
                     result = await db.execute(
