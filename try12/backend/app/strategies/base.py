@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional, Callable, Awaitable
 from enum import Enum
 
-from app.runtime.context import now_utc
+from app.runtime.context import now_utc, params
 from app.services.trading import no_trade
 from app.services.trading.no_trade import ReasonCode
 
@@ -40,7 +40,7 @@ class SignalEvent:
     # Standard 1:2 R:R — entry=100, SL=90 (−10%), target=120 (+20%)
     sl_pct:          float = 0.10   # SL as 10% of option LTP
     target_pct:      float = 0.20   # Target as 20% of option LTP → R:R = 2.0
-    min_rr:          float = 2.0    # Min R:R required (enforced in PaperEngine)
+    min_rr:          float = 2.0    # RECORD of the floor applied (params().min_rr); never a source
     # Suggested entry params (filled by option selector later)
     suggested_strike: Optional[float] = None
     entry_price_ref:  Optional[float] = None
@@ -205,7 +205,6 @@ class BaseStrategy(ABC):
     # Standard 1:2 R:R — entry=100, SL=90 (−10%), target=120 (+20%)
     sl_pct:      float = 0.10   # SL as 10% of option LTP
     target_pct:  float = 0.20   # Target as 20% of option LTP → R:R = 2.0
-    min_rr:      float = 2.0    # Hard minimum R:R — trade skipped if below this
 
     def __init__(self, underlying: str = "NIFTY"):
         self.underlying = underlying
@@ -258,6 +257,6 @@ class BaseStrategy(ABC):
             indicators=indicators,
             sl_pct=self.sl_pct,
             target_pct=self.target_pct,
-            min_rr=self.min_rr,
+            min_rr=params().min_rr,   # a record of the floor applied; params() is the only source
             notes=notes,
         )

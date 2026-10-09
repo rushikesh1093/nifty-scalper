@@ -67,6 +67,12 @@ async def lifespan(app: FastAPI):
     try:
         await market_manager.startup()
         market_started = True
+        try:                                            # logging only: never blocks startup
+            from app.services.trading.option_selector import option_selector
+            async with AsyncSessionLocal() as _db:
+                await option_selector.log_startup_summary(_db)
+        except Exception as exc:
+            logger.warning("Option-selector startup summary unavailable: %s", exc)
     except Exception as exc:                            # unchanged tolerance: app may run feedless
         logger.error("MarketManager startup error: %s", exc, exc_info=True)
         logger.warning(

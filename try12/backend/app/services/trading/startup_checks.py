@@ -6,9 +6,9 @@ replay engine — at the positions fixed in §6.6, and from neither inside a
 broad exception handler. Each check collects every violation before raising,
 so one restart surfaces every problem.
 
-Implemented so far: checks 1 (paper guard), 2-5 (strategy names, regime
-coverage, multipliers, regime keys and the UNKNOWN scan) and 6 (params).
-Check 7 lands with the MIN_RR deletion and is appended after check 6.
+Checks: 1 (paper guard), 2-5 (strategy names, regime coverage, multipliers,
+regime keys and the UNKNOWN scan), 6 (params) and 7 (the 1:2 floor has exactly
+one source, ``params().min_rr``).
 """
 from __future__ import annotations
 
@@ -217,6 +217,38 @@ def _check_params() -> list[str]:
     return [f"params: {v}" for v in params().validate()]
 
 
+MIN_RR_LITERAL = re.compile(r"\b(MIN_RR|HF_MIN_RR)\s*=\s*[\d.]+")
+
+
+def scan_min_rr_literals(root: Optional[Path] = None) -> list[str]:
+    """Check 7's static half: no numeric assignment to a MIN_RR / HF_MIN_RR name
+    anywhere under app/. Returns "path:line" hits; empty = pass."""
+    root = root or _APP_DIR
+    out: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if MIN_RR_LITERAL.search(line):
+                out.append(f"{path.relative_to(root.parent).as_posix()}:{n}")
+    return out
+
+
+def check_min_rr_single_source() -> list[str]:
+    """Check 7. A module constant bound at import cannot track an operator edit of
+    the trading_config column, so there are no constants: the floor is read from
+    ``params().min_rr`` at the point of use. This is a literal scan rather than an
+    identity comparison for that reason (design §6.3 check 7)."""
+    from app.strategies.strategies import build_strategies
+
+    v: list[str] = []
+    if params().min_rr < 2.0:
+        v.append(f"check 7: params().min_rr={params().min_rr} must be >= 2.0")
+    v += [f"check 7: MIN_RR literal at {hit}" for hit in scan_min_rr_literals()]
+    for s in build_strategies("NIFTY"):
+        if hasattr(type(s), "min_rr"):
+            v.append(f"check 7: strategy {s.name} declares a min_rr attribute")
+    return v
+
+
 async def run_startup_checks(*, require_config_row: bool) -> None:
     """Run every implemented startup check against the bound ctx(); raise
     StartupAssertionError listing every violation. Never swallows.
@@ -244,6 +276,11 @@ async def run_startup_checks(*, require_config_row: bool) -> None:
     for v in params_v:
         logger.error("Startup check: %s", v)
     violations += params_v
+    # 7. the 1:2 floor has exactly one source
+    rr_v = check_min_rr_single_source()
+    for v in rr_v:
+        logger.error("Startup check: %s", v)
+    violations += rr_v
 
     if violations:
         raise StartupAssertionError(violations)
