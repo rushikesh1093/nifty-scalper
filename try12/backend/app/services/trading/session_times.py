@@ -47,9 +47,10 @@ def entry_cutoff(value: Any, buffer_min: int = ENTRY_CUTOFF_BUFFER_MIN) -> dtime
     return dtime(total // 60, total % 60)
 
 
-def is_after_entry_cutoff(now: dtime, value: Any) -> bool:
+def is_after_entry_cutoff(now: dtime, value: Any,
+                          buffer_min: int = ENTRY_CUTOFF_BUFFER_MIN) -> bool:
     """True when *now* (naive IST time) is at or past the entry cutoff."""
-    return now.replace(tzinfo=None) >= entry_cutoff(value)
+    return now.replace(tzinfo=None) >= entry_cutoff(value, buffer_min)
 
 
 def is_market_hours(now: dtime) -> bool:

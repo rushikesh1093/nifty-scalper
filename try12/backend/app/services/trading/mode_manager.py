@@ -2,7 +2,8 @@
 Trading Mode Manager.
 Controls PAPER ↔ LIVE switching with safety guards.
 Enforces daily loss limits, capital limits, daily trade count.
-Tracks used_capital in real-time as positions open/close.
+Capital in use, the trade count and every halt are DERIVED per run_id from persisted
+positions (risk_state); nothing here reserves or releases capital.
 """
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -10,32 +11,14 @@ from typing import Optional, Tuple
 
 from sqlalchemy import select, update, func
 
-from app.runtime.context import ctx, market, now_utc, sessions, trading_day
+from app.runtime.context import ctx, market, now_utc, params, sessions, trading_day
 from app.db.models.paper_trade import (
     TradingConfig, TradingMode, PaperPosition, DailyPnLSummary, StrategyPerf,
 )
 
 logger = logging.getLogger(__name__)
+LIVE_RUN = "PAPER"      # the live paper run id; display methods are scoped to it
 IST = timezone(timedelta(hours=5, minutes=30))
-
-# ── Half-Kelly constants (capital-relative) ───────────────────────────────────
-KELLY_MIN_TRADES    = 20      # need at least this many closed trades before Kelly applies
-KELLY_MIN_FRACTION  = 0.10   # floor: never bet less than 10% of capital per trade
-KELLY_MAX_FRACTION  = 0.30   # cap:   never bet more than 30% of capital on one trade
-# Both are fractions of live capital so they scale correctly from ₹15k to ₹10L.
-# Absolute amounts are computed at call-time: min = KELLY_MIN_FRACTION × capital
-
-
-def per_trade_budget(cfg) -> float:
-    """The legacy fixed per-trade amount: the stored trade_amount display cache
-    when set, else fixed_fraction_pct × capital. Since migration 0013 the column
-    is NULL by default (design §9.5); risk_gate replaces this in FEAT-005."""
-    stored = getattr(cfg, "trade_amount", None)
-    if stored:
-        return float(stored)
-    pct = getattr(cfg, "fixed_fraction_pct", None) or 10.0
-    return float(cfg.capital or 0.0) * float(pct) / 100.0
-
 
 class ModeManager:
 
@@ -231,7 +214,8 @@ class ModeManager:
         if "capital" in kwargs:
             async with sessions()() as db:
                 result = await db.execute(
-                    select(func.count(PaperPosition.id)).where(PaperPosition.is_open == True)
+                    select(func.count(PaperPosition.id)).where(
+                        PaperPosition.run_id == LIVE_RUN, PaperPosition.is_open == True)  # noqa: E712
                 )
                 if (result.scalar() or 0) > 0:
                     raise ValueError("Cannot change capital while positions are open")
@@ -293,7 +277,8 @@ class ModeManager:
         cfg = await self.get_config()
         async with sessions()() as db:
             result = await db.execute(
-                select(func.count(PaperPosition.id)).where(PaperPosition.is_open == True)
+                select(func.count(PaperPosition.id)).where(
+                    PaperPosition.run_id == LIVE_RUN, PaperPosition.is_open == True)  # noqa: E712
             )
             open_positions = result.scalar() or 0
         db_halted = bool(cfg.trading_halted) if cfg else False
@@ -304,190 +289,9 @@ class ModeManager:
             "open_positions": open_positions,
         }
 
-    async def reserve_capital(self, capital_used: float) -> bool:
-        """Atomically reserve capital so concurrent signals cannot overspend."""
-        if capital_used <= 0:
-            return False
-        async with sessions()() as db:
-            result = await db.execute(
-                update(TradingConfig)
-                .where(
-                    TradingConfig.id == 1,
-                    TradingConfig.used_capital + capital_used <= TradingConfig.capital,
-                )
-                .values(
-                    used_capital=TradingConfig.used_capital + capital_used,
-                    daily_trades_count=TradingConfig.daily_trades_count + 1,
-                )
-            )
-            await db.commit()
-            return result.rowcount == 1
-
     async def get_mode(self) -> str:
         cfg = await self.get_config()
         return cfg.mode if cfg else "PAPER"
-
-    # ── Capital tracking (called by PaperEngine) ──────────────────────────────
-
-    async def on_position_opened(self, capital_used: float):
-        """
-        Lock capital when a new position is opened.
-        Also increment daily_trades_count.
-        """
-        async with sessions()() as db:
-            await db.execute(
-                update(TradingConfig)
-                .where(TradingConfig.id == 1)
-                .values(
-                    used_capital      = TradingConfig.used_capital + capital_used,
-                    daily_trades_count= TradingConfig.daily_trades_count + 1,
-                )
-            )
-            await db.commit()
-        logger.debug("Capital locked: ₹%.2f", capital_used)
-
-    async def on_position_closed(self, capital_released: float):
-        """
-        Release capital when a position is closed.
-        Never let used_capital go below 0.
-        """
-        async with sessions()() as db:
-            # Fetch current used_capital first to avoid going negative
-            result = await db.execute(
-                select(TradingConfig.used_capital).where(TradingConfig.id == 1)
-            )
-            current = result.scalar() or 0.0
-            new_used = max(0.0, round(current - capital_released, 2))
-            await db.execute(
-                update(TradingConfig)
-                .where(TradingConfig.id == 1)
-                .values(used_capital=new_used)
-            )
-            await db.commit()
-        logger.debug("Capital released: ₹%.2f | remaining used: ₹%.2f",
-                     capital_released, new_used)
-
-    async def release_reserved_capital(self, capital_reserved: float):
-        """
-        Roll back an atomic capital reservation that did not result in a
-        position being opened (e.g. ATR check fail, R:R fail, unexpected error).
-        Also decrements daily_trades_count since reserve_capital incremented it.
-        """
-        if capital_reserved <= 0:
-            return
-        async with sessions()() as db:
-            result = await db.execute(
-                select(TradingConfig.used_capital, TradingConfig.daily_trades_count)
-                .where(TradingConfig.id == 1)
-            )
-            row = result.one_or_none()
-            if not row:
-                return
-            new_used  = max(0.0, round(row.used_capital - capital_reserved, 2))
-            new_count = max(0, row.daily_trades_count - 1)
-            await db.execute(
-                update(TradingConfig)
-                .where(TradingConfig.id == 1)
-                .values(used_capital=new_used, daily_trades_count=new_count)
-            )
-            await db.commit()
-        logger.debug(
-            "Reserved capital rolled back: ₹%.2f (trade count also decremented)",
-            capital_reserved,
-        )
-
-    # ── Half-Kelly dynamic trade sizing ──────────────────────────────────────
-
-    async def kelly_trade_amount(
-        self, strategy_name: str, cfg: Optional[TradingConfig] = None
-    ) -> float:
-        """
-        Return the half-Kelly trade amount for a strategy, scaled to actual capital.
-
-        Formula:
-            p = win_rate / 100
-            q = 1 - p
-            b = avg_rr  (average achieved risk:reward)
-            kelly_full = (p*b - q) / b
-            kelly_half = max(0, kelly_full) * 0.5
-            amount = clamp(kelly_half × capital,
-                           KELLY_MIN_FRACTION × capital,   ← scales with capital
-                           KELLY_MAX_FRACTION × capital)
-
-        Falls back to cfg.trade_amount when:
-          - fewer than KELLY_MIN_TRADES closed trades exist for this strategy
-          - avg_rr / win_rate not yet available (not enough data)
-          - computed kelly is zero or negative (strategy losing)
-
-        All thresholds are fractions of capital so the logic works correctly
-        regardless of whether capital is ₹15,000 or ₹1,00,000.
-        """
-        if cfg is None:
-            cfg = await self.get_config()
-        if cfg is None:
-            return 10_000.0  # hardcoded fallback if no config at all
-
-        capital = cfg.capital or 100_000.0
-        kelly_min_amount = KELLY_MIN_FRACTION * capital   # e.g. ₹1,500 at ₹15k cap
-        kelly_max_amount = KELLY_MAX_FRACTION * capital   # e.g. ₹4,500 at ₹15k cap
-
-        try:
-            async with sessions()() as db:
-                result = await db.execute(
-                    select(StrategyPerf).where(
-                        StrategyPerf.strategy_name == strategy_name,
-                        StrategyPerf.run_id == ctx().run_id,
-                    )
-                )
-                perf = result.scalar_one_or_none()
-
-            if (
-                perf is None
-                or (perf.total_trades or 0) < KELLY_MIN_TRADES
-                or not perf.win_rate
-                or not perf.avg_rr
-                or perf.avg_rr <= 0
-            ):
-                # Not enough history — use configured fixed sizing, clamped to capital
-                fallback = min(per_trade_budget(cfg), kelly_max_amount)
-                fallback = max(fallback, kelly_min_amount)
-                return round(fallback / 500) * 500
-
-            p = perf.win_rate / 100.0
-            q = 1.0 - p
-            b = perf.avg_rr
-
-            kelly_full = (p * b - q) / b
-            kelly_half = max(0.0, kelly_full) * 0.5
-
-            if kelly_half <= 0:
-                logger.info(
-                    "[Kelly] %s: negative edge (win_rate=%.1f%% avg_rr=%.2f) "
-                    "→ using floor ₹%.0f (%.0f%% of capital)",
-                    strategy_name, perf.win_rate, perf.avg_rr,
-                    kelly_min_amount, KELLY_MIN_FRACTION * 100,
-                )
-                return round(kelly_min_amount / 500) * 500
-
-            amount = kelly_half * capital
-            amount = max(kelly_min_amount, min(amount, kelly_max_amount))
-            amount = round(amount / 500) * 500  # round to nearest ₹500
-
-            logger.debug(
-                "[Kelly] %s: p=%.2f b=%.2f → half_kelly=%.3f → ₹%.0f "
-                "(min=₹%.0f max=₹%.0f capital=₹%.0f)",
-                strategy_name, p, b, kelly_half, amount,
-                kelly_min_amount, kelly_max_amount, capital,
-            )
-            return float(amount)
-
-        except Exception as exc:
-            logger.warning(
-                "[Kelly] Error computing trade amount for %s: %s — using fallback",
-                strategy_name, exc,
-            )
-            fallback = min(per_trade_budget(cfg), kelly_max_amount)
-            return max(fallback, kelly_min_amount)
 
     async def update_strategy_perf(self, db, strategy_name: str, outcome) -> None:
         """
@@ -499,8 +303,9 @@ class ModeManager:
         Exact sums plus the R-sign buckets Kelly reads (§9.5):
         winning_trades_r / losing_trades_r count only R-valid trades, keyed on
         the sign of r_multiple, never on net P&L. avg_rr is kept equal to
-        expectancy_r for the legacy kelly_trade_amount reader, and
-        kelly_fraction is the cached value of that same (pre-FEAT-005) formula.
+        expectancy_r, and kelly_fraction caches the applied Kelly fraction
+        risk_gate.fraction_decision would use (None until the sample is large
+        enough or when there is no edge). Nothing reads the cache for a decision.
         """
         from app.services.trading.trade_outcome import accumulate
 
@@ -524,13 +329,7 @@ class ModeManager:
             if perf.losing_trades_r else None
         perf.avg_rr = perf.expectancy_r
 
-        if (perf.total_trades >= KELLY_MIN_TRADES and perf.win_rate
-                and perf.avg_rr and perf.avg_rr > 0):
-            p = perf.win_rate / 100.0
-            b = perf.avg_rr
-            perf.kelly_fraction = round(max(0.0, (p * b - (1.0 - p)) / b) * 0.5, 6)
-        else:
-            perf.kelly_fraction = None          # not enough data yet
+        perf.kelly_fraction = self._cached_kelly_fraction(perf)
         await db.flush()
 
         logger.debug(
@@ -539,6 +338,17 @@ class ModeManager:
             strategy_name, perf.total_trades, perf.winning_trades, perf.win_rate,
             perf.expectancy_r, perf.winning_trades_r, perf.losing_trades_r,
         )
+
+    @staticmethod
+    def _cached_kelly_fraction(perf) -> Optional[float]:
+        from app.services.trading import risk_gate
+        res = risk_gate.kelly_from_stats(
+            int(perf.winning_trades_r or 0), int(perf.losing_trades_r or 0),
+            float(perf.sum_r_win or 0.0), float(perf.sum_r_loss or 0.0))
+        if isinstance(res, str) or res[4] <= 0:
+            return None
+        p = params()
+        return round(min(p.kelly_multiplier * res[4], p.kelly_fraction_cap_pct / 100.0), 6)
 
     async def reset_daily_counter(self):
         """Manual reset of daily_trades_count (stamps today's IST date)."""
@@ -571,7 +381,8 @@ class ModeManager:
         async with sessions()() as db:
             result = await db.execute(
                 select(func.count(PaperPosition.id))
-                .where(PaperPosition.entry_time >= day_start_utc)
+                .where(PaperPosition.run_id == LIVE_RUN,
+                       PaperPosition.entry_time >= day_start_utc)
             )
             entered_today = result.scalar() or 0
 
@@ -584,187 +395,137 @@ class ModeManager:
 
     async def reconcile_used_capital(self, *, session_factory):
         """
-        Recompute used_capital from actual open positions.
-        Fixes drift caused by server restarts mid-session.
+        Recompute the DISPLAY caches ``used_capital`` and ``daily_trades_count`` from
+        the live PAPER run's positions. This is the only writer of
+        ``trading_config.used_capital``; no decision and no API response reads either
+        cache (the gate derives both per run_id, design §9.2). Recomputed, never
+        incremented, so it is correct at any time.
         The session factory is explicit because the lifespan calls this
         before any RuntimeContext is bound (design §6.6).
         """
+        from app.services.trading.session_times import trading_day_bounds_utc
+        from app.services.trading.session_times import trading_day as _day_of
+        from datetime import datetime as _dt
+
         async with session_factory() as db:
-            result = await db.execute(
-                select(func.sum(PaperPosition.trade_amount_used))
-                .where(PaperPosition.is_open == True)
-            )
-            actual_used = round(result.scalar() or 0.0, 2)
+            actual_used = round(float((await db.execute(
+                select(func.coalesce(func.sum(PaperPosition.trade_amount_used), 0.0))
+                .where(PaperPosition.run_id == LIVE_RUN, PaperPosition.is_open == True)  # noqa: E712
+            )).scalar() or 0.0), 2)
+            today = _day_of(_dt.now(timezone.utc))
+            start, end = trading_day_bounds_utc(today)
+            count = (await db.execute(
+                select(func.count(PaperPosition.id)).where(
+                    PaperPosition.run_id == LIVE_RUN,
+                    PaperPosition.entry_time >= start, PaperPosition.entry_time < end)
+            )).scalar() or 0
             await db.execute(
                 update(TradingConfig)
                 .where(TradingConfig.id == 1)
-                .values(used_capital=actual_used)
+                .values(used_capital=actual_used, daily_trades_count=count,
+                        daily_trades_date=today)
             )
             await db.commit()
-        logger.info("used_capital reconciled to ₹%.2f from open positions.", actual_used)
+        logger.info("used_capital cache reconciled to ₹%.2f (%d trades today).",
+                    actual_used, count)
 
     # ── Pre-trade checks ──────────────────────────────────────────────────────
 
-    async def pre_trade_check(self, underlying: str) -> Tuple[bool, str]:
-        """
-        Returns (True, "") if trade allowed, else (False, reason).
-        Checks (in order):
-          0. Kill switch (in-memory or persisted)
-          1. Daily loss circuit breaker (realised + unrealised)
-          2. Max open positions
-          3. Max trades per day
-          4. Capital availability (basic — detailed check in PaperEngine)
-        """
+    async def kill_switch_state(self) -> Tuple[bool, str]:
+        """(halted, reason): the in-memory flag or the persisted halt (gate check 2)."""
+        if self._halted:
+            return True, "manual halt"
         cfg = await self.get_config()
-        if not cfg:
-            return False, "No trading config found"
-
-        # 0. Kill switch
-        if self._halted or getattr(cfg, "trading_halted", False):
-            return False, f"Kill switch active: {cfg.halted_reason or 'manual halt'}"
-
-        # 1. Daily loss limit
-        breached, reason = await self._check_daily_loss(cfg)
-        if breached:
-            return False, reason
-
-        # 2. Max open positions
-        async with sessions()() as db:
-            result = await db.execute(
-                select(func.count(PaperPosition.id))
-                .where(PaperPosition.is_open == True)
-            )
-            open_count = result.scalar() or 0
-
-        if open_count >= cfg.max_open_positions:
-            return False, (
-                f"Max open positions ({cfg.max_open_positions}) reached. "
-                f"Wait for a position to close."
-            )
-
-        # 3. Max trades per day
-        if cfg.daily_trades_count >= cfg.max_trades_per_day:
-            return False, (
-                f"Daily trade limit ({cfg.max_trades_per_day}) reached."
-            )
-
-        # 4. Sufficient capital for at least 1 lot
-        available = cfg.capital - (cfg.used_capital or 0.0)
-        if available < per_trade_budget(cfg) * 0.5:
-            return False, (
-                f"Available capital ₹{available:.0f} is too low "
-                f"(trade amount ₹{per_trade_budget(cfg):.0f})."
-            )
-
-        return True, ""
-
-    async def _check_daily_loss(
-        self, cfg: Optional[TradingConfig] = None
-    ) -> Tuple[bool, str]:
-        if not cfg:
-            cfg = await self.get_config()
-        if not cfg:
-            return False, ""
-
-        today = trading_day()
-        async with sessions()() as db:
-            result = await db.execute(
-                select(func.sum(DailyPnLSummary.net_pnl)).where(
-                    DailyPnLSummary.date == today,
-                    DailyPnLSummary.mode == TradingMode(cfg.mode),
-                )
-            )
-            realised = result.scalar() or 0.0
-
-        # Unrealised P&L of open positions at current LTP, plus partial-close
-        # P&L already booked on them (not yet in daily_pnl_summary).
-        unrealised = 0.0
-        try:
-            async with sessions()() as db:
-                result = await db.execute(
-                    select(PaperPosition).where(
-                        PaperPosition.is_open == True,
-                        PaperPosition.mode == TradingMode(cfg.mode),
-                    )
-                )
-                open_positions = result.scalars().all()
-            for pos in open_positions:
-                ltp = await market().get_ltp(pos.token)
-                if ltp:
-                    unrealised += (ltp - (pos.actual_entry or 0.0)) * (pos.quantity or 0)
-                if pos.partial_closed:
-                    unrealised += pos.net_pnl or 0.0
-        except Exception as exc:
-            logger.debug("Unrealised P&L unavailable (%s) — using realised only", exc)
-            unrealised = 0.0
-
-        total_pnl = realised + unrealised
-        detail = f"realised ₹{realised:.0f} + unrealised ₹{unrealised:.0f}"
-
-        if total_pnl <= -abs(cfg.max_daily_loss):
-            return True, (
-                f"Daily loss limit ₹{cfg.max_daily_loss:.0f} breached "
-                f"(today: ₹{total_pnl:.0f} = {detail})"
-            )
-
-        # Only check loss % when actually in a loss — positive P&L must never
-        # trigger the circuit breaker regardless of its magnitude.
-        if total_pnl < 0:
-            loss_pct = abs(total_pnl) / cfg.capital * 100
-            if loss_pct >= cfg.max_daily_loss_pct:
-                return True, (
-                    f"Daily loss % limit {cfg.max_daily_loss_pct}% breached "
-                    f"({loss_pct:.2f}% = {detail})"
-                )
-
+        if cfg is not None and getattr(cfg, "trading_halted", False):
+            return True, cfg.halted_reason or "manual halt"
         return False, ""
+
+    async def pre_trade_check(self, underlying: str) -> Tuple[bool, str]:
+        """(True, "") if a new entry would pass the risk gate's phase one,
+        else (False, reason). A thin wrapper over risk_gate.evaluate_pre_selection
+        for callers that have no signal in hand; it probes with the configured
+        stop/target percentages on a placeholder strategy."""
+        from app.runtime.context import params as _params
+        from app.services.trading import risk_gate
+        from app.services.trading.strategy_orchestrator import strategy_orchestrator
+        from app.strategies.base import Direction, SignalEvent
+
+        p = _params()
+        probe = SignalEvent(
+            strategy_name="PRE_TRADE_CHECK", underlying=underlying, direction=Direction.BUY,
+            spot_price=0.0, signal_time=now_utc(), vwap=0.0, indicators={},
+            sl_pct=p.sl_pct, target_pct=p.target_pct, min_rr=p.min_rr,
+        )
+        regime = await strategy_orchestrator.get_current_regime(underlying)
+        async with sessions()() as db:
+            decision = await risk_gate.evaluate_pre_selection(db, probe, regime)
+        return (True, "") if decision.allowed else (False, decision.reason)
 
     # ── Capital summary ───────────────────────────────────────────────────────
 
+    async def _live_capital_figures(self, db) -> tuple[float, float, int]:
+        """(capital, capital in use, trades today) for the live PAPER run, derived
+        from positions (design §9.2); never from the trading_config caches."""
+        from app.services.trading import risk_state
+        used = await risk_state.open_capital_used(db, LIVE_RUN)
+        count = await risk_state.derived_trade_count(db, LIVE_RUN, trading_day())
+        return float(ctx().cfg.capital), used, count
+
+    async def capital_figures(self) -> tuple[float, float, int]:
+        """(capital, capital in use, trades today) for the live PAPER run, in its
+        own session. Every API field named used_capital / available_capital is
+        computed from this, never from the trading_config display cache."""
+        async with sessions()() as db:
+            return await self._live_capital_figures(db)
+
+    async def _loss_status(self, db) -> tuple[bool, str]:
+        from app.services.trading import risk_state
+        loss = await risk_state.daily_loss_figure(db)
+        if not loss.breached:
+            return False, ""
+        return True, (f"Daily loss cap breached ({loss.breach_source}): realised "
+                      f"₹{loss.realised:.0f} + unrealised ₹{loss.unrealised:.0f} = "
+                      f"₹{loss.combined:.0f}")
+
     async def get_capital_summary(self) -> dict:
         """Returns the full capital breakdown for the frontend."""
+        from app.services.trading.risk_gate import round_to_500
         cfg = await self.get_config()
         if not cfg:
             return {}
 
-        used      = round(cfg.used_capital or 0.0, 2)
-        capital   = round(cfg.capital, 2)
-        available = round(max(capital - used, 0.0), 2)
-
-        # Today's realised P&L
-        today = trading_day()
         async with sessions()() as db:
-            result = await db.execute(
-                select(func.sum(DailyPnLSummary.net_pnl)).where(
-                    DailyPnLSummary.date == today,
+            capital, used, daily_trades = await self._live_capital_figures(db)
+            realised_pnl = round(float((await db.execute(
+                select(func.coalesce(func.sum(DailyPnLSummary.net_pnl), 0.0)).where(
+                    DailyPnLSummary.run_id == LIVE_RUN,
+                    DailyPnLSummary.date == trading_day(),
                     DailyPnLSummary.mode == TradingMode(cfg.mode),
                 )
-            )
-            realised_pnl = round(result.scalar() or 0.0, 2)
+            )).scalar() or 0.0), 2)
+            open_positions = (await db.execute(
+                select(func.count(PaperPosition.id)).where(
+                    PaperPosition.run_id == LIVE_RUN, PaperPosition.is_open == True)  # noqa: E712
+            )).scalar() or 0
+            breached, breach_reason = await self._loss_status(db)
 
-            # Count open positions
-            op_result = await db.execute(
-                select(func.count(PaperPosition.id))
-                .where(PaperPosition.is_open == True)
-            )
-            open_positions = op_result.scalar() or 0
-
-        breached, breach_reason = await self._check_daily_loss(cfg)
-
+        used = round(used, 2)
+        capital = round(capital, 2)
+        trade_amount = round_to_500(params().fixed_fraction_pct / 100.0 * capital)
         return {
             "capital":            capital,
             "used_capital":       used,
-            "available_capital":  available,
-            "trade_amount":       round(per_trade_budget(cfg), 2),
+            "available_capital":  round(max(capital - used, 0.0), 2),
+            "trade_amount":       trade_amount,
             "realised_pnl":       realised_pnl,
             "net_capital":        round(capital + realised_pnl, 2),
             "utilisation_pct":    round(used / capital * 100, 1) if capital else 0,
-            "max_daily_loss":     cfg.max_daily_loss,
-            "max_daily_loss_pct": cfg.max_daily_loss_pct,
-            "daily_trades":       cfg.daily_trades_count,
-            "max_trades_per_day": cfg.max_trades_per_day,
+            "max_daily_loss":     ctx().cfg.max_daily_loss,
+            "max_daily_loss_pct": ctx().cfg.max_daily_loss_pct,
+            "daily_trades":       daily_trades,
+            "max_trades_per_day": ctx().cfg.max_trades_per_day,
             "open_positions":     open_positions,
-            "max_open_positions": cfg.max_open_positions,
+            "max_open_positions": ctx().cfg.max_open_positions,
             "circuit_breaker":    breached,
             "circuit_reason":     breach_reason,
             "mode":               cfg.mode,
@@ -780,22 +541,22 @@ class ModeManager:
         async with sessions()() as db:
             result = await db.execute(
                 select(DailyPnLSummary).where(
+                    DailyPnLSummary.run_id == LIVE_RUN,
                     DailyPnLSummary.date == today,
                     DailyPnLSummary.mode == TradingMode(mode),
                 )
             )
             summaries = result.scalars().all()
-
-            open_r = await db.execute(
-                select(func.count(PaperPosition.id))
-                .where(PaperPosition.is_open == True)
-            )
-            open_count = open_r.scalar() or 0
+            capital, used, _ = await self._live_capital_figures(db)
+            open_count = (await db.execute(
+                select(func.count(PaperPosition.id)).where(
+                    PaperPosition.run_id == LIVE_RUN, PaperPosition.is_open == True)  # noqa: E712
+            )).scalar() or 0
+            breached, breach_reason = await self._loss_status(db)
 
         total_pnl    = sum(s.net_pnl    for s in summaries)
         total_trades = sum(s.total_trades for s in summaries)
         total_wins   = sum(s.winning_trades for s in summaries)
-        breached, breach_reason = await self._check_daily_loss(cfg)
 
         return {
             "date":            str(today),
@@ -804,12 +565,12 @@ class ModeManager:
             "total_trades":    total_trades,
             "win_rate":        round(total_wins / total_trades * 100, 1) if total_trades else 0,
             "open_positions":  open_count,
-            "loss_limit":      cfg.max_daily_loss     if cfg else 5000,
-            "capital":         cfg.capital             if cfg else 100000,
-            "trade_amount":    cfg.trade_amount        if cfg else 10000,
-            "used_capital":    round(cfg.used_capital or 0, 2) if cfg else 0,
-            "available":       round(cfg.capital - (cfg.used_capital or 0), 2) if cfg else 100000,
-            "loss_pct":        round(abs(min(total_pnl, 0)) / (cfg.capital if cfg else 100000) * 100, 2),
+            "loss_limit":      ctx().cfg.max_daily_loss,
+            "capital":         capital,
+            "trade_amount":    cfg.trade_amount if cfg else None,
+            "used_capital":    round(used, 2),
+            "available":       round(capital - used, 2),
+            "loss_pct":        round(abs(min(total_pnl, 0)) / capital * 100, 2) if capital else 0,
             "circuit_breaker_triggered": breached,
             "circuit_reason":  breach_reason,
             "strategy_breakdown": [

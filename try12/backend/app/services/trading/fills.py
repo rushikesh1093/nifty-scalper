@@ -24,10 +24,40 @@ circulars):
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Optional
 
 TICK = 0.05
 EXIT_FALLBACK_SLIPPAGE = 0.001      # trigger × (1 − 0.1%) when no valid bid / TARGET limit
+# 0.30 / 0.15 == 1.9999999999999998 in IEEE-754; without this epsilon the 1:2 gate
+# would reject every signal in the system (design §10.1, §24).
+RR_EPSILON = 1e-6
+
+
+def tick_age_seconds(tick: Optional[dict], now: datetime) -> Optional[float]:
+    """Age of a Redis tick from its ``ts`` field (naive ISO treated as UTC) at
+    *now*. None when unknown. Pure: the caller supplies the ctx clock reading."""
+    if not tick:
+        return None
+    ts = tick.get("ts")
+    if not ts:
+        return None
+    try:
+        t = datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - t).total_seconds())
+
+
+def rr_ok(sl_pct: float, target_pct: float, min_rr: float) -> tuple[bool, Optional[float]]:
+    """(passes, un-stretched rr). A non-positive stop distance has no defined
+    R:R: it passes here and is refused as INITIAL_RISK_NON_POSITIVE at sizing."""
+    if sl_pct is None or sl_pct <= 0:
+        return True, None
+    rr = target_pct / sl_pct
+    return rr + RR_EPSILON >= min_rr, rr
 
 
 def floor_tick(x: float) -> float:
@@ -87,6 +117,32 @@ def exit_fill(trigger_price: float, ltp: Optional[float], bid, ask, age_s: Optio
     if reason.startswith("SL") and ltp is not None and float(ltp) < price:
         price, source = round(float(ltp), 2), "LTP_GAP"
     return price, source
+
+
+def entry_levels(actual_entry: float, sl_pct: float, target_pct: float,
+                 min_rr: float) -> tuple[float, float, float, bool]:
+    """(stop, target, realised_rr, target_stretched) on the fill price.
+
+    The stop rounds DOWN and the target UP to the ₹0.05 tick, so rounding can
+    only improve the R:R (design §10.1). The signal has already passed the 1:2
+    gate on its own percentages; if tick rounding of an off-tick fill still
+    leaves the realised R:R a hair under the floor, the target is lifted to
+    meet it and the position is flagged ``target_stretched``. That is the only
+    place a target is ever moved, and only after the gate has passed.
+    """
+    sl = floor_tick(actual_entry * (1.0 - sl_pct))
+    tgt = ceil_tick(actual_entry * (1.0 + target_pct))
+    risk = actual_entry - sl
+    stretched = False
+    if risk > 0:
+        rr = (tgt - actual_entry) / risk
+        if rr + RR_EPSILON < min_rr:
+            tgt = ceil_tick(actual_entry + risk * min_rr)
+            rr = (tgt - actual_entry) / risk
+            stretched = True
+    else:
+        rr = 0.0
+    return sl, tgt, rr, stretched
 
 
 def brokerage(lots: int, params) -> float:

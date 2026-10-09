@@ -309,23 +309,18 @@ class TradingConfig(Base):
 
 class StrategyPerf(Base):
     """
-    Rolling performance stats per strategy — used by half-Kelly sizing.
+    Rolling performance stats per strategy — the inputs to Kelly sizing.
 
-    Updated after every closed position (paper or live).
-    Stores a trailing window of the last N trades so the Kelly fraction
-    adapts as the strategy's recent win rate changes.
+    Updated after every closed position, from one TradeOutcome (design §7).
 
-    Half-Kelly fraction:
-        f = 0.5 × max(0, (p × b − q) / b)
-    where:
-        p = win_rate / 100
-        q = 1 − p
-        b = avg_rr   (average achieved risk:reward)
-
-    trade_amount = clamp(f × capital, KELLY_MIN_AMOUNT, KELLY_MAX_AMOUNT)
-
-    Only applied when total_trades >= KELLY_MIN_TRADES (20) — below that
-    threshold the system falls back to cfg.trade_amount (fixed sizing).
+    Kelly (risk_gate.fraction_decision, design §9.5), over R-multiples:
+        decided_r = winning_trades_r + losing_trades_r   (R-valid, non-R-flat)
+        p         = winning_trades_r / decided_r
+        b         = avg_win_r / avg_loss_r      (NOT the mean R: that was bug 6)
+        f         = min(kelly_multiplier × (p·b − q) / b, kelly_fraction_cap)
+    base_amount = round_to_500(f × capital); no floor — a strategy with no edge
+    is skipped (KELLY_NO_EDGE). Below kelly_min_trades decided trades the
+    fixed fraction applies. ``kelly_fraction`` here is only a cache of f.
     """
     __tablename__ = "strategy_perf"
 

@@ -23,7 +23,10 @@ from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from app.services.trading.strategy_runner import strategy_runner
 from app.strategies.base import Direction, SignalBus
 from app.strategies.indicators import compute_all
-from tests.helpers import fake_candidate, get_config_row, make_signal, run, seed_config
+from app.runtime.context import ctx, trading_day, using
+from tests.helpers import (
+    fake_candidate, make_signal, pin_ist_time, run, seed_config, stub_select, with_cfg,
+)
 
 
 def _synthetic_candles(n=60, seed=7):
@@ -46,12 +49,8 @@ def _synthetic_candles(n=60, seed=7):
 
 
 def test_offline_signal_to_closed_position(sqlite_db, fake_redis, monkeypatch, capsys):
-    # trade_amount is a nullable display cache since migration 0013 (§9.5);
-    # CFG_DEFAULTS now leaves it None (derive from fixed_fraction_pct × capital,
-    # which would be too small for this fixture's lot). Set it explicitly, as
-    # this fixture did before the schema change.
-    run(seed_config(sqlite_db, trade_amount=3000.0))
-    monkeypatch.setattr(pe_mod, "_ist_time", lambda: dtime(11, 0))
+    run(seed_config(sqlite_db))
+    pin_ist_time(monkeypatch, dtime(11, 0))
     monkeypatch.setattr(SignalBus, "_handlers", [paper_engine.handle_signal])
     monkeypatch.setattr(strategy_orchestrator, "get_current_regime",
                         regime_detector.get_current_regime)   # in-memory, no Redis
@@ -92,12 +91,12 @@ def test_offline_signal_to_closed_position(sqlite_db, fake_redis, monkeypatch, c
     direction = Direction.BUY if "BUY" in rule.allowed_directions else Direction.SELL
     cand = fake_candidate(ltp=12.0, lot_size=65)   # cheap enough for any regime multiplier
 
-    async def _select(**kwargs):
-        return cand
-    monkeypatch.setattr(option_selector, "select", _select)
+    stub_select(monkeypatch, cand)
 
     sig = make_signal(strategy=strategy, direction=direction, sl_pct=0.15, target_pct=0.30)
-    assert run(SignalBus.publish(sig)) is True
+    one_lot = with_cfg(ctx(), max_lots_per_trade=1)     # the walk below is hand-computed on 1 lot
+    with using(one_lot):
+        assert run(SignalBus.publish(sig)) is True
 
     async def _open():
         async with sqlite_db() as db:
@@ -149,6 +148,11 @@ def test_offline_signal_to_closed_position(sqlite_db, fake_redis, monkeypatch, c
     assert closed.r_multiple == pytest.approx((exit_fill - entry) / pos.initial_risk)
     assert s.avg_rr == pytest.approx(closed.r_multiple)
 
-    cfg = run(get_config_row(sqlite_db))
-    assert cfg.used_capital == 0.0 and cfg.daily_trades_count == 1
-    assert cfg.capital == 10000.0
+    # capital in use and the trade count are DERIVED from positions (design §9.2)
+    from app.services.trading import risk_state
+
+    async def _derived():
+        async with sqlite_db() as db:
+            return (await risk_state.open_capital_used(db, "PAPER"),
+                    await risk_state.derived_trade_count(db, "PAPER", trading_day()))
+    assert run(_derived()) == (0.0, 1)

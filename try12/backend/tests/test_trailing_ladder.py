@@ -178,29 +178,23 @@ def test_missing_target_writes_data_gap_and_leaves_the_stop(runtime_ctx, sqlite_
     assert len(gaps) == 1 and gaps[0].position_id == pid
 
 
-def test_handle_signal_writes_entry_risk_once(sqlite_db, fake_redis, monkeypatch):
+def test_handle_signal_writes_entry_risk_once(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     from app.services.trading import paper_engine as pe_mod
     from app.services.trading.mode_manager import mode_manager
     from app.services.trading.option_selector import option_selector
     from app.services.trading.strategy_orchestrator import strategy_orchestrator
-    from tests.helpers import allow_regime, fake_candidate, get_position, make_signal, run, \
-        seed_config
+    from app.runtime.context import using
+    from tests.helpers import allow_regime, fake_candidate, get_position, make_signal, \
+        pin_ist_time, run, seed_config, stub_select, with_cfg
 
     run(seed_config(sqlite_db))
-    monkeypatch.setattr(pe_mod, "_ist_time", lambda: dtime(10, 30))
-
-    async def _select(**kwargs):
-        return fake_candidate(ltp=40.0, lot_size=65)
-
-    async def _kelly(name, cfg):
-        return 3000.0
-
-    monkeypatch.setattr(option_selector, "select", _select)
+    pin_ist_time(monkeypatch, dtime(10, 30))
+    stub_select(monkeypatch, fake_candidate(ltp=40.0, lot_size=65))
     allow_regime(monkeypatch)
-    monkeypatch.setattr(strategy_orchestrator, "get_position_multiplier", lambda u: 1.0)
-    monkeypatch.setattr(mode_manager, "kelly_trade_amount", _kelly)
 
-    assert run(paper_engine.handle_signal(make_signal())) is True
+    # ₹30,000 capital × 10% = ₹3,000 budget
+    with using(with_cfg(runtime_ctx, capital=30_000.0)):
+        assert run(paper_engine.handle_signal(make_signal())) is True
     opened = fake_redis.events("POSITION_OPENED")
     assert len(opened) == 1
     pos = run(get_position(sqlite_db, opened[0]["pos_id"]))

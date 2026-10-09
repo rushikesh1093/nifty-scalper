@@ -81,6 +81,10 @@ class OptionSelectorRequest(BaseModel):
     underlying:  str          # NIFTY or BANKNIFTY
     spot_price:  float
     expiry:      Optional[str] = None   # YYYY-MM-DD
+    # The setup the strategies actually trade (0.15 / 0.30 = 1:2), so the
+    # diagnostic ranks candidates against the same R:R gate as production.
+    sl_pct:      float = 0.15
+    target_pct:  float = 0.30
 
 
 # ── Mode ──────────────────────────────────────────────────────────────────────
@@ -112,6 +116,7 @@ async def get_config():
     cfg = await mode_manager.get_config()
     if not cfg:
         raise HTTPException(status_code=404, detail="Config not found")
+    capital, used, daily_trades = await mode_manager.capital_figures()
     return {
         "mode":                cfg.mode,
         "max_daily_loss":      cfg.max_daily_loss,
@@ -120,15 +125,15 @@ async def get_config():
         "max_lots_per_trade":  cfg.max_lots_per_trade,
         "capital":             cfg.capital,
         "trade_amount":        cfg.trade_amount,
-        "used_capital":        round(cfg.used_capital or 0, 2),
-            "available_capital":   round(cfg.capital - (cfg.used_capital or 0.0), 2),
+        "used_capital":        round(used, 2),
+        "available_capital":   round(capital - used, 2),
         "slippage_pct":        cfg.slippage_pct,
         "square_off_time":     cfg.square_off_time,
         "strategy_flags":      cfg.strategy_flags,
         "live_mode_confirmed": cfg.live_mode_confirmed,
         "study_phase":         cfg.study_phase,
         "max_trades_per_day":  cfg.max_trades_per_day,
-        "daily_trades_count":  cfg.daily_trades_count,
+        "daily_trades_count":  daily_trades,
         "trading_halted":      cfg.trading_halted,
     }
 
@@ -191,12 +196,13 @@ async def set_trade_amount(body: TradeAmountUpdate):
 
     # Preview: calculate lots for current ATM option price (approximate)
     preview = _trade_amount_preview(body.trade_amount, cfg.max_lots_per_trade)
+    _, used, _n = await mode_manager.capital_figures()
 
     return {
         "status":           "updated",
         "trade_amount":     cfg.trade_amount,
         "capital":          cfg.capital,
-        "available_capital": round(cfg.capital - (cfg.used_capital or 0), 2),
+        "available_capital": round(cfg.capital - used, 2),
         "preview":          preview,
     }
 
@@ -208,18 +214,21 @@ async def set_capital(capital: float = Query(..., gt=0, description="Total paper
         cfg = await mode_manager.update_config(capital=capital)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _, used, _n = await mode_manager.capital_figures()
     return {
         "status":          "updated",
         "capital":         cfg.capital,
-        "used_capital":    round(cfg.used_capital or 0.0, 2),
-        "available":       cfg.capital,
+        "used_capital":    round(used, 2),
+        "available":       round(cfg.capital - used, 2),
         "trade_amount":    cfg.trade_amount,
     }
 
 
 @router.post("/capital/reset-daily")
 async def reset_daily_counter():
-    """Reset the daily trades counter (normally happens automatically at midnight)."""
+    """Reset the daily trades DISPLAY counter. The trade cap itself is derived from
+    persisted positions and cannot be reset here (design §9.2); this endpoint stays
+    for the display cache and its admin-key gating lands with the analytics API."""
     await mode_manager.reset_daily_counter()
     return {"status": "reset", "daily_trades_count": 0}
 
@@ -694,15 +703,11 @@ async def clear_test_trades(db: AsyncSession = Depends(get_db)):
     r_orders = await db.execute(delete(Order).where(Order.is_paper == True))
     r_trades = await db.execute(delete(Trade).where(Trade.is_paper == True))
 
-    await db.execute(
-        update(TradingConfig)
-        .where(TradingConfig.id == 1)
-        .values(
-            daily_trades_count=0,
-            used_capital=0.0,
-        )
-    )
     await db.commit()
+    # Recompute the display caches from what is left (design §9.2); the old
+    # unconditional used_capital = 0 write was only right when every run was deleted.
+    from app.runtime.context import ctx
+    await mode_manager.reconcile_used_capital(session_factory=ctx().sessions)
 
     # Clear redis keys
     try:
@@ -812,13 +817,25 @@ async def select_option(body: OptionSelectorRequest, db: AsyncSession = Depends(
 
     expiry = date.fromisoformat(body.expiry) if body.expiry else None
 
-    top3 = await option_selector.select_top_n(
+    from app.runtime.context import ctx, params as _params
+    from app.services.trading.risk_gate import round_to_500
+
+    p = _params()
+    result = await option_selector.select_top_n(
         db=db, direction=direction,
         underlying=body.underlying.upper(),
         spot_price=body.spot_price, n=3,
+        sl_pct=body.sl_pct, target_pct=body.target_pct, params=p,
+        # the diagnostic previews the 1.0x budget: fixed fraction of capital
+        base_amount=round_to_500(p.fixed_fraction_pct / 100.0 * ctx().cfg.capital),
+        regime_multiplier=1.0,
     )
+    top3 = result.ranked
     if not top3:
-        raise HTTPException(status_code=404, detail="No suitable options found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No suitable options found: rejections={result.rejections} "
+                   f"expiry={result.expiry.reason}")
 
     return [
         {

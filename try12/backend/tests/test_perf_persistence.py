@@ -15,8 +15,10 @@ from app.services.trading.mode_manager import mode_manager
 from app.services.trading.option_selector import option_selector
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
+from app.runtime.context import using
 from tests.helpers import (
-    add_position, allow_regime, fake_candidate, get_position, make_signal, run, seed_config,
+    add_position, allow_regime, fake_candidate, get_position, make_signal, pin_ist_time, run,
+    seed_config, stub_select, with_cfg,
 )
 
 REGIME = "BULL_TREND_NORMAL_VOL"
@@ -33,19 +35,13 @@ def _rows(Session, model):
 
 def _open_two_lots(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     """Signal → selection → sizing → a 2-lot position, through handle_signal."""
-    run(seed_config(sqlite_db, max_lots_per_trade=3))
-    monkeypatch.setattr(pe_mod, "_ist_time", lambda: dtime(10, 30))
-
-    async def _select(**kwargs):
-        return fake_candidate(ltp=40.0, lot_size=65)
-
-    async def _kelly(name, cfg):
-        return 6000.0                                  # 2 lots at 40.08 × 65 = ₹2,605.2
-
-    monkeypatch.setattr(option_selector, "select", _select)
-    monkeypatch.setattr(mode_manager, "kelly_trade_amount", _kelly)
+    run(seed_config(sqlite_db))
+    pin_ist_time(monkeypatch, dtime(10, 30))
+    stub_select(monkeypatch, fake_candidate(ltp=40.0, lot_size=65))
     allow_regime(monkeypatch, REGIME)
-    assert run(paper_engine.handle_signal(make_signal())) is True
+    # ₹60,000 capital × 10% fixed fraction = ₹6,000: 2 lots at 40.08 × 65 = ₹2,605.2
+    with using(with_cfg(runtime_ctx, capital=60_000.0)):
+        assert run(paper_engine.handle_signal(make_signal())) is True
     (pos,) = _rows(sqlite_db, PaperPosition)
     assert pos.lots == 2 and pos.entry_regime == REGIME
     return pos

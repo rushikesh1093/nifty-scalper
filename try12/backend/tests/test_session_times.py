@@ -12,7 +12,12 @@ from app.services.trading.session_times import (
     trading_day, trading_day_bounds_utc,
 )
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
-from tests.helpers import add_position, allow_regime, make_cfg, make_signal, run, seed_config
+from sqlalchemy import select
+
+from app.db.models.risk import NoTradeDecision
+from tests.helpers import (
+    add_position, allow_regime, make_cfg, make_signal, pin_ist_time, run, seed_config, stub_select,
+)
 
 
 @pytest.mark.parametrize("value, sq, cutoff", [
@@ -55,42 +60,31 @@ def test_trading_day_bounds_utc():
 
 
 @pytest.fixture
-def gate(monkeypatch, fake_redis):
-    saved, checks = [], []
+def gate(runtime_ctx, sqlite_db, monkeypatch):
+    """handle_signal over the real risk gate; selection stubbed to 'no option' so
+    a signal that clears the gate is recorded as NO_OPTION_AVAILABLE."""
+    run(seed_config(sqlite_db))
+    allow_regime(monkeypatch)
+    stub_select(monkeypatch, None)
 
-    async def _cfg():
-        return make_cfg()
-
-    async def _save(signal, status, reason="", **kw):
-        saved.append((status, reason))
-        return 1
-
-    async def _pre(underlying):
-        checks.append(underlying)
-        return False, "stop here"
-
-    monkeypatch.setattr(mode_manager, "get_config", _cfg)
-    monkeypatch.setattr(mode_manager, "pre_trade_check", _pre)
-    monkeypatch.setattr(paper_engine, "_save_signal", _save)
-    allow_regime(monkeypatch)          # the regime filter fails closed without a state
-    return saved, checks
+    def _codes():
+        async def _go():
+            async with sqlite_db() as db:
+                return [d.code for d in (await db.execute(select(NoTradeDecision))).scalars()]
+        return run(_go())
+    return _codes
 
 
 def test_handle_signal_blocked_after_cutoff(gate, monkeypatch):
-    saved, checks = gate
-    monkeypatch.setattr(pe_mod, "_ist_time", lambda: dtime(15, 6))
+    pin_ist_time(monkeypatch, dtime(15, 6))
     assert run(paper_engine.handle_signal(make_signal())) is False
-    assert saved[-1][0] == SignalStatus.SKIPPED
-    assert "Entry cutoff 15:05" in saved[-1][1]
-    assert checks == []
+    assert gate() == ["AFTER_ENTRY_CUTOFF"]
 
 
 def test_handle_signal_allowed_before_cutoff(gate, monkeypatch):
-    saved, checks = gate
-    monkeypatch.setattr(pe_mod, "_ist_time", lambda: dtime(15, 4))
+    pin_ist_time(monkeypatch, dtime(15, 4))
     assert run(paper_engine.handle_signal(make_signal())) is False
-    assert checks == ["NIFTY"]
-    assert saved[-1][1] == "stop here"
+    assert gate() == ["NO_OPTION_AVAILABLE"]          # cleared the cutoff, died in selection
 
 
 def test_check_position_uses_configured_square_off(sqlite_db, fake_redis, monkeypatch):

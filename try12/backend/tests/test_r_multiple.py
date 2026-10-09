@@ -109,19 +109,12 @@ def test_initial_risk_non_positive_rejects_the_entry(sqlite_db, fake_redis, monk
     from tests.helpers import allow_regime, fake_candidate, get_config_row, make_signal, run, \
         seed_config
 
+    from tests.helpers import pin_ist_time, stub_select
+
     run(seed_config(sqlite_db))
-    monkeypatch.setattr(pe_mod, "_ist_time", lambda: dtime(10, 30))
-
-    async def _select(**kwargs):
-        return fake_candidate(ltp=40.0, lot_size=65)
-
-    async def _kelly(name, cfg):
-        return 3000.0
-
-    monkeypatch.setattr(option_selector, "select", _select)
+    pin_ist_time(monkeypatch, dtime(10, 30))
+    stub_select(monkeypatch, fake_candidate(ltp=40.0, lot_size=65))
     allow_regime(monkeypatch)
-    monkeypatch.setattr(strategy_orchestrator, "get_position_multiplier", lambda u: 1.0)
-    monkeypatch.setattr(mode_manager, "kelly_trade_amount", _kelly)
 
     assert run(paper_engine.handle_signal(make_signal(sl_pct=0.0))) is False   # SL at entry
 
@@ -133,7 +126,7 @@ def test_initial_risk_non_positive_rejects_the_entry(sqlite_db, fake_redis, monk
     assert positions == []
     assert [d.code for d in decisions] == ["INITIAL_RISK_NON_POSITIVE"]
     cfg = run(get_config_row(sqlite_db))
-    assert cfg.used_capital == 0.0 and cfg.daily_trades_count == 0   # nothing reserved
+    assert cfg.used_capital == 0.0 and cfg.daily_trades_count == 0   # nothing opened
 
 
 # ── R-sign buckets with pinned quotes (§23, R5 finding 6) ────────────────────

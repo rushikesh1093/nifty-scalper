@@ -1,10 +1,20 @@
 """Fix 9: kill switch (halt + square off + persisted flag) and unrealised P&L in daily loss."""
+from datetime import time as dtime
+
 from app.api.routes import trading as routes
+from app.runtime.context import using
+from app.services.trading import risk_state
 from app.services.trading.mode_manager import ModeManager, mode_manager
-from tests.helpers import add_position, get_config_row, get_position, run, seed_config
+from tests.helpers import (
+    add_position, allow_regime, get_config_row, get_position, pin_ist_time, run, seed_config,
+    with_cfg,
+)
 
 
-def test_kill_switch_halts_squares_off_and_persists(sqlite_db, fake_redis):
+def test_kill_switch_halts_squares_off_and_persists(runtime_ctx, sqlite_db, fake_redis,
+                                                    monkeypatch):
+    pin_ist_time(monkeypatch, dtime(10, 0))
+    allow_regime(monkeypatch)
     run(seed_config(sqlite_db, used_capital=13000.0, capital=20000.0))
     a = run(add_position(sqlite_db, token="A"))
     b = run(add_position(sqlite_db, token="B"))
@@ -20,7 +30,10 @@ def test_kill_switch_halts_squares_off_and_persists(sqlite_db, fake_redis):
 
     cfg = run(get_config_row(sqlite_db))
     assert cfg.trading_halted is True and cfg.halted_reason == "test halt"
-    assert cfg.used_capital == 0.0
+    async def _open_capital():
+        async with sqlite_db() as db:
+            return await risk_state.open_capital_used(db, "PAPER")
+    assert run(_open_capital()) == 0.0        # nothing to release: capital in use is derived
 
     ok, reason = run(mode_manager.pre_trade_check("NIFTY"))
     assert not ok and reason.startswith("Kill switch active")
@@ -39,8 +52,11 @@ def test_kill_switch_halts_squares_off_and_persists(sqlite_db, fake_redis):
     assert status["halted"] is True and status["open_positions"] == 0
 
     assert run(routes.kill_switch_release()) == {"halted": False}
-    ok, _ = run(mode_manager.pre_trade_check("NIFTY"))
-    assert ok
+    # The squared-off position B closed at a loss, so the post-loss cooldown (not the
+    # kill switch) is what may still refuse an entry now.
+    ok, why = run(mode_manager.pre_trade_check("NIFTY"))
+    assert ok or "post-loss cooldown" in why
+    assert "Kill switch" not in why
     assert run(routes.kill_switch_status())["halted"] is False
 
 
@@ -51,21 +67,33 @@ def test_kill_switch_without_body(sqlite_db, fake_redis):
     run(routes.kill_switch_release())
 
 
-def test_daily_loss_includes_unrealised(sqlite_db, fake_redis):
-    run(seed_config(sqlite_db, used_capital=6500.0))
+def _loss(sqlite_db):
+    async def _go():
+        async with sqlite_db() as db:
+            return await risk_state.daily_loss_figure(db)
+    return run(_go())
+
+
+def test_daily_loss_includes_unrealised(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
+    pin_ist_time(monkeypatch, dtime(10, 0))
+    allow_regime(monkeypatch)
+    run(seed_config(sqlite_db))
     run(add_position(sqlite_db))          # entry 100 × 65
-    fake_redis.put_tick("OPT1", 90.0)     # unrealised −650 > ₹500 limit
-    breached, reason = run(mode_manager._check_daily_loss())
-    assert breached
-    assert "unrealised ₹-650" in reason
-    ok, why = run(mode_manager.pre_trade_check("NIFTY"))
-    assert not ok and "Daily loss limit" in why
+    fake_redis.put_tick("OPT1", 90.0)     # unrealised −650, net of exit charges, > ₹500 limit
+    with using(with_cfg(runtime_ctx, max_daily_loss=500.0)):
+        loss = _loss(sqlite_db)
+        assert loss.breached and loss.breach_source == "ABS"
+        assert loss.realised == 0.0 and loss.unrealised < -650.0
+        ok, why = run(mode_manager.pre_trade_check("NIFTY"))
+    assert not ok and "Daily loss cap" in why
 
 
-def test_daily_loss_falls_back_to_realised_on_redis_error(sqlite_db, fake_redis):
-    run(seed_config(sqlite_db, used_capital=6500.0))
+def test_unreadable_price_degrades_the_mark_instead_of_breaching(runtime_ctx, sqlite_db,
+                                                                fake_redis):
+    run(seed_config(sqlite_db))
     run(add_position(sqlite_db))
     fake_redis.put_tick("OPT1", 90.0)
     fake_redis.fail_ltp = True
-    breached, _ = run(mode_manager._check_daily_loss())
-    assert breached is False
+    with using(with_cfg(runtime_ctx, max_daily_loss=500.0)):
+        loss = _loss(sqlite_db)
+    assert loss.breached is False and loss.mtm_degraded is True
