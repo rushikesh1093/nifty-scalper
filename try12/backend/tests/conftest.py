@@ -123,6 +123,7 @@ def sqlite_db(tmp_path, monkeypatch):
     from app.db.models.paper_trade import (
         DailyPnLSummary, PaperPosition, StrategyPerf, StrategySignal, TradingConfig,
     )
+    from app.db.models.option_chain import OptionChainSnapshot
     from app.db.models.regime import RegimePerformanceModel, RegimeStateModel
     from app.db.models.replay import ReplayRun
     from app.db.models.risk import CycleStats, NoTradeDecision, PositionEvent, RiskHalt
@@ -135,6 +136,7 @@ def sqlite_db(tmp_path, monkeypatch):
             TradingConfig, PaperPosition, StrategySignal, DailyPnLSummary,
             StrategyPerf, RegimeStateModel, RegimePerformanceModel,
             NoTradeDecision, RiskHalt, PositionEvent, CycleStats, ReplayRun,
+            OptionChainSnapshot,
         )],
     )
     sync_engine.dispose()
