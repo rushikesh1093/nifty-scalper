@@ -203,7 +203,7 @@ export function RunsTable({ data }: { data: RunsResponse }) {
                     </Badge>
                   </td>
                   <td className="num font-mono">{fmtInt(r.trades)}</td>
-                  <td className="num font-mono">{fmtFraction(r.win_rate)}</td>
+                  <td className="num whitespace-nowrap font-mono">{fmtFraction(r.win_rate)}</td>
                   <td className="num font-mono">{fmtR(r.expectancy_r)}</td>
                   <td className={cn("num whitespace-nowrap font-mono", ddHigh && "text-down")}>
                     {fmtPct(r.max_drawdown_pct)}

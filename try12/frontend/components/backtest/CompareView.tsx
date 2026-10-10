@@ -242,7 +242,8 @@ function EquityOverlay({
                 tickFormatter={(v: number) => `${v.toFixed(1)} %`} />
               <Tooltip contentStyle={rc.tooltip.contentStyle} labelStyle={rc.tooltip.labelStyle} itemStyle={rc.tooltip.itemStyle}
                 labelFormatter={(v) => `Day ${v} from start`} formatter={(v: number, name: string) => [fmtPct(v), name]} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {/* legend text in the body colour (the accent series colour is < 4.5:1 at 11 px); the marker keeps the series colour */}
+              <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => <span style={{ color: color("text-2") }}>{value}</span>} />
               <ReferenceLine y={0} stroke={color("text-3")} strokeDasharray="4 2" />
               <Line type="stepAfter" dataKey="a" name={nameA} stroke={color("accent")} strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />
               <Line type="stepAfter" dataKey="b" name={nameB} stroke={color("yellow")} strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls isAnimationActive={false} />
