@@ -49,7 +49,7 @@ import logging
 import struct
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 import websockets
@@ -93,6 +93,13 @@ EXCH_CODE_TO_STR = {v: k for k, v in EXCHANGE_STR_MAP.items()}
 
 @dataclass
 class TickData:
+    """One parsed market tick.
+
+    ``received_at`` convention: timezone-aware UTC. A naive value is rejected
+    (it could be local time mistaken for UTC); any other aware value is
+    normalised to UTC. The Redis tick ``ts`` written by market_manager is its
+    ISO form, e.g. ``2026-09-01T04:30:00.123456+00:00``.
+    """
     token:        str
     exchange:     str
     ltp:          float
@@ -108,7 +115,15 @@ class TickData:
     best_bid_qty: int   = 0
     best_ask_qty: int   = 0
     exchange_ts:  int   = 0
-    received_at:  datetime = field(default_factory=datetime.utcnow)
+    received_at:  datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self):
+        ra = self.received_at
+        if ra.tzinfo is None or ra.utcoffset() is None:
+            raise ValueError(
+                f"TickData.received_at must be timezone-aware (UTC); got naive {ra!r}"
+            )
+        self.received_at = ra.astimezone(timezone.utc)
 
 
 def _ws_is_open(ws: Any) -> bool:

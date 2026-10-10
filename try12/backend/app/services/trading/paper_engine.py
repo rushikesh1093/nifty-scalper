@@ -76,7 +76,8 @@ _calc_lots = risk_gate.calc_lots     # one implementation (risk_gate), kept for 
 
 
 def _tick_age_seconds(tick: Optional[dict]) -> Optional[float]:
-    """Age of a Redis tick from its ``ts`` field (naive ISO treated as UTC).
+    """Age of a Redis tick from its ``ts`` field. Aware UTC ISO is the live
+    format; naive ISO (legacy Redis values, replay) is read as UTC.
     None when unknown. Reads the ctx clock; there is no `now` parameter, because
     two sources of 'now' are how the replay clock gets bypassed (design §14.2)."""
     return fills.tick_age_seconds(tick, now_utc())

@@ -35,8 +35,10 @@ RR_EPSILON = 1e-6
 
 
 def tick_age_seconds(tick: Optional[dict], now: datetime) -> Optional[float]:
-    """Age of a Redis tick from its ``ts`` field (naive ISO treated as UTC) at
-    *now*. None when unknown. Pure: the caller supplies the ctx clock reading."""
+    """Age of a Redis tick from its ``ts`` field at *now*. The live format is
+    aware UTC ISO (``…+00:00``, TickData.received_at); a naive ISO string
+    (legacy Redis values, replay) is read as UTC. None when unknown. Pure: the
+    caller supplies the ctx clock reading."""
     if not tick:
         return None
     ts = tick.get("ts")
