@@ -81,6 +81,31 @@ async def lifespan(app: FastAPI):
             "Check AngelOne credentials and Redis/Postgres connectivity."
         )
 
+    # 2b. Capital sufficiency: WARNING only (blockers-plan item 6), never blocks startup
+    try:
+        from app.runtime.context import ctx, params
+        from app.services.trading.capital_check import (
+            REFERENCE_LOT_SIZE, capital_sufficiency_warnings,
+        )
+        lot_sizes: dict = {}
+        lot_source: dict = {}
+        async with AsyncSessionLocal() as _db:
+            for _und, _ref_lot in REFERENCE_LOT_SIZE.items():
+                _lot = None
+                try:
+                    _rows = await ctx().instruments.instruments_for(_db, _und)
+                    _lot = next((r.lot_size for r in _rows if r.lot_size), None)
+                except Exception as exc:
+                    logger.debug("capital check: %s lot size unavailable: %s", _und, exc)
+                    await _db.rollback()
+                lot_sizes[_und] = _lot or _ref_lot
+                lot_source[_und] = "instruments" if _lot else "reference"
+        for _w in capital_sufficiency_warnings(ctx().cfg.capital, params(), lot_sizes,
+                                               lot_source=lot_source):
+            logger.warning("Capital check: %s", _w)
+    except Exception as exc:
+        logger.warning("capital check unavailable: %s", exc)
+
     # 3. Loops: the ONLY tolerant block left
     try:
         await strategy_runner.start()
