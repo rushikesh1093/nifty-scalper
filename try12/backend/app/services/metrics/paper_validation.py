@@ -30,7 +30,7 @@ import dataclasses
 import hashlib
 import json
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -52,8 +52,9 @@ async def make_read_only(db) -> None:
 
 def _today() -> date:
     from app.runtime.context import is_bound, trading_day
+    from app.runtime.live import LiveClock          # unbound (CLI): the live clock, never a raw wall-clock read
     from app.services.trading.session_times import trading_day as ist_day
-    return trading_day() if is_bound() else ist_day(datetime.now(timezone.utc))
+    return trading_day() if is_bound() else ist_day(LiveClock().now_utc())
 
 
 def _params_record(params, capital: float) -> tuple[dict, str]:
