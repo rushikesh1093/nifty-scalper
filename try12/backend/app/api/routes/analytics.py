@@ -20,15 +20,17 @@ app/services/metrics/trade_metrics.py (R15.6).
 """
 from __future__ import annotations
 
-import dataclasses
-from datetime import date, datetime
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.guards import date_range, require_admin_key, run_id_query, validate_run_id
+from app.api.payloads import EMPTY_REASON
+from app.api.payloads import jsonable as _jsonable
+from app.api.payloads import page as _page
+from app.api.payloads import trade_payload as _trade_payload
 from app.db.base import get_db
 from app.db.models.replay import ReplayRun
 from app.db.models.risk import NoTradeDecision, PositionEvent, RiskHalt
@@ -38,28 +40,7 @@ from app.strategies.names import ALL_STRATEGY_NAMES
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
-EMPTY_REASON = "no_data_for_filter"
 OUTCOMES = ("WIN", "LOSS", "FLAT")
-
-
-def _jsonable(v: Any) -> Any:
-    if dataclasses.is_dataclass(v) and not isinstance(v, type):
-        return {f.name: _jsonable(getattr(v, f.name)) for f in dataclasses.fields(v)}
-    if isinstance(v, (datetime, date)):
-        return v.isoformat()
-    if isinstance(v, dict):
-        return {str(k): _jsonable(x) for k, x in v.items()}
-    if isinstance(v, (list, tuple, set, frozenset)):
-        items = [_jsonable(x) for x in v]
-        return sorted(items, key=str) if isinstance(v, (set, frozenset)) else items
-    return getattr(v, "value", v)
-
-
-def _page(items: list, total: int) -> dict:
-    out = {"items": items, "total": total}
-    if total == 0:
-        out["empty_reason"] = EMPTY_REASON
-    return out
 
 
 def _filter(run_id: str, date_from: Optional[str], date_to: Optional[str],
@@ -88,13 +69,6 @@ async def _run_capital(db: AsyncSession, run_id: str) -> float:
         if cfg.get("capital"):
             return float(cfg["capital"])
     return float(ctx().cfg.capital)
-
-
-def _trade_payload(t: tm.TradeRow, flat_eps: float) -> dict:
-    d = _jsonable(t)
-    d["outcome"] = tm.outcome_of(t, flat_eps)
-    d["r_valid"] = t.r_valid
-    return d
 
 
 # ── trades and metrics ───────────────────────────────────────────────────────

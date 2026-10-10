@@ -192,6 +192,45 @@ def test_a_synthetic_run_is_labelled_and_never_considered():
     assert "SYNTHETIC" in md and "not evidence of edge" in md
 
 
+def _gathered(four_trade, **args_kw):
+    """ReportInputs from the real gather_inputs hook for four_trade's run1."""
+    from app.services.replay.engine import (
+        ReplayArgs, params_record, resolve_params, run_config_for,
+    )
+    r = four_trade.run1
+    p, extra, _ = resolve_params({"user_strategy_flags": {"OI_SPIKE": False, "IV_CRUSH": False}})
+    cfg = run_config_for(p, extra, ("NIFTY",))
+    record, _ = params_record(p, cfg)
+    args = ReplayArgs(date_from=r.coverage.days[0].day, date_to=r.coverage.days[0].day,
+                      bootstrap_iterations=200, **args_kw)
+    result = SimpleNamespace(**{**vars(r), "artefacts": []})
+    return run(report.gather_inputs(SimpleNamespace(sessions=four_trade.SessA), args, result,
+                                    p, cfg, record))
+
+
+def test_the_synthetic_flag_caps_a_run_whose_label_lacks_the_word(four_trade):
+    from app.services.replay.cli import parse_args
+    base = ["--from", "2026-09-01", "--to", "2026-09-01"]
+    assert parse_args(base + ["--synthetic"]).synthetic is True
+    assert parse_args(base + ["--no-synthetic"]).synthetic is False
+    inp = _gathered(four_trade, label="plain-run", synthetic=True)
+    assert inp.synthetic is True
+    rep = report.build_validation(inp)
+    assert rep["synthetic"] and rep["banner"] == report.SYNTHETIC_BANNER
+    assert report.SYNTHETIC_BANNER in rep["caps"] and rep["recommendation"] == "NOT YET"
+
+
+def test_omitting_the_synthetic_flag_keeps_the_label_heuristic(four_trade):
+    from app.services.replay.cli import parse_args
+    assert parse_args(["--from", "2026-09-01", "--to", "2026-09-01"]).synthetic is None
+    plain = _gathered(four_trade, label="plain-run")
+    assert plain.synthetic is None
+    rep = report.build_validation(plain)
+    assert rep["synthetic"] is False and report.SYNTHETIC_BANNER not in rep["caps"]
+    labelled = report.build_validation(_gathered(four_trade, label="synthetic-four-trade"))
+    assert labelled["synthetic"] is True and report.SYNTHETIC_BANNER in labelled["caps"]
+
+
 def test_win_rate_below_50_is_stated_plainly():
     rs, nets = [2.5, -1.0, -1.0], [2400.0, -1050.0, -1050.0]       # 33% wins, positive edge
     rep = report.build_validation(_inputs(_book(DAYS24, rs, nets), DAYS24))

@@ -15,6 +15,21 @@ export interface PositionsKeyParams {
   limit?:   number;
 }
 
+export interface BacktestRunsKeyParams {
+  dataset?: string;
+  limit?:   number;
+  offset?:  number;
+}
+
+export interface BacktestTradesKeyParams {
+  limit?:       number;
+  offset?:      number;
+  strategy?:    string;
+  regime?:      string;
+  outcome?:     string;
+  exit_reason?: string;
+}
+
 export const queryKeys = {
   // Trading desk
   signalsAll:   ["signals"] as const,
@@ -54,4 +69,25 @@ export const queryKeys = {
   studyAll:      ["study"] as const,
   studyIntraday: (underlying: string, date?: string) => ["study", "intraday", underlying, date ?? "today"] as const,
   studyDaily:    (underlying: string, days: number) => ["study", "daily", underlying, days] as const,
+
+  // Backtest (design §5.3). `backtestAll` is the invalidation prefix a launch uses. `dataset` is
+  // "auto" when the server resolves it, so the key is always a defined tuple.
+  backtestAll:         ["backtest"] as const,
+  backtestDatasets:    ["backtest", "datasets"] as const,
+  backtestDefaults:    ["backtest", "launch-options"] as const,
+  backtestRuns:        (p: BacktestRunsKeyParams = {}) => ["backtest", "runs", p] as const,
+  backtestRun:         (dataset: string | undefined, runId: string) =>
+                         ["backtest", "run", dataset ?? "auto", runId] as const,
+  backtestRunMetrics:  (dataset: string | undefined, runId: string) =>
+                         ["backtest", "run", dataset ?? "auto", runId, "metrics"] as const,
+  backtestRunMetricsBy: (dataset: string | undefined, runId: string, dim: string) =>
+                         ["backtest", "run", dataset ?? "auto", runId, "metrics-by", dim] as const,
+  backtestRunNoTrade:  (dataset: string | undefined, runId: string) =>
+                         ["backtest", "run", dataset ?? "auto", runId, "no-trade"] as const,
+  backtestRunTrades:   (dataset: string | undefined, runId: string, p: BacktestTradesKeyParams = {}) =>
+                         ["backtest", "run", dataset ?? "auto", runId, "trades", p] as const,
+  backtestRunSeries:   (dataset: string | undefined, runId: string, binWidth: number) =>
+                         ["backtest", "run", dataset ?? "auto", runId, "series", binWidth] as const,
+  backtestJobs:        ["backtest", "jobs"] as const,
+  backtestJob:         (id: string) => ["backtest", "jobs", id] as const,
 } as const;

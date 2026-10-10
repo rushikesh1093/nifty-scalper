@@ -118,6 +118,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--database-url", default=None,
                     help="defaults to the settings DATABASE_URL")
     ap.add_argument("--out", type=Path, default=None, help="artefact directory")
+    ap.add_argument("--synthetic", action=argparse.BooleanOptionalAction, default=None,
+                    help="declare the data synthetic (caps the verdict); omitted -> "
+                         "derived from the label")
     args = ap.parse_args(argv)
     if not 0.0 < args.oos_split < 1.0:
         ap.error("--oos-split must be in (0, 1)")
@@ -144,7 +147,7 @@ async def main_async(argv=None) -> int:
         params_overrides=overrides, seed=a.seed, oos_split=a.oos_split,
         walk_forward=a.walk_forward, label=a.label, notes=a.notes,
         bootstrap_iterations=a.bootstrap_iterations,
-        out_dir=a.out or default_artifact_dir(),
+        out_dir=a.out or default_artifact_dir(), synthetic=a.synthetic,
     )
     try:
         result = await ReplayEngine(sessions, report_builder=build_and_write).run(args)
