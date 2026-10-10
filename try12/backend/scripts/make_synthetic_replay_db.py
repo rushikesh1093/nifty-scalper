@@ -154,18 +154,31 @@ def populate(engine, days: list[SyntheticDay], *, expiries: list[date],
 
     insts: dict[tuple, dict] = {}
     inst_rows = []
+
+    def add_inst(ei: int, exp: date, s: int, kind: str) -> None:
+        tok = f"9{ei:02d}{s // STRIKE_STEP:04d}{0 if kind == 'CE' else 1}"
+        sym = f"NIFTY{exp:%d%b%y}{s}{kind}".upper()
+        insts[(exp, float(s), kind)] = {"token": tok, "symbol": sym, "expiry": exp,
+                                        "strike": float(s), "kind": kind}
+        inst_rows.append(dict(
+            token=tok, symbol=sym, name="NIFTY", expiry=exp, strike=float(s),
+            option_type=OptionType[kind], instrument_type=InstrumentType.OPTIDX,
+            lot_size=lot_size, tick_size=0.05, exchange="NFO", is_active=False))
+
     for ei, exp in enumerate(expiries):
         for s in range(int(BASE_SPOT) - grid * STRIKE_STEP, int(BASE_SPOT) + grid * STRIKE_STEP + 1,
                        STRIKE_STEP):
             for kind in ("CE", "PE"):
-                tok = f"9{ei:02d}{s // STRIKE_STEP:04d}{0 if kind == 'CE' else 1}"
-                sym = f"NIFTY{exp:%d%b%y}{s}{kind}".upper()
-                insts[(exp, float(s), kind)] = {"token": tok, "symbol": sym, "expiry": exp,
-                                                "strike": float(s), "kind": kind}
-                inst_rows.append(dict(
-                    token=tok, symbol=sym, name="NIFTY", expiry=exp, strike=float(s),
-                    option_type=OptionType[kind], instrument_type=InstrumentType.OPTIDX,
-                    lot_size=lot_size, tick_size=0.05, exchange="NFO", is_active=False))
+                add_inst(ei, exp, s, kind)
+    # A long or drifting walk can open outside the fixed grid; add the strikes those days quote
+    # (after the grid rows, so a dataset whose walk stays inside the grid is unchanged).
+    for sd in days:
+        exp = expiry_for(sd.day, expiries)
+        atm = round(sd.candles[0][0] / STRIKE_STEP) * STRIKE_STEP
+        for i in range(-strike_range, strike_range + 1):
+            for kind in ("CE", "PE"):
+                if (exp, float(atm + i * STRIKE_STEP), kind) not in insts:
+                    add_inst(expiries.index(exp), exp, atm + i * STRIKE_STEP, kind)
     summary = {"instruments": len(inst_rows), "ticks": 0, "candles": 0, "snapshots": 0,
                "days": [d.day.isoformat() for d in days]}
     spot_tok = settings.NIFTY_TOKEN

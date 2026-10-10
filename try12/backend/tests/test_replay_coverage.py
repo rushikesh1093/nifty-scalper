@@ -51,6 +51,17 @@ def test_a_full_day_is_tradeable_and_reports_its_facts(cov_db):
     assert d.ce_strikes >= 8 and d.pe_strikes >= 8 and d.vix_gate == "evaluated"
 
 
+def test_a_day_opening_outside_the_strike_grid_still_builds_and_is_tradeable(cov_db):
+    # the generator's fixed grid is BASE_SPOT ± 20 strikes; a drifting walk (e.g. 30 days, seed 7)
+    # opens beyond it and used to raise KeyError while building the day's contracts
+    Session, url = cov_db
+    summary = fill_db(url, [DAY1], scripted_quote({}), candles=trend_candles(start=22600.0 + 30 * 50))
+    assert summary["instruments"] > 41 * 2                  # grid rows plus the day's extra strikes
+    d = _classify(Session)
+    assert (d.status, d.cause) == ("TRADEABLE", None)
+    assert d.option_tokens_with_ticks == 34
+
+
 def test_no_spot_candles(cov_db):
     Session, _ = cov_db
     assert _classify(Session).cause == CoverageCause.NO_SPOT_CANDLES.value
