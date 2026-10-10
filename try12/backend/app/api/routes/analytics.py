@@ -20,6 +20,7 @@ app/services/metrics/trade_metrics.py (R15.6).
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
