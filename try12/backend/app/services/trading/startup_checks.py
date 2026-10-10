@@ -217,6 +217,39 @@ def _check_params() -> list[str]:
     return [f"params: {v}" for v in params().validate()]
 
 
+# Operator-facing fix per check-6 key (the trading_config column of the same name).
+PARAM_FIXES: dict[str, str] = {
+    "max_lots_per_trade": "set >= 2 (partial exit needs 2 lots)",
+    "trade_amount": "set NULL after migration 0013, or within ₹500 of fixed_fraction_pct × capital",
+    "capital": "set > 0",
+    "max_daily_loss": "set within (0, capital]",
+    "max_daily_loss_pct": "set within (0, 100]",
+    "fixed_fraction_pct": "set within (0, 100] and <= kelly_fraction_cap_pct",
+    "kelly_fraction_cap_pct": "set within [fixed_fraction_pct, 25]",
+    "kelly_multiplier": "set within (0, 0.5]",
+    "min_rr": "set >= 2.0",
+}
+GENERIC_PARAM_FIX = "correct it as the violation above states"
+RECONCILE_PREVIEW = "python scripts/reconcile_live_config.py --database-url <url>"
+_VIOLATION_KEY = re.compile(r"^params: ([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?(?:=(\S+))?")
+
+
+def param_fix_line(params_v: list[str]) -> str:
+    """One operator line naming each trading_config field to fix, built from the
+    leading key of each check-6 violation."""
+    parts: list[str] = []
+    seen: set[str] = set()
+    for v in params_v:
+        m = _VIOLATION_KEY.match(v)
+        if not m or m.group(1) in seen:
+            continue
+        key, current = m.group(1), m.group(2)
+        seen.add(key)
+        fix = PARAM_FIXES.get(key, GENERIC_PARAM_FIX)
+        parts.append(f"{key} ({current if current is not None else '?'} -> {fix})")
+    return f"fix trading_config: {'; '.join(parts)}; preview with: {RECONCILE_PREVIEW}"
+
+
 MIN_RR_LITERAL = re.compile(r"\b(MIN_RR|HF_MIN_RR)\s*=\s*[\d.]+")
 
 
@@ -281,6 +314,11 @@ async def run_startup_checks(*, require_config_row: bool) -> None:
     for v in rr_v:
         logger.error("Startup check: %s", v)
     violations += rr_v
+    # operator line for check 6: which trading_config fields, and how to preview the fix
+    if params_v:
+        fix = param_fix_line(params_v)
+        logger.critical("Startup check: %s", fix)
+        violations.append(fix)
 
     if violations:
         raise StartupAssertionError(violations)
