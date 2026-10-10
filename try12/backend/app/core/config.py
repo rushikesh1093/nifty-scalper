@@ -92,6 +92,17 @@ class Settings(BaseSettings):
     REPLAY_MAX_RANGE_DAYS: int = 366
     REPLAY_ARTIFACT_DIR: str = ""      # empty → the CLI's --out default
 
+    # Backtest page (design §4.1). Safe defaults: unset → no replay store.
+    # REPLAY_DATABASE_URL must never name the paper DB (refused) and is never returned.
+    REPLAY_DATABASE_URL: Optional[str] = None
+    REPLAY_DATASET_DIR: str = ""       # empty → <system temp>/nifty-replay-datasets
+    REPLAY_JOB_TIMEOUT_S: int = 1800
+    REPLAY_DATASET_TIMEOUT_S: int = 600
+    REPLAY_JOB_HISTORY: int = 20
+    BACKTEST_SYNTHETIC_MAX_DAYS: int = 60
+    BACKTEST_MAX_ARTIFACT_FILES: int = 200
+    BACKTEST_MAX_LAUNCH_RANGE_DAYS: int = 90
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

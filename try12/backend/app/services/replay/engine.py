@@ -116,6 +116,7 @@ class ReplayArgs:
     notes: str = ""                         # declared fitted parameters (§18 item 9)
     bootstrap_iterations: int = 10_000
     out_dir: Optional[Path] = None          # artefact directory; None = do not write
+    synthetic: Optional[bool] = None        # declared data provenance; None = label heuristic
 
 
 @dataclass

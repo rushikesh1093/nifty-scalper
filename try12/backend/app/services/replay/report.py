@@ -645,7 +645,7 @@ async def gather_inputs(engine, args, result, p, cfg, record) -> ReportInputs:
                        "missing": r.oi_iv_context_missing} for r in cs],
         signals_by_strategy={n: int(c) for n, c in sigs},
         prior_runs=prior_runs, oos_split=args.oos_split, walk_forward=args.walk_forward,
-        iterations=args.bootstrap_iterations,
+        iterations=args.bootstrap_iterations, synthetic=args.synthetic,
     )
 
 

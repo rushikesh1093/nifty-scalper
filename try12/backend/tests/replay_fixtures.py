@@ -272,6 +272,8 @@ def four_trade(tmp_path_factory):
         out.runB = replay(SessB, DAY1, DAY1, factory, overrides=flags)
         reset_singletons()
     out.SessA, out.SessB = SessA, SessB
+    out.url_a = f"sqlite+aiosqlite:///{(base / 'a.db').as_posix()}"
+    out.url_b = f"sqlite+aiosqlite:///{(base / 'b.db').as_posix()}"
     yield out
     run(engA.dispose())
     run(engB.dispose())

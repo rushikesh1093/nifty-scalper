@@ -22,6 +22,7 @@ from app.api.routes import auth, market, instruments, trading
 from app.api.routes.report import router as report_router
 from app.api.routes.regime import router as regime_router
 from app.api.routes.analytics import router as analytics_router
+from app.api.routes.backtest import router as backtest_router
 
 setup_logging("DEBUG" if settings.DEBUG else "INFO")
 logger = logging.getLogger(__name__)
@@ -185,6 +186,7 @@ app.include_router(trading.router,     prefix="/api/v1")
 app.include_router(report_router,      prefix="/api/v1")
 app.include_router(regime_router,      prefix="/api/v1/regime")
 app.include_router(analytics_router,   prefix="/api/v1")
+app.include_router(backtest_router,    prefix="/api/v1")
 
 
 @app.get("/")
