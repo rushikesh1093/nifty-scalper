@@ -378,7 +378,7 @@ async def paper_validation_view(
     """The six-criterion validation report over the PAPER run's rows. SELECT only,
     never commits. A replay run's report is stored on its row: /analytics/runs/{run_id}."""
     from app.core.config import settings
-    from app.services.metrics.paper_validation import PAPER_RUN_ID, build_paper_validation
+    from app.services.replay.paper_validation import PAPER_RUN_ID, build_paper_validation
 
     if run_id != PAPER_RUN_ID:
         raise HTTPException(status_code=400,

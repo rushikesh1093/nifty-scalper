@@ -73,7 +73,7 @@ def _seed_book(Session, days, rs, nets, *, rpl_days=()):
 
 
 def _build(Session, **kw):
-    from app.services.metrics.paper_validation import build_paper_validation
+    from app.services.replay.paper_validation import build_paper_validation
 
     async def _go():
         async with Session() as db:
@@ -194,7 +194,7 @@ def test_the_route_rejects_replay_and_malformed_run_ids(runtime_ctx, sqlite_db):
 # ── the CLI ──────────────────────────────────────────────────────────────────
 
 def test_the_cli_reads_a_database_and_writes_paper_json(runtime_ctx, sqlite_db, tmp_path, capsys):
-    from app.services.metrics import paper_validation
+    from app.services.replay import paper_validation
     run(seed_config(sqlite_db, capital=200_000.0, max_lots_per_trade=2))
     _seed_book(sqlite_db, _days(5), R_PATTERN, NETS)
     before = _counts(sqlite_db)
@@ -212,14 +212,14 @@ def test_the_cli_reads_a_database_and_writes_paper_json(runtime_ctx, sqlite_db, 
 
 
 def test_the_cli_requires_a_database_url():
-    from app.services.metrics import paper_validation
+    from app.services.replay import paper_validation
     with pytest.raises(SystemExit) as ei:
         paper_validation.main([])
     assert ei.value.code == 2
 
 
 def test_the_cli_refuses_a_replay_run_id(tmp_path):
-    from app.services.metrics import paper_validation
+    from app.services.replay import paper_validation
     with pytest.raises(SystemExit) as ei:
         paper_validation.main(["--database-url", f"sqlite+aiosqlite:///{tmp_path / 'x.db'}",
                                "--run-id", "RPL-X"])
@@ -227,7 +227,7 @@ def test_the_cli_refuses_a_replay_run_id(tmp_path):
 
 
 def test_the_cli_returns_2_when_the_database_has_no_schema(tmp_path, capsys):
-    from app.services.metrics import paper_validation
+    from app.services.replay import paper_validation
     url = f"sqlite+aiosqlite:///{tmp_path / 'empty.db'}"
     assert paper_validation.main(["--database-url", url, "--iterations", "200"]) == 2
     assert "paper_validation failed" in capsys.readouterr().err

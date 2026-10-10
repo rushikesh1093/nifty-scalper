@@ -11,9 +11,13 @@ the replay path. This module gathers the same ``ReportInputs`` from the
   * only run_id PAPER is accepted (a replay run already stores its verdict on
     replay_runs.validation, served by GET /analytics/runs/{run_id}).
 
+It lives in the replay package, not app/services/metrics, because it composes
+replay.report and the decision code must never import app.services.replay
+(tests/test_no_replay_branch.py).
+
 Used by GET /api/v1/analytics/validation and by the CLI:
 
-    python -m app.services.metrics.paper_validation \\
+    python -m app.services.replay.paper_validation \\
         --database-url sqlite+aiosqlite:///copy.db [--from YYYY-MM-DD] [--to YYYY-MM-DD] \\
         [--iterations 10000] [--seed N] [--oos-split 0.70] [--out DIR]
 
@@ -191,7 +195,7 @@ async def load_config(db):
 
 def parse_args(argv=None) -> argparse.Namespace:
     from app.core.config import settings
-    ap = argparse.ArgumentParser(prog="python -m app.services.metrics.paper_validation",
+    ap = argparse.ArgumentParser(prog="python -m app.services.replay.paper_validation",
                                  description="Read-only D10 go/no-go over the PAPER run.")
     ap.add_argument("--database-url", required=True,
                     help="SQLAlchemy async URL of the database to READ (no default)")
