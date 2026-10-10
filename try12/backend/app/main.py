@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.db import replay_store
 from app.db.base import AsyncSessionLocal
 from app.runtime.context import bind
 from app.runtime.live import live_context
@@ -23,6 +24,7 @@ from app.api.routes.report import router as report_router
 from app.api.routes.regime import router as regime_router
 from app.api.routes.analytics import router as analytics_router
 from app.api.routes.backtest import router as backtest_router
+from app.services.backtest import jobs as backtest_jobs
 
 setup_logging("DEBUG" if settings.DEBUG else "INFO")
 logger = logging.getLogger(__name__)
@@ -139,6 +141,8 @@ async def lifespan(app: FastAPI):
 
     # ── Shutdown ─────────────────────────────────────────────────────────────
     logger.info("Shutting down %s...", settings.APP_NAME)
+    await backtest_jobs.shutdown()      # persists a running job as CANCELLED; never raises
+    await replay_store.dispose_all()
     _token_refresh_task.cancel()
     from app.services.trading.strategy_runner import strategy_runner
     from app.services.market_data.study_collector import study_collector

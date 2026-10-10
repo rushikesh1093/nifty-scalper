@@ -10,17 +10,26 @@ Backtest read API (backtest design §4.6), prefix /api/v1/backtest.
   GET /runs/{run_id}/trades                       paginated closed trades (store tier only)
   GET /runs/{run_id}/series                       equity / exit-reason / R histogram (store tier only)
 
-All reads, all unauthenticated (like /analytics), all run-scoped. They read the
-replay stores through app.db.replay_store and never the application database;
+The launcher (§4.7):
+
+  GET  /launch-options                            form limits, defaults, launchable datasets
+  POST /params/validate                           admin key; 200 {valid, violations}
+  POST /jobs                                      admin key; 202 LaunchResponse, 409 JOB_RUNNING
+  GET  /jobs                                      key required iff one is configured
+  GET  /jobs/{job_id}                             key required iff one is configured
+
+The reads are unauthenticated (like /analytics) and run-scoped. Everything reads
+the replay stores through app.db.replay_store and never the application database;
 no response carries a URL, path or secret.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
-from app.services.backtest import read
+from app.api.guards import optional_admin_key, require_admin_key
+from app.services.backtest import jobs, read
 
 router = APIRouter(prefix="/backtest", tags=["backtest"])
 
@@ -68,3 +77,33 @@ async def get_run_trades(run_id: str, dataset: Optional[str] = None,
 @router.get("/runs/{run_id}/series")
 async def get_run_series(run_id: str, dataset: Optional[str] = None, bin_width: float = 0.25):
     return await read.run_series(run_id, dataset, bin_width)
+
+
+# ── launcher ─────────────────────────────────────────────────────────────────
+
+@router.get("/launch-options")
+async def get_launch_options():
+    return jobs.launch_options()
+
+
+@router.post("/params/validate")
+async def post_params_validate(body: jobs.ValidateRequest,
+                               _: str = Depends(require_admin_key)):
+    # HTTP 200 with the full list: a structured 400 detail would be truncated client-side
+    violations = jobs.override_violations(body.overrides)
+    return {"valid": not violations, "violations": violations}
+
+
+@router.post("/jobs", status_code=202)
+async def launch_job(body: jobs.LaunchRequest, who: str = Depends(require_admin_key)):
+    return await jobs.launch(body, requested_by=who)
+
+
+@router.get("/jobs")
+async def list_jobs(_: str = Depends(optional_admin_key)):
+    return jobs.list_jobs()
+
+
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: str, _: str = Depends(optional_admin_key)):
+    return jobs.get_job(job_id)
