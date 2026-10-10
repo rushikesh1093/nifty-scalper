@@ -74,6 +74,9 @@ def reset_singletons() -> None:
         risk_gate._sqlite_locks.clear()
     except ImportError:            # fail-before runs against the pre-FEAT-005 tree
         pass
+    from app.services.trading import option_selector as _os_mod
+    if hasattr(_os_mod, "rejection_counters"):     # absent on the pre-item-7 tree
+        _os_mod.rejection_counters().reset()
     fastapi_app.state.runtime_context = None    # a lifespan test must not leak its context
 
 

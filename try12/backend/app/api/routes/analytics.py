@@ -6,6 +6,7 @@ Analytics API (design §17.1), prefix /api/v1/analytics.
   GET  /metrics/by/{dimension}       strategy | regime | strategy_regime | underlying | day
   GET  /no-trade-decisions           paginated no-trade rows
   GET  /no-trade-decisions/summary   counts per (stage, code)
+  GET  /selection-rejections         option-selection rejections per ReasonCode / day
   GET  /risk-state                   the live risk picture of the bound run
   GET  /validation                   the D10 go/no-go over the PAPER run (read-only)
   GET  /runs                         replay runs (cross-run by design)
@@ -237,6 +238,70 @@ async def no_trade_summary(
         .order_by(NoTradeDecision.stage, NoTradeDecision.code))).all()
     items = [{"stage": s, "code": c, "count": int(n)} for s, c, n in rows]
     return {"run_id": run_id, **_page(items, len(items))}
+
+
+@router.get("/selection-rejections")
+async def selection_rejections_summary(
+    run_id: str = Depends(run_id_query),
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    underlying: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-ReasonCode option-selection rejections (item 7), SELECT only, summed in
+    Python from the tallies the rows already store:
+
+    - ``no_trade_decisions.context['rejections']`` of NO_OPTION_AVAILABLE rows
+      (every strike was rejected);
+    - ``strategy_signals.selection_rejections`` of signals whose option WAS
+      selected (the other strikes' rejections). A NO_OPTION_AVAILABLE signal
+      carries the same tally as its decision row, so it is not counted twice.
+    """
+    from app.db.models.paper_trade import StrategySignal
+    from app.services.trading.session_times import trading_day as ist_day
+
+    d_from, d_to = date_range(date_from, date_to)
+    by_code: dict[str, int] = {}
+    by_day: dict[str, dict[str, int]] = {}
+
+    def _add(day: date, tally) -> bool:
+        if not isinstance(tally, dict) or not tally:
+            return False
+        bucket = by_day.setdefault(day.isoformat(), {})
+        for code, n in tally.items():
+            try:
+                n = int(n)
+            except (TypeError, ValueError):
+                continue
+            by_code[str(code)] = by_code.get(str(code), 0) + n
+            bucket[str(code)] = bucket.get(str(code), 0) + n
+        return True
+
+    ntd_rows = (await db.execute(_ntd_query(
+        select(NoTradeDecision.trading_day, NoTradeDecision.context),
+        run_id, d_from, d_to, underlying, None, None, "NO_OPTION_AVAILABLE")
+        .order_by(NoTradeDecision.id))).all()
+    n_ntd = sum(1 for day, ctx_ in ntd_rows
+                if _add(day, (ctx_ or {}).get("rejections") if isinstance(ctx_, dict) else None))
+
+    q = select(StrategySignal.signal_time, StrategySignal.suggested_token,
+               StrategySignal.selection_rejections).where(StrategySignal.run_id == run_id)
+    if underlying:
+        q = q.where(StrategySignal.underlying == underlying.upper())
+    n_sig = 0
+    for at, token, tally in (await db.execute(q.order_by(StrategySignal.id))).all():
+        if not token or at is None:
+            continue
+        day = ist_day(at)
+        if (d_from and day < d_from) or (d_to and day > d_to):
+            continue
+        n_sig += 1 if _add(day, tally) else 0
+
+    out = {"run_id": run_id, "by_code": by_code,
+           "by_day": dict(sorted(by_day.items())),
+           "sources": {"no_option_available": n_ntd, "selected_signals": n_sig}}
+    if not by_code:
+        out["empty_reason"] = EMPTY_REASON
+    return out
 
 
 # ── risk state ───────────────────────────────────────────────────────────────

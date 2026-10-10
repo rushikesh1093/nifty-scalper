@@ -49,8 +49,10 @@ Scoring factors (weights sum to 1.0):
   Price behavior    0.03    LTP momentum direction
   ──────────────────────────────────────────────────────────────────
 """
+import json
 import logging
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as dtime
 from typing import Optional
@@ -727,7 +729,31 @@ class OptionSelector:
         ``base_amount`` is pre-multiplier: the affordability ceiling applies the
         regime multiplier here, and sizing applies it to the deployed amount, each
         exactly once.
+
+        Every call is tallied once in the per-day rejection counter (item 7);
+        ``select_top_n`` (diagnostics only) is not.
         """
+        res = await self._select(
+            db, direction, underlying, spot_price, sl_pct=sl_pct, target_pct=target_pct,
+            params=params, base_amount=base_amount, regime_multiplier=regime_multiplier,
+            expiry=expiry)
+        _REJECTION_COUNTER.record(underlying, res)
+        return res
+
+    async def _select(
+        self,
+        db:          AsyncSession,
+        direction:   Direction,
+        underlying:  str,
+        spot_price:  float,
+        *,
+        sl_pct:      float,
+        target_pct:  float,
+        params:      TradingParams,
+        base_amount: float,
+        regime_multiplier: float,
+        expiry:      Optional[date] = None,
+    ) -> SelectionResult:
         candidates, rejections, expiry_choice = await self._build_candidates(
             db, direction, underlying, spot_price, sl_pct=sl_pct, target_pct=target_pct,
             params=params, base_amount=base_amount, regime_multiplier=regime_multiplier,
@@ -779,7 +805,7 @@ class OptionSelector:
     ) -> SelectionResult:
         """Top N scored candidates (frontend option selector widget): the same
         SelectionResult as ``select``, with ``ranked`` truncated to *n*."""
-        res = await self.select(
+        res = await self._select(
             db, direction, underlying, spot_price, sl_pct=sl_pct, target_pct=target_pct,
             params=params, base_amount=base_amount, regime_multiplier=regime_multiplier)
         return SelectionResult(
@@ -994,6 +1020,67 @@ class OptionSelector:
                 c.score_moneyness, c.score_oi_change,
                 marker,
             )
+
+
+# ── Rejection visibility (blockers-plan item 7; thresholds unchanged) ─────────
+
+class SelectionRejectionCounter:
+    """Per (trading_day, underlying) tally of select() outcomes: evaluated,
+    selected and a ReasonCode Counter. Logs one structured INFO line
+    ``SELECTION_REJECTIONS {json}`` on the first rejection of the day and then at
+    most once per LOG_INTERVAL_S per underlying (ctx clock). Days other than the
+    current one are dropped on roll. Observability only: never raises."""
+
+    LOG_INTERVAL_S = 300
+
+    def __init__(self) -> None:
+        self._tallies: dict[tuple[date, str], dict] = {}
+
+    def reset(self) -> None:
+        self._tallies.clear()
+
+    def get(self, day: date, underlying: str) -> Optional[dict]:
+        t = self._tallies.get((day, underlying.upper()))
+        if t is None:
+            return None
+        return {"evaluated": t["evaluated"], "selected": t["selected"],
+                "by_code": dict(t["by_code"])}
+
+    def record(self, underlying: str, result: SelectionResult) -> None:
+        try:
+            self._record(underlying.upper(), result)
+        except Exception as exc:
+            logger.debug("selection rejection counter failed: %s", exc)
+
+    def _record(self, und: str, result: SelectionResult) -> None:
+        day, now = trading_day(), now_utc()
+        for key in [k for k in self._tallies if k[0] != day]:
+            del self._tallies[key]
+        t = self._tallies.setdefault((day, und), {
+            "evaluated": 0, "selected": 0, "by_code": Counter(), "last_logged_at": None})
+        t["evaluated"] += int(result.evaluated or 0)
+        t["selected"] += 1 if result.candidate is not None else 0
+        t["by_code"].update({k: int(n) for k, n in (result.rejections or {}).items()})
+        last = t["last_logged_at"]
+        if last is None:
+            due = bool(t["by_code"])                       # the first rejection of the day
+        else:
+            due = (now - last).total_seconds() >= self.LOG_INTERVAL_S
+        if not due:
+            return
+        t["last_logged_at"] = now
+        logger.info("SELECTION_REJECTIONS %s", json.dumps({
+            "run_id": ctx().run_id, "trading_day": day.isoformat(), "underlying": und,
+            "evaluated": t["evaluated"], "selected": t["selected"],
+            "by_code": dict(t["by_code"]),
+        }, sort_keys=True))
+
+
+_REJECTION_COUNTER = SelectionRejectionCounter()
+
+
+def rejection_counters() -> SelectionRejectionCounter:
+    return _REJECTION_COUNTER
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────
