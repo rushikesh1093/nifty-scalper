@@ -184,6 +184,31 @@ def test_unreadable_artefacts_are_non_fatal(art, monkeypatch):
         assert _get(f"{API}/runs/{rid}").status_code == 404
 
 
+def test_artefact_free_text_is_path_redacted_at_parse_time(art):
+    """C7 on the artefact tier comes from the code, not from the two shipped reports:
+    a report whose label and declared notes quote paths is served with basenames only."""
+    rid = "RPL-PATHYREPORT"
+    rep = json.loads((art / f"{FOUR}.json").read_text(encoding="utf-8"))
+    rep["run_id"] = rid
+    rep["label"] = r"copied from C:\Users\x\runs\capital-15000.json"
+    rep["sections"]["9"] = {**rep["sections"].get("9", {}),
+                            "declared": r"built from C:\Users\x\datasets\synthetic-5d.db "
+                                        r"and /tmp/out/x.json"}
+    (art / f"{rid}.json").write_text(json.dumps(rep), encoding="utf-8")
+    artifacts.reset_cache()
+
+    loaded = artifacts.load(rid)
+    assert loaded["label"] == "copied from capital-15000.json"
+    assert loaded["sections"]["9"]["declared"] == "built from synthetic-5d.db and x.json"
+
+    r = _get(f"{API}/runs/{rid}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["notes"] == "built from synthetic-5d.db and x.json"
+    assert body["validation"]["label"] == "copied from capital-15000.json"
+    assert "C:" not in r.text and "/tmp/" not in r.text
+
+
 def test_the_scan_is_bounded(art, monkeypatch):
     monkeypatch.setattr(settings, "BACKTEST_MAX_ARTIFACT_FILES", 2)
     body, rows = _rows()

@@ -428,7 +428,9 @@ async def run_detail(run_id: str, dataset: Optional[str]) -> dict:
         out = {
             "run_id": run_id, "dataset": loc.ds.dataset_id, "status": _artifact_status(sessions),
             "created_at": a.created_at if a else None, "created_at_source": "file_mtime",
-            "label": label, "notes": _section(rep, "9").get("declared") or None,
+            # artefact strings are redacted at parse time (artifacts._redacted); the call here
+            # keeps the tier-1 line's property visible locally and is idempotent
+            "label": label, "notes": redact_paths(_section(rep, "9").get("declared")) or None,
             "date_from": s1.get("date_from"), "date_to": s1.get("date_to"),
             "underlyings": s1.get("underlyings"), "seed": s1.get("seed"), "oos_split": split,
             "code_version": s1.get("code_version"), "params_hash": s1.get("params_hash"),

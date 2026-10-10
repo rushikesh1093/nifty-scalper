@@ -7,6 +7,10 @@ A client string reaches the filesystem only here, behind three guards:
 containment check. An unreadable artefact (malformed JSON, I/O error, no
 ``sections``, larger than 8 MB) is omitted from the index and ``load`` returns
 None; it is never a 500.
+
+A report is surfaced whole (notes, record, coverage, breakdowns, ``validation``),
+so every string in it is path-redacted at parse time (``_redacted``) rather than
+field by field at serialisation (C7).
 """
 from __future__ import annotations
 
@@ -103,10 +107,32 @@ def _parse(p: Path) -> Optional[dict]:
     if (not isinstance(rep, dict) or not isinstance(rep.get("sections"), dict)
             or rep.get("run_id") != p.stem):
         return None
+    rep = _redacted(rep)
     _lru[key] = rep
     while len(_lru) > LRU_SIZE:
         _lru.popitem(last=False)
     return rep
+
+
+def _redacted(rep: dict) -> dict:
+    """Every string in a parsed report passed through ``read.redact_paths`` (C7).
+
+    Tier 1 redacts its one free-text column where the response is assembled, but a report
+    artefact is surfaced whole — ``notes`` (``sections.9.declared``), the frozen record, the
+    coverage rows, the breakdowns and the ``validation`` object are all served as stored — so the
+    pass has to cover the tree, not a field list, or the property would depend on which section a
+    future report writes a path into. Done once per file load, so it is cached with the parse."""
+    from app.services.backtest.read import redact_paths      # local: read imports this module
+
+    def walk(v):
+        if isinstance(v, str):
+            return redact_paths(v)
+        if isinstance(v, dict):
+            return {k: walk(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [walk(x) for x in v]
+        return v
+    return walk(rep)
 
 
 def _section(rep: dict, n: str) -> dict:
