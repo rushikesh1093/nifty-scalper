@@ -7,6 +7,7 @@ Analytics API (design §17.1), prefix /api/v1/analytics.
   GET  /no-trade-decisions           paginated no-trade rows
   GET  /no-trade-decisions/summary   counts per (stage, code)
   GET  /risk-state                   the live risk picture of the bound run
+  GET  /validation                   the D10 go/no-go over the PAPER run (read-only)
   GET  /runs                         replay runs (cross-run by design)
   GET  /runs/{run_id}                one replay run with its rendered report
   POST /reconcile                    admin key; rebuild one run's aggregates
@@ -296,6 +297,34 @@ async def risk_state_view(db: AsyncSession = Depends(get_db)):
         "degraded": sorted(degraded),
         "config_valid": not violations, "config_violations": violations,
     }
+
+
+# ── the PAPER go/no-go (design §18, D10; read-only) ──────────────────────────
+
+@router.get("/validation")
+async def paper_validation_view(
+    run_id: str = Depends(run_id_query),
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    iterations: int = Query(2000, ge=200, le=20000),
+    seed: Optional[int] = None,
+    oos_split: float = Query(0.70, gt=0, lt=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """The six-criterion validation report over the PAPER run's rows. SELECT only,
+    never commits. A replay run's report is stored on its row: /analytics/runs/{run_id}."""
+    from app.core.config import settings
+    from app.services.metrics.paper_validation import PAPER_RUN_ID, build_paper_validation
+
+    if run_id != PAPER_RUN_ID:
+        raise HTTPException(status_code=400,
+                            detail=f"validation is computed for run_id=PAPER only; a replay "
+                                   f"run's report is at /api/v1/analytics/runs/{run_id}")
+    d_from, d_to = date_range(date_from, date_to)
+    capital = await _run_capital(db, run_id)
+    return await build_paper_validation(
+        db, run_id=run_id, params=params(), capital=capital, date_from=d_from, date_to=d_to,
+        iterations=iterations, seed=settings.REPLAY_DEFAULT_SEED if seed is None else seed,
+        oos_split=oos_split)
 
 
 # ── replay runs (cross-run by design: the allowlisted listing) ───────────────
