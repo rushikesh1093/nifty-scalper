@@ -1,63 +1,106 @@
 """
-Paper Trading Engine.
-Simulates order fills with configurable slippage, tracks open positions,
-monitors SL/target every tick, handles EOD square-off at 15:15.
+Paper Trading Engine (PAPER ONLY — nothing here talks to the broker).
+Simulates order fills, tracks open positions, monitors SL/target every second,
+handles EOD square-off at the configured square_off_time (default 15:15 IST).
 
-Lot sizing logic:
-  user sets trade_amount = ₹10,000  (from config)
-  cost_per_lot = ltp × lot_size     (e.g. 150 × 50 = ₹7,500)
-  lots = floor(trade_amount / cost_per_lot)  → at least 1
+Lot sizing logic (risk_gate.sizing_decision, design §9.5):
+  budget       = round_to_500(fraction × capital) × regime multiplier (₹)
+  cost_per_lot = fill_price × lot_size     (e.g. 40 × 65 = ₹2,600)
+  lots = floor(budget / cost_per_lot)  — may be 0 → signal SKIPPED
+         ("Lot unaffordable"); a lot is never forced above the budget.
   actual_capital_used = lots × cost_per_lot
 
-Capital tracking:
-  used_capital  += actual_capital_used   on position OPEN
-  used_capital  -= actual_capital_used   on position CLOSE
-  available     = capital - used_capital
+Fills (fills.py, design §15):
+  entry at ask × (1 + quote_slippage_pct) when the quote is valid (bid > 0,
+  ask ≥ bid, spread ≤ 5% of mid, tick fresh), else LTP × (1 + slippage_pct);
+  exits per the fills.exit_fill decision table (BID / TRIGGER_SLIPPED /
+  LAST_KNOWN / LTP_GAP) — an open position can always be closed.
+
+Exit ladder (trailing.py, design §8.1-8.3): SL / target first, then the
+partial (once, ≥ 2 lots), then trailing.next_stop on the reduced position. A
+stale price only ever runs SL / EOD exits.
+
+R accounting (design §8.4): initial_stop_loss, initial_risk and r_source are
+written once at insert; exit_value_weighted, r_multiple (gross) and
+r_multiple_net are written once at the final close.
+
+Capital tracking: nothing is reserved or released. Capital in use is derived per
+run_id from open positions (risk_state.open_capital_used) and checked, together with
+the daily trade cap, under the (run_id, trading_day) lock at entry (design §9.2).
 """
 import asyncio
 import logging
 import math
+import time as _time
 from datetime import datetime, date, time as dtime, timezone, timedelta
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, func
 
-from app.db.base import AsyncSessionLocal
 from app.db.models.paper_trade import (
     PaperPosition, StrategySignal, DailyPnLSummary,
     TradingMode, SignalDirection, SignalStatus,
 )
-from app.services.cache.redis_client import redis_cache
+from app.db.models.risk import PositionEvent
+from app.runtime.context import ctx, market, now_ist, now_utc, params, sessions, trading_day
+from app.services.trading import fills, no_trade, risk_gate, risk_state, trailing
+from app.services.trading.no_trade import Stage
 from app.services.trading.option_selector import SelectedOption, option_selector
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
+from app.services.trading.trade_outcome import TradeOutcome, build_outcome
+from app.services.trading.session_times import (
+    DEFAULT_SQUARE_OFF, entry_cutoff, is_after_entry_cutoff,
+    is_market_hours, parse_square_off,
+)
 from app.strategies.base import SignalEvent, Direction
 
 logger = logging.getLogger(__name__)
 
-BROKERAGE_PER_LOT = 20.0   # ₹20 per lot round-trip (Zerodha/flat-fee broker)
+# Fills, charges and the trailing ladder live in fills.py and trailing.py
+# (design §8.1, §15): one implementation shared with replay, every rate a
+# TradingParams field. There is no default-target fallback ladder.
+
+# ── Price staleness ───────────────────────────────────────────────────────────
+# The staleness threshold is params().stale_tick_seconds (default 60 s).
+LAST_PRICE_PERSIST_SECS  = 15    # throttle for writing last_ltp into pos:{id}
+STALE_WARN_INTERVAL_SECS = 60    # rate-limit stale/missing-price warnings per position
+STALE_DEFER_INTERVAL_SECS = 60   # at most one STALE_DEFER position event per minute
 
 # Strong references to detached observability tasks (SIGNAL_RECORDED publishes) so
 # a pending task cannot be garbage-collected mid-await.
 _bg_tasks: set[asyncio.Task] = set()
 
 
-def _calc_lots(trade_amount: float, ltp: float, lot_size: int) -> tuple[int, float]:
-    """
-    Calculate lots and actual capital deployed.
+_calc_lots = risk_gate.calc_lots     # one implementation (risk_gate), kept for importers
 
-    Returns:
-        (lots, capital_used)
-        lots       — at least 1, capped so capital_used ≤ trade_amount
-        capital_used — lots × ltp × lot_size  (premium cost)
-    """
-    if ltp <= 0 or lot_size <= 0:
-        return 1, ltp * lot_size
 
-    cost_per_lot = ltp * lot_size
-    lots = max(1, math.floor(trade_amount / cost_per_lot))
-    capital_used = round(lots * cost_per_lot, 2)
-    return lots, capital_used
+def _tick_age_seconds(tick: Optional[dict]) -> Optional[float]:
+    """Age of a Redis tick from its ``ts`` field. Aware UTC ISO is the live
+    format; naive ISO (legacy Redis values, replay) is read as UTC.
+    None when unknown. Reads the ctx clock; there is no `now` parameter, because
+    two sources of 'now' are how the replay clock gets bypassed (design §14.2)."""
+    return fills.tick_age_seconds(tick, now_utc())
+
+
+def _plain_indicators(indicators: Optional[dict]) -> dict:
+    """Primitive-valued copy of the signal's indicator snapshot (entry_indicators)."""
+    out = {}
+    for k, v in (indicators or {}).items():
+        try:
+            if isinstance(v, (bool, int, float, str)) or v is None:
+                out[str(k)] = v
+            else:
+                out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _quote(tick: Optional[dict]) -> tuple:
+    """(best_bid, best_ask, age_s) of a tick, for fills.*"""
+    tick = tick or {}
+    return tick.get("best_bid"), tick.get("best_ask"), _tick_age_seconds(tick or None)
 
 
 class PaperEngine:
@@ -66,6 +109,12 @@ class PaperEngine:
     def __init__(self):
         self._monitor_task: Optional[asyncio.Task] = None
         self._running = False
+        # pos_id → (last fresh LTP, UTC time seen) — EOD/kill-switch fallback price
+        self._last_known: dict[int, tuple[float, datetime]] = {}
+        self._last_persist: dict[int, float] = {}    # pos_id → monotonic ts of last Redis write
+        self._stale_warned: dict[int, float] = {}    # pos_id → monotonic ts of last warning
+        self._stale_deferred: dict[int, datetime] = {}   # pos_id → ctx-clock ts of last STALE_DEFER
+        self._square_off_cache: Optional[tuple[dtime, float]] = None
 
     async def start(self):
         self._running = True
@@ -84,21 +133,40 @@ class PaperEngine:
         Called by SignalBus for every fired strategy signal.
         Returns True only when a position is actually opened — SignalBus uses
         this to decide whether to consume the aggregator cooldown.
+
+        The order is fixed (design §9.1, §20.3):
+          strategy/study/regime gates
+          → risk_gate.evaluate_pre_selection   (checks 0-11b: every cap and halt)
+          → option_selector.select(base_amount, regime_multiplier)
+          → option momentum, risk_gate.evaluate_sizing (check 12), ATR-vs-SL
+          → risk_gate.enter  (lock → 13a trade cap → 13b capital → insert → commit)
+        Nothing is reserved, so every refusal leaves nothing to release. Every
+        refusal records one no_trade_decisions row and a SKIPPED signal.
         """
         from app.services.trading.mode_manager import mode_manager
 
-        cfg = await mode_manager.get_config()
-        if not cfg:
-            return False
+        # study_phase comes through ctx().control: the live row (an operator
+        # toggle applies at once) or, in replay, the frozen RunConfig — never the
+        # shared row. Every cap and the capital come from ctx().cfg.
+        study_phase = await ctx().control.study_phase()
 
-        # Strategy enabled?
-        flags = cfg.strategy_flags or {}
-        if not flags.get(signal.strategy_name, True):
-            logger.debug("[%s] disabled — skipping", signal.strategy_name)
+        # Strategy enabled? Re-check the orchestrator's last merged flags (regime
+        # rule AND user flag AND today's streak halt) rather than trusting
+        # cfg.strategy_flags (§6.4).
+        enabled, why = strategy_orchestrator.is_strategy_enabled(
+            signal.underlying, signal.strategy_name)
+        if not enabled:
+            code = {
+                "user_disabled": no_trade.ReasonCode.STRATEGY_USER_DISABLED,
+                "regime_unavailable": no_trade.ReasonCode.REGIME_UNAVAILABLE,
+                "daily_strategy_halt": no_trade.ReasonCode.STRATEGY_DAILY_HALT,
+            }.get(why, no_trade.ReasonCode.STRATEGY_REGIME_DISABLED)
+            await self._reject(signal, Stage.STRATEGY_GATE, code,
+                               f"{signal.strategy_name} not enabled for {signal.underlying}: {why}")
             return False
 
         # Study phase: record signal but do not open any position.
-        if cfg.study_phase:
+        if study_phase:
             await self._save_signal(signal, SignalStatus.SKIPPED, reason="study_phase=True — observing only")
             logger.info(
                 "[PaperEngine] STUDY PHASE — signal recorded, no trade: %s %s %s",
@@ -109,228 +177,258 @@ class PaperEngine:
         # ── Regime signal filter ──────────────────────────────────────────────────
         try:
             regime_state = await strategy_orchestrator.get_current_regime(signal.underlying)
-            allowed, regime_reason = strategy_orchestrator.should_allow_signal(signal, regime_state)
+            allowed, regime_code, regime_reason = strategy_orchestrator.should_allow_signal(
+                signal, regime_state)
             if not allowed:
-                await self._save_signal(signal, SignalStatus.SKIPPED, reason=f"[Regime] {regime_reason}")
-                logger.info("[PaperEngine] REGIME BLOCKED %s: %s", signal.strategy_name, regime_reason)
+                await self._reject(
+                    signal, Stage.SIGNAL_GATE, regime_code, regime_reason,
+                    context=no_trade.as_context(
+                        regime=getattr(regime_state, "regime", None),
+                        direction=signal.direction.value),
+                    status_reason=f"[Regime] {regime_reason}")
                 return False
         except Exception as _re:
-            logger.debug("[PaperEngine] Regime filter error (non-fatal): %s", _re)
-            regime_state = None
-
-        # All risk/capital checks
-        ok, reason = await mode_manager.pre_trade_check(signal.underlying)
-        if not ok:
-            await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
-            logger.info("[PaperEngine] SKIPPED %s: %s", signal.strategy_name, reason)
+            # Fail closed (§20.3): a regime filter that cannot run admits nothing.
+            logger.error("[PaperEngine] Regime filter error — signal rejected: %s", _re,
+                         exc_info=True)
+            await self._reject(
+                signal, Stage.SIGNAL_GATE, no_trade.ReasonCode.REGIME_STATE_UNAVAILABLE,
+                f"[Regime] regime state unreadable: {type(_re).__name__}: {_re}")
             return False
 
-        # ── Select best option first (before touching capital) ────────────────
-        # Option selector runs DB + Redis queries — do this BEFORE reserving
-        # capital so a "no option available" result never leaks capital.
-        async with AsyncSessionLocal() as db:
-            selected = await option_selector.select(
-                db=db,
-                direction=signal.direction,
+        # ── Phase one: checks 0-11b ───────────────────────────────────────────
+        async with sessions()() as db:
+            gate = await risk_gate.evaluate_pre_selection(db, signal, regime_state)
+        if not gate.allowed:
+            await self._reject(signal, gate.stage, gate.code, gate.reason, context=gate.context)
+            return False
+        fraction, regime_multiplier = gate.fraction, gate.regime_multiplier
+        p = params()
+
+        # ── Select the best option (no capital is touched) ────────────────────
+        try:
+            async with sessions()() as db:
+                result = await option_selector.select(
+                    db=db,
+                    direction=signal.direction,
+                    underlying=signal.underlying,
+                    spot_price=signal.spot_price,
+                    sl_pct=signal.sl_pct,
+                    target_pct=signal.target_pct,
+                    params=p,
+                    base_amount=fraction.base_amount,
+                    regime_multiplier=regime_multiplier,
+                )
+        except Exception as exc:
+            logger.error("[PaperEngine] option selection failed: %s", exc, exc_info=True)
+            await no_trade.record_degradation(
+                ctx().run_id, no_trade.ReasonCode.UNEXPECTED_ENTRY_ERROR,
                 underlying=signal.underlying,
-                spot_price=signal.spot_price,
-                sl_pct=signal.sl_pct,
-                target_pct=signal.target_pct,
-            )
-
-        if not selected:
-            await self._save_signal(signal, SignalStatus.SKIPPED, reason="No option available")
+                reason=f"option selection raised {type(exc).__name__}: {exc}")
+            await self._save_signal(signal, SignalStatus.SKIPPED,
+                                    reason=f"Option selection error: {exc}")
             return False
 
-        ltp      = selected.ltp
+        selected = result.candidate
+        if selected is None:
+            await self._reject(
+                signal, Stage.SELECTION, no_trade.ReasonCode.NO_OPTION_AVAILABLE,
+                "No option available", selection=result,
+                context=no_trade.as_context(
+                    rejections=dict(result.rejections), evaluated=result.evaluated,
+                    expiry_reason=result.expiry.reason),
+                status_reason="No option available")
+            return False
+
         lot_size = selected.lot_size
 
-        # ── Option momentum confirmation ──────────────────────────────────────
-        # Require the option's LTP to be moving in our favour before entering.
-        # If the option is falling at entry we're buying into weakness — that is
-        # the single biggest cause of immediate SL hits after entry.
-        # Skip this check if tick history is unavailable (don't block the trade).
+        # ── Option momentum confirmation (the candidate's own tick, §10.3) ────
+        # The option's LTP must not be falling at entry: buying into weakness is
+        # the biggest cause of immediate SL hits. Skipped when the tick carried
+        # no open; fails closed if the check itself errors.
         try:
-            tick_now = await redis_cache.get_tick(selected.token)
-            if tick_now:
-                opt_open  = float(tick_now.get("open", 0) or 0)
-                opt_close = float(tick_now.get("ltp",  0) or 0)
-                if opt_open > 0 and opt_close > 0:
-                    falling_pct = (opt_open - opt_close) / opt_open * 100
-                    if falling_pct > 2.0:
-                        reason = (
-                            f"Option momentum check FAILED — LTP falling {falling_pct:.1f}% "
-                            f"this candle (open={opt_open:.2f} now={opt_close:.2f}). "
-                            f"Skipping to avoid buying into weakness."
-                        )
-                        await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
-                        logger.info("[PaperEngine] SKIPPED %s: %s", signal.strategy_name, reason)
-                        return False
+            opt_open = float(getattr(selected, "tick_open", 0) or 0)
+            opt_now = float(selected.ltp or 0)
+            if opt_open > 0 and opt_now > 0:
+                falling_pct = (opt_open - opt_now) / opt_open * 100
+                if falling_pct > 2.0:
+                    await self._reject(
+                        signal, Stage.SELECTION, no_trade.ReasonCode.OPTION_MOMENTUM_FAIL,
+                        f"Option momentum check FAILED — LTP falling {falling_pct:.1f}% "
+                        f"this candle (open={opt_open:.2f} now={opt_now:.2f}). "
+                        f"Skipping to avoid buying into weakness.",
+                        selection=result)
+                    return False
         except Exception as _e:
-            logger.debug("Option momentum check error (non-fatal): %s", _e)
-
-        # ── Dynamic trade sizing via half-Kelly criterion ─────────────────────
-        # Uses each strategy's trailing win_rate + avg_rr to scale position size.
-        # Falls back to cfg.trade_amount when insufficient history (<20 trades).
-        trade_amount = await mode_manager.kelly_trade_amount(
-            signal.strategy_name, cfg
-        )
-
-        # ── Regime position size multiplier ──────────────────────────────────
-        try:
-            regime_multiplier = strategy_orchestrator.get_position_multiplier(signal.underlying)
-            if regime_multiplier == 0.0:
-                current_regime = getattr(regime_state, 'regime', 'UNKNOWN') if regime_state else 'UNKNOWN'
-                reason = f"[Regime] Position_Size_Multiplier=0.0 for regime {current_regime}"
-                await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
-                logger.info("[PaperEngine] REGIME SKIPPED %s: %s", signal.strategy_name, reason)
-                return False
-            regime_adjusted_amount = round(trade_amount * regime_multiplier, 2)
-            if regime_multiplier != 1.0:
-                logger.info(
-                    "[PaperEngine] Regime multiplier=%.1f applied: trade_amount ₹%.0f → ₹%.0f  strategy=%s",
-                    regime_multiplier, trade_amount, regime_adjusted_amount, signal.strategy_name
-                )
-        except Exception as _me:
-            logger.debug("[PaperEngine] Regime multiplier error (non-fatal): %s", _me)
-            regime_adjusted_amount = trade_amount
-            regime_multiplier = 1.0
-
-        # ── Lot sizing — MUST happen before reserve_capital ──────────────────
-        lots, capital_used = _calc_lots(regime_adjusted_amount, ltp, lot_size)
-
-        # Hard cap from config
-        lots = min(lots, cfg.max_lots_per_trade)
-        capital_used = round(lots * ltp * lot_size, 2)
-
-        # ── Atomic capital reservation (serialises concurrent signals) ────────
-        # reserve_capital atomically increments used_capital + daily_trades_count
-        # in the DB and returns False if the budget is already exhausted.
-        # This must happen AFTER lot sizing (capital_used is now known) and AFTER
-        # option selection (so a missing option never silently consumes capital).
-        reserved = await mode_manager.reserve_capital(capital_used)
-        if not reserved:
-            reason = "Capital was reserved by another trade or is no longer available"
-            await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
-            logger.info("[PaperEngine] SKIPPED %s: %s", signal.strategy_name, reason)
+            logger.error("[PaperEngine] Option momentum check error — signal rejected: %s", _e,
+                         exc_info=True)
+            await self._reject(signal, Stage.SELECTION,
+                               no_trade.ReasonCode.OPTION_MOMENTUM_FAIL,
+                               f"momentum check errored: {_e}", selection=result)
             return False
 
-        # All remaining checks that could still abort — must release reserved
-        # capital on any early return below this point.
+        # ── Phase two: check 12, lots from the fill and the lot size ──────────
+        async with sessions()() as db:
+            sized = await risk_gate.evaluate_sizing(
+                db, signal, selected, fraction=fraction, regime_multiplier=regime_multiplier)
+        if not sized.allowed:
+            await self._reject(signal, sized.stage, sized.code, sized.reason,
+                               context=sized.context, selection=result)
+            return False
+        sizing = sized.sizing
+        actual_entry = sizing.expected_entry_fill
+        entry_fill_source = sized.context.get("fill_source", "LTP_FALLBACK")
+        lots, capital_used = sizing.lots, sizing.capital_used
+        ltp = selected.ltp
+        slippage = round(actual_entry - ltp, 2)
+
+        # ── SL / target on the ACTUAL entry; initial risk is written once ─────
+        sl, tgt, rr, target_stretched = fills.entry_levels(
+            actual_entry, signal.sl_pct, signal.target_pct, p.min_rr)
+        initial_risk = round(actual_entry - sl, 2)
+        rr = round(rr, 2)
+
+        qty = lots * lot_size
+        brokerage = fills.brokerage(lots, p)
+
+        # ── Spot ATR vs option SL distance check ──────────────────────────────
         try:
-            qty = lots * lot_size
+            spot_atr = signal.indicators.get("atr") or 0.0
+            if spot_atr > 0:
+                sl_distance_pts = actual_entry * signal.sl_pct
+                approx_delta = getattr(selected, "delta_est", None)
+                approx_delta = abs(approx_delta) if approx_delta else 0.0
+                if approx_delta < 0.15:
+                    approx_delta = 0.35
+                spot_move_needed = sl_distance_pts / approx_delta
+                min_atr_needed = spot_move_needed / 2.0
+                if signal.underlying == "BANKNIFTY":
+                    min_atr_needed = min(min_atr_needed, 25.0)
+                else:
+                    min_atr_needed = min(min_atr_needed, 7.5)
+                if spot_atr < min_atr_needed:
+                    await self._reject(
+                        signal, Stage.SELECTION, no_trade.ReasonCode.ATR_VS_SL_DISTANCE,
+                        f"Spot ATR={spot_atr:.1f} < {min_atr_needed:.1f} needed "
+                        f"(sl_dist=₹{sl_distance_pts:.1f}, δ≈{approx_delta:.2f}). "
+                        f"Market too quiet to reach option target.", selection=result)
+                    return False
+        except Exception as _e:
+            logger.error("[PaperEngine] ATR/SL check error — signal rejected: %s", _e,
+                         exc_info=True)
+            await self._reject(signal, Stage.SELECTION,
+                               no_trade.ReasonCode.ATR_VS_SL_DISTANCE,
+                               f"ATR/SL check errored: {_e}", selection=result)
+            return False
 
-            # Slippage (entry) — pay ask + slippage
-            slippage     = round(ltp * (cfg.slippage_pct / 100), 2)
-            actual_entry = round(ltp + slippage, 2)
-            brokerage    = round(BROKERAGE_PER_LOT * lots, 2)
+        # Kill switch may have fired while this signal was being processed
+        if mode_manager.is_halted():
+            await self._reject(signal, Stage.RISK_GATE, no_trade.ReasonCode.KILL_SWITCH,
+                               "Kill switch activated during entry", selection=result)
+            return False
 
-            # ── Spot ATR vs option SL distance check ─────────────────────────────
-            try:
-                spot_atr = signal.indicators.get("atr") or 0.0
-                if spot_atr > 0:
-                    sl_distance_pts  = actual_entry * signal.sl_pct
-                    approx_delta     = getattr(selected, "delta_est", None)
-                    approx_delta     = abs(approx_delta) if approx_delta else 0.0
-                    if approx_delta < 0.15:
-                        approx_delta = 0.35
-                    spot_move_needed = sl_distance_pts / approx_delta
-                    min_atr_needed   = spot_move_needed / 2.0
-                    if signal.underlying == "BANKNIFTY":
-                        min_atr_needed = min(min_atr_needed, 25.0)
-                    else:
-                        min_atr_needed = min(min_atr_needed, 7.5)
-                    if spot_atr < min_atr_needed:
-                        reason = (
-                            f"Spot ATR={spot_atr:.1f} < {min_atr_needed:.1f} needed "
-                            f"(sl_dist=₹{sl_distance_pts:.1f}, δ≈{approx_delta:.2f}). "
-                            f"Market too quiet to reach option target."
-                        )
-                        await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
-                        logger.info("[PaperEngine] SKIPPED %s: %s", signal.strategy_name, reason)
-                        await mode_manager.release_reserved_capital(capital_used)
-                        return False
-            except Exception as _e:
-                logger.debug("ATR/SL check error (non-fatal): %s", _e)
+        # ── Entry section: lock → 13a → 13b → insert → commit ─────────────────
+        pos = PaperPosition(
+            strategy_name   = signal.strategy_name,
+            entry_regime    = getattr(regime_state, 'regime', None) if regime_state else None,
+            token           = selected.token,
+            symbol          = selected.symbol,
+            underlying      = signal.underlying,
+            strike          = selected.strike,
+            option_type     = selected.option_type,
+            expiry          = selected.expiry,
+            direction       = SignalDirection.BUY,
+            lots            = lots,
+            lot_size        = lot_size,
+            quantity        = qty,
+            entry_price     = ltp,
+            entry_slippage  = slippage,
+            actual_entry    = actual_entry,
+            stop_loss       = sl,
+            target          = tgt,
+            max_loss_per_lot= round((actual_entry - sl) * lot_size, 2),
+            brokerage       = brokerage,
+            statutory_charges = 0.0,
+            trade_amount_used = capital_used,
+            is_open         = True,
+            mode            = TradingMode.PAPER,
+            entry_time      = now_utc(),
+            run_id          = ctx().run_id,
+            entry_fill_source = entry_fill_source,
+            target_stretched  = target_stretched,
+            dte_at_entry      = result.expiry.dte,
+            expiry_band       = result.expiry.band,
+            entry_regime_multiplier = regime_multiplier,
+            sizing_detail     = risk_gate.jsonable(sizing),
+            entry_indicators  = _plain_indicators(signal.indicators),
+            # Write-once at insert (§8.4): never in any later update()
+            initial_stop_loss = sl,
+            initial_risk      = initial_risk,
+            r_source          = "ENTRY",
+            original_quantity = qty,
+            original_lots     = lots,
+        )
 
-            # ── SL / target based on ACTUAL entry (post-slippage) ────────────────
-            sl_pct     = signal.sl_pct
-            target_pct = signal.target_pct
+        async def _insert(db: AsyncSession) -> int:
+            sig_id = await self._save_signal(
+                signal, SignalStatus.SELECTED, selected=selected, sl=sl, tgt=tgt, rr=rr,
+                db=db, commit=False, selection=result)
+            pos.signal_id = sig_id
+            db.add(pos)
+            await db.flush()
+            return pos.id
 
-            sl  = round(actual_entry * (1.0 - sl_pct),    1)
-            tgt = round(actual_entry * (1.0 + target_pct), 1)
-            rr  = round((tgt - actual_entry) / max(actual_entry - sl, 0.01), 2)
+        try:
+            async with sessions()() as db:
+                entered = await risk_gate.enter(
+                    db, run_id=ctx().run_id, trading_day=trading_day(),
+                    capital_used=capital_used,
+                    advisory_used=float(sized.context.get("open_capital_used", 0.0)),
+                    insert=_insert)
+        except Exception as exc:
+            # The transaction rolled back: no row exists and nothing is held.
+            logger.error(
+                "[PaperEngine] Unexpected error opening %s (₹%.0f not deployed): %s",
+                signal.strategy_name, capital_used, exc, exc_info=True)
+            await no_trade.record_degradation(
+                ctx().run_id, no_trade.ReasonCode.UNEXPECTED_ENTRY_ERROR,
+                underlying=signal.underlying,
+                reason=f"entry insert raised {type(exc).__name__}: {exc}",
+                context=no_trade.as_context(amount=capital_used))
+            await self._save_signal(signal, SignalStatus.SKIPPED,
+                                    reason=f"Entry error: {exc}", selection=result)
+            return False
 
-            # ── Enforce minimum R:R from strategy (default 2.0) ──────────────────
-            MIN_RR = signal.min_rr
-            if rr < MIN_RR:
-                tgt = round(actual_entry + (actual_entry - sl) * MIN_RR, 1)
-                rr  = round((tgt - actual_entry) / max(actual_entry - sl, 0.01), 2)
-                logger.debug(
-                    "[PaperEngine] Target stretched to %.2f to meet min R:R=%.1f for %s",
-                    tgt, MIN_RR, signal.strategy_name,
-                )
+        if not entered.allowed:
+            await self._reject(signal, entered.stage, entered.code, entered.reason,
+                               context=entered.context, selection=result)
+            return False
 
-            if rr < MIN_RR:
-                reason = (
-                    f"R:R {rr:.2f} below strategy minimum {MIN_RR} even after adjustment. "
-                    f"actual_entry={actual_entry} sl={sl} tgt={tgt}"
-                )
-                await self._save_signal(signal, SignalStatus.SKIPPED, reason=reason)
-                logger.info("[PaperEngine] SKIPPED %s: %s", signal.strategy_name, reason)
-                await mode_manager.release_reserved_capital(capital_used)
-                return False
+        pos_id = entered.result
+        logger.info(
+            "[PaperEngine] ✅ OPENED %s | %s %s %.0f%s | "
+            "entry=%.2f SL=%.2f TGT=%.2f R:R=%.2f | "
+            "lots=%d cost=₹%.0f (%s base ₹%.0f × regime %.1f)",
+            signal.strategy_name, signal.underlying, selected.symbol,
+            selected.strike, selected.option_type,
+            actual_entry, sl, tgt, rr,
+            lots, capital_used, fraction.method, fraction.base_amount, regime_multiplier
+        )
 
-            async with AsyncSessionLocal() as db:
-                sig_id = await self._save_signal(
-                    signal, SignalStatus.SELECTED,
-                    selected=selected, sl=sl, tgt=tgt, rr=rr, db=db
-                )
-                pos = PaperPosition(
-                    strategy_name   = signal.strategy_name,
-                    entry_regime    = getattr(regime_state, 'regime', None) if regime_state else None,
-                    signal_id       = sig_id,
-                    token           = selected.token,
-                    symbol          = selected.symbol,
-                    underlying      = signal.underlying,
-                    strike          = selected.strike,
-                    option_type     = selected.option_type,
-                    expiry          = selected.expiry,
-                    direction       = SignalDirection.BUY,
-                    lots            = lots,
-                    lot_size        = lot_size,
-                    quantity        = qty,
-                    entry_price     = ltp,
-                    entry_slippage  = slippage,
-                    actual_entry    = actual_entry,
-                    stop_loss       = sl,
-                    target          = tgt,
-                    max_loss_per_lot= round((actual_entry - sl) * lot_size, 2),
-                    brokerage       = brokerage,
-                    trade_amount_used = capital_used,
-                    is_open         = True,
-                    mode            = TradingMode(cfg.mode),
-                    entry_time      = datetime.now(timezone.utc),
-                )
-                db.add(pos)
-                await db.commit()
-                await db.refresh(pos)
+        # An entry filled without a valid quote is a recorded degradation (§12)
+        if entry_fill_source != "ASK":
+            await no_trade.record_degradation(
+                ctx().run_id, no_trade.ReasonCode.FALLBACK_FILL, position_id=pos_id,
+                underlying=signal.underlying,
+                reason=f"entry filled at {entry_fill_source} (no valid quote)",
+                context=no_trade.as_context(leg="ENTRY", source=entry_fill_source))
 
-            logger.info(
-                "[PaperEngine] ✅ OPENED %s | %s %s %.0f%s | "
-                "entry=%.2f SL=%.2f TGT=%.2f R:R=%.2f | "
-                "lots=%d cost=₹%.0f (kelly_amount=₹%.0f)",
-                signal.strategy_name, signal.underlying, selected.symbol,
-                selected.strike, selected.option_type,
-                actual_entry, sl, tgt, rr,
-                lots, capital_used, trade_amount
-            )
-
-            # Cache for fast monitoring
-            await redis_cache.set(
-                f"pos:{pos.id}",
+        # Post-commit bookkeeping must never undo or hide an opened position
+        try:
+            await market().set(
+                f"pos:{pos_id}",
                 {
-                    "id":       pos.id,
+                    "id":       pos_id,
                     "token":    selected.token,
                     "entry":    actual_entry,
                     "sl":       sl,
@@ -341,12 +439,11 @@ class PaperEngine:
                 },
                 ttl=86400,
             )
-
-            available = cfg.capital - (cfg.used_capital or 0.0)
-            # Notify frontend
-            await redis_cache.publish_signal("paper_trade", {
+            async with sessions()() as db:
+                used = await risk_state.open_capital_used(db, ctx().run_id)
+            await market().publish_signal("paper_trade", {
                 "event":         "POSITION_OPENED",
-                "pos_id":        pos.id,
+                "pos_id":        pos_id,
                 "symbol":        selected.symbol,
                 "strategy":      signal.strategy_name,
                 "direction":     signal.direction.value,
@@ -355,18 +452,42 @@ class PaperEngine:
                 "sl":            sl,
                 "target":        tgt,
                 "capital_used":  capital_used,
-                "available":     round(available - capital_used, 2),
+                "available":     round(ctx().cfg.capital - used, 2),
             })
-            return True  # position opened successfully
-
         except Exception as exc:
-            # Unexpected error after capital was reserved — release it to avoid leak
-            logger.error(
-                "[PaperEngine] Unexpected error after capital reservation for %s: %s — releasing capital",
-                signal.strategy_name, exc, exc_info=True,
-            )
-            await mode_manager.release_reserved_capital(capital_used)
-            return False
+            logger.error("[PaperEngine] pos %d opened but cache/notify failed: %s",
+                         pos_id, exc, exc_info=True)
+
+        # Race guard: kill switch fired after the pre-insert check but
+        # before this position was visible to square_off_all → close now.
+        if mode_manager.is_halted():
+            try:
+                await no_trade.record_isolated(
+                    stage=Stage.ENTRY, code=no_trade.ReasonCode.HALT_ENGAGED_MID_ENTRY,
+                    reason="kill switch engaged after insert — closing immediately",
+                    underlying=signal.underlying, strategy_name=signal.strategy_name,
+                    position_id=pos_id)
+                price, stale = await self._resolve_exit_price(pos)
+                await self._close_position(
+                    pos_id, price or actual_entry,
+                    "KILL_SWITCH_STALE" if stale else "KILL_SWITCH",
+                )
+            except Exception as _ke:
+                logger.error("[PaperEngine] Kill-switch close of new pos %d failed: %s", pos_id, _ke)
+        return True  # position opened successfully
+
+    async def _reject(self, signal: SignalEvent, stage: Stage, code, reason: str, *,
+                      context: Optional[dict] = None, selection=None,
+                      status_reason: Optional[str] = None) -> None:
+        """One no_trade_decisions row plus a SKIPPED signal linked to it. The
+        recorders never raise: observability must not break trading."""
+        ntd_id = await no_trade.record_isolated(
+            stage=stage, code=code, reason=reason, context=context or {},
+            underlying=signal.underlying, strategy_name=signal.strategy_name)
+        await self._save_signal(signal, SignalStatus.SKIPPED, reason=status_reason or reason,
+                                no_trade_decision_id=ntd_id, selection=selection)
+        logger.info("[PaperEngine] SKIPPED %s: %s [%s]", signal.strategy_name, reason,
+                    getattr(code, "value", code))
 
     # ── Position monitor loop ─────────────────────────────────────────────────
 
@@ -374,320 +495,584 @@ class PaperEngine:
         while self._running:
             try:
                 await asyncio.sleep(1)
-                now_ist = _ist_time()
-                async with AsyncSessionLocal() as db:
-                    result = await db.execute(
-                        select(PaperPosition).where(PaperPosition.is_open == True)
-                    )
-                    open_positions = result.scalars().all()
-                for pos in open_positions:
-                    await self._check_position(pos, now_ist)
+                await self.monitor_once()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Monitor loop error: %s", e, exc_info=True)
 
-    async def _check_position(self, pos: PaperPosition, now_ist: dtime):
-        ltp = await redis_cache.get_ltp(pos.token)
-        if not ltp:
-            return
-
-        # Re-read the live SL and actual_entry from DB so trailing-SL updates
-        # and any partial-close modifications written in a previous tick are
-        # actually seen here (the pos object came from a snapshot query in
-        # _monitor_loop and may be stale).
-        live_sl: Optional[float] = pos.stop_loss
-        live_entry: float = pos.actual_entry or 0.0
-        async with AsyncSessionLocal() as _db:
-            _r = await _db.execute(
-                select(
-                    PaperPosition.stop_loss,
-                    PaperPosition.trailing_sl,
-                    PaperPosition.actual_entry,
-                    PaperPosition.target,
-                )
-                .where(PaperPosition.id == pos.id)
+    async def monitor_once(self) -> None:
+        """One monitor pass over every open position (design §14.2). Shared by
+        the live loop and replay. No time parameter: it reads the ctx clock,
+        since two sources of "now" invite divergence."""
+        now_ist = _ist_time()
+        async with sessions()() as db:
+            result = await db.execute(
+                select(PaperPosition).where(PaperPosition.run_id == ctx().run_id,
+                                            PaperPosition.is_open == True)  # noqa: E712
             )
-            _row = _r.one_or_none()
-            if _row:
-                # trailing_sl takes priority when it's been set and is tighter
-                live_sl   = _row.trailing_sl or _row.stop_loss or pos.stop_loss
-                live_entry = _row.actual_entry or pos.actual_entry or 0.0
-                # Also refresh target from DB (partial close may have updated it)
-                if _row.target:
-                    pos.target = _row.target
+            open_positions = result.scalars().all()
+        if not open_positions:
+            return
+        square_off = await self._get_square_off()
+        for pos in open_positions:
+            await self._check_position(pos, now_ist, square_off)
 
-        exit_reason: Optional[str] = None
-        exit_price:  Optional[float] = None
+    async def _get_square_off(self) -> dtime:
+        """Configured square-off time, cached for 30 s (fallback 15:15)."""
+        now_m = _time.monotonic()
+        if self._square_off_cache and now_m - self._square_off_cache[1] < 30:
+            return self._square_off_cache[0]
+        try:
+            sq = parse_square_off(await ctx().control.square_off_time())
+        except Exception as exc:
+            logger.debug("square_off_time lookup failed (%s) — using default", exc)
+            sq = DEFAULT_SQUARE_OFF
+        self._square_off_cache = (sq, now_m)
+        return sq
 
-        if now_ist >= dtime(15, 15):
-            exit_reason, exit_price = "EOD", ltp
+    def _warn_price(self, pos_id: int, msg: str, *args) -> None:
+        """Rate-limited (1 / 60 s per position) WARNING for missing/stale prices."""
+        now_m = _time.monotonic()
+        last = self._stale_warned.get(pos_id)
+        if last is None or now_m - last >= STALE_WARN_INTERVAL_SECS:
+            self._stale_warned[pos_id] = now_m
+            logger.warning(msg, *args)
 
-        elif live_sl and ltp <= live_sl:
-            # Gap-down protection: if LTP has already gone below SL (gapped),
-            # use LTP as exit — can't fill at a price the market skipped past.
-            exit_reason = "SL"
-            exit_price  = ltp if ltp < live_sl else live_sl
+    def _forget(self, pos_id: int) -> None:
+        self._last_known.pop(pos_id, None)
+        self._last_persist.pop(pos_id, None)
+        self._stale_warned.pop(pos_id, None)
+        self._stale_deferred.pop(pos_id, None)
 
-        elif pos.target and ltp >= pos.target:
-            exit_reason, exit_price = "TARGET", pos.target
+    async def _remember_price(self, pos_id: int, ltp: float) -> None:
+        """Track the last fresh LTP in memory and (throttled) in Redis pos:{id}."""
+        seen_at = now_utc()
+        self._last_known[pos_id] = (float(ltp), seen_at)
+        now_m = _time.monotonic()
+        last = self._last_persist.get(pos_id)
+        if last is not None and now_m - last < LAST_PRICE_PERSIST_SECS:
+            return
+        self._last_persist[pos_id] = now_m
+        try:
+            key = f"pos:{pos_id}"
+            cached = await market().get(key)
+            cached = cached if isinstance(cached, dict) else {"id": pos_id}
+            cached["last_ltp"] = float(ltp)
+            cached["last_ltp_ts"] = seen_at.isoformat()
+            await market().set(key, cached, ttl=86400)
+        except Exception as exc:
+            logger.debug("last_ltp persist failed for pos %d: %s", pos_id, exc)
 
-        else:
-            # ── Three-tier trailing SL ────────────────────────────────────────
-            # Tier 1: up 10% → move SL to breakeven (entry × 0.99 — 1% buffer
-            #          so rounding never puts SL above entry causing instant exit)
-            # Tier 2: up 20% → lock 15% profit (SL → entry × 1.15)
-            # Tier 3: up 35% → lock 25% profit (SL → entry × 1.25)
-            # Partial exit at +40% — closes 50% of lots, remainder runs to target
-            # with SL moved to breakeven.
-            # All tiers only advance — SL never goes backwards.
-            if live_entry:
-                gain_pct = (ltp - live_entry) / live_entry * 100
+    async def _resolve_exit_price(self, pos: PaperPosition) -> tuple[Optional[float], bool]:
+        """
+        Best available exit price → (price, is_stale).
+        Order: fresh Redis LTP → stale Redis LTP → in-memory last known →
+        Redis pos:{id}.last_ltp → entry price (logged at ERROR) → (None, True).
+        """
+        ltp = None
+        try:
+            ltp = await market().get_ltp(pos.token)
+        except Exception as exc:
+            logger.debug("get_ltp failed for pos %d: %s", pos.id, exc)
+        if ltp:
+            tick = None
+            try:
+                tick = await market().get_tick(pos.token)
+            except Exception:
+                tick = None
+            age = _tick_age_seconds(tick)
+            return float(ltp), (age is not None and age > params().stale_tick_seconds)
 
-                # ── Partial exit at +40% — fires once per position ────────────
-                if gain_pct >= 40.0 and not pos.partial_closed:
-                    await self._partial_close(pos, ltp)
-                    return
+        known = self._last_known.get(pos.id)
+        if known:
+            return known[0], True
 
-                if gain_pct >= 35.0:
-                    new_sl = round(live_entry * 1.25, 1)
-                elif gain_pct >= 25.0:
-                    # Lock 10% profit: SL → entry × 1.10 so even a 5% pullback
-                    # (normal market volatility) keeps position profitable.
-                    new_sl = round(live_entry * 1.10, 1)
-                elif gain_pct >= 20.0:
-                    new_sl = round(live_entry * 1.15, 1)
-                else:
-                    new_sl = None
+        try:
+            cached = await market().get(f"pos:{pos.id}")
+            if isinstance(cached, dict) and cached.get("last_ltp"):
+                return float(cached["last_ltp"]), True
+        except Exception as exc:
+            logger.debug("pos:%d cache read failed: %s", pos.id, exc)
 
-                current_sl = pos.trailing_sl or pos.stop_loss or 0
-                if new_sl and new_sl > current_sl:
-                    async with AsyncSessionLocal() as db:
-                        await db.execute(
-                            update(PaperPosition)
-                            .where(PaperPosition.id == pos.id)
-                            .values(stop_loss=new_sl, trailing_sl=new_sl)
-                        )
-                        await db.commit()
-                    logger.debug(
-                        "Trailing SL → %.2f (gain=%.1f%%) for pos %d",
-                        new_sl, gain_pct, pos.id,
-                    )
+        fallback = pos.actual_entry or pos.entry_price
+        if fallback:
+            logger.error(
+                "[PaperEngine] No price at all for pos %d token %s — closing at ENTRY "
+                "price %.2f, P&L unknown",
+                pos.id, pos.token, fallback,
+            )
+            return float(fallback), True
+        return None, True
 
-            # ── Max-hold-time exit ────────────────────────────────────────────
-            # Options lose premium rapidly when the underlying doesn't move.
-            # Mean-reversion strategies (VWAP_REVERSAL, RSI_VWAP) get 25 min —
-            # if price hasn't snapped back in 25 min it's not going to.
-            # Trend strategies (ORB, EMA, Supertrend, etc.) get 45 min.
-            # Threshold: LTP must be at least 5% above entry to survive the hold.
-            _MEAN_REV_STRATEGIES = {"VWAP_REVERSAL", "RSI_VWAP", "VWAP_PULLBACK"}
-            _hold_limit = 25 if pos.strategy_name in _MEAN_REV_STRATEGIES else 45
-            if pos.entry_time:
-                entry_utc = pos.entry_time
-                if entry_utc.tzinfo is None:
-                    from datetime import timezone as _tz
-                    entry_utc = entry_utc.replace(tzinfo=_tz.utc)
-                hold_mins = (datetime.now(timezone.utc) - entry_utc).total_seconds() / 60
-                if hold_mins > _hold_limit and ltp < (live_entry or 0) * 1.05:
-                    logger.info(
-                        "[PaperEngine] MAX-HOLD-TIME exit pos %d (%s) — "
-                        "held %.0f min (limit %d), LTP=%.2f < entry×1.05=%.2f",
-                        pos.id, pos.strategy_name, hold_mins, _hold_limit,
-                        ltp, (live_entry or 0) * 1.05,
-                    )
-                    exit_reason = "TIMEOUT"
-                    exit_price  = ltp
-                    await self._close_position(pos.id, exit_price, exit_reason)
-                    return
+    async def square_off_all(self, reason: str) -> dict:
+        """
+        Close every open position at the best available price (EOD and kill switch).
+        Positions closed on a stale/fallback price get reason "<reason>_STALE".
+        """
+        async with sessions()() as db:
+            result = await db.execute(
+                select(PaperPosition).where(PaperPosition.run_id == ctx().run_id,
+                                            PaperPosition.is_open == True)  # noqa: E712
+            )
+            open_positions = result.scalars().all()
+
+        closed, stale_ids, failed_ids = 0, [], []
+        for pos in open_positions:
+            try:
+                price, is_stale = await self._resolve_exit_price(pos)
+                if price is None:
+                    logger.error("[PaperEngine] %s: cannot close pos %d — no price", reason, pos.id)
+                    failed_ids.append(pos.id)
+                    continue
+                exit_reason = f"{reason}_STALE" if is_stale else reason
+                await self._close_position(pos.id, price, exit_reason)
+                closed += 1
+                if is_stale:
+                    stale_ids.append(pos.id)
+                self._forget(pos.id)
+            except Exception as exc:
+                logger.error("[PaperEngine] %s close error for pos %d: %s", reason, pos.id, exc)
+                failed_ids.append(pos.id)
+
+        logger.info(
+            "[PaperEngine] square_off_all(%s): closed=%d stale=%s failed=%s",
+            reason, closed, stale_ids, failed_ids,
+        )
+        return {"closed": closed, "stale": stale_ids, "failed": failed_ids}
+
+    async def _check_position(
+        self, pos: PaperPosition, now_ist: dtime, square_off: dtime = DEFAULT_SQUARE_OFF,
+    ):
+        """One monitor pass for one position, in the §8.2 order:
+          1. exits — EOD, SL (both allowed on a stale price, tagged _STALE), TARGET;
+          2. the partial exit (once, >= 2 lots; a single lot records the skip once);
+          3. trailing.next_stop on the post-partial position;
+          4. TIMEOUT from params().max_hold_minutes.
+        A stale price defers 2-4 and TARGET (R5.10, R14.3)."""
+        p = params()
+        ltp = await market().get_ltp(pos.token)
+        tick = None
+        try:
+            tick = await market().get_tick(pos.token)
+        except Exception:
+            tick = None
+        age = _tick_age_seconds(tick)
+        stale = not ltp or (age is not None and age > p.stale_tick_seconds)
+        in_session = is_market_hours(now_ist)
+
+        if not ltp:
+            # Never skip silently: warn, and still square off at EOD using the
+            # last known price instead of leaving the position open.
+            known = self._last_known.get(pos.id)
+            if in_session:
+                self._warn_price(
+                    pos.id, "[PaperEngine] No LTP for pos %d token %s; last known %s",
+                    pos.id, pos.token, f"{known[0]:.2f}" if known else "none",
+                )
+            if now_ist >= square_off:
+                price, _ = await self._resolve_exit_price(pos)
+                if price is not None:
+                    await self._close_position(pos.id, price, "EOD_STALE")
+                    self._forget(pos.id)
             return
 
-        await self._close_position(pos.id, exit_price, exit_reason)
+        if not stale:
+            await self._remember_price(pos.id, ltp)
+        elif in_session and now_ist < square_off:
+            self._warn_price(
+                pos.id,
+                "[PaperEngine] Stale price for pos %d token %s: tick %.0fs old "
+                "(> %ds) — only SL/EOD exits evaluated",
+                pos.id, pos.token, age or 0, p.stale_tick_seconds,
+            )
+
+        # Re-read the position: the monitor's snapshot may predate a trailing
+        # advance or the partial written on a previous tick.
+        async with sessions()() as _db:
+            fresh = (await _db.execute(
+                select(PaperPosition).where(PaperPosition.id == pos.id)
+            )).scalar_one_or_none()
+        if fresh is None or not fresh.is_open:
+            return
+        pos = fresh
+        live_sl: Optional[float] = pos.trailing_sl or pos.stop_loss
+        entry: float = pos.actual_entry or 0.0
+        sfx = "_STALE" if stale else ""
+
+        # ── 1. exits ─────────────────────────────────────────────────────────
+        if now_ist >= square_off:
+            await self._close_position(pos.id, ltp, "EOD" + sfx)
+            self._forget(pos.id)
+            return
+        if live_sl and ltp <= live_sl:
+            # fills.exit_fill applies the gap-through rule (min(base, ltp))
+            await self._close_position(pos.id, live_sl, "SL" + sfx)
+            self._forget(pos.id)
+            return
+        if stale:
+            # Never book a target, advance the stop, take the partial or time
+            # out on an old quote — wait for a fresh tick.
+            await self._stale_defer(pos, ltp, age)
+            return
+        if pos.target and ltp >= pos.target:
+            await self._close_position(pos.id, pos.target, "TARGET")
+            self._forget(pos.id)
+            return
+
+        # ── 2-3. partial, then the ladder on the post-partial position ───────
+        try:
+            progress = trailing.reward_progress(entry, pos.target, ltp)
+        except ValueError as exc:
+            logger.error("[PaperEngine] pos %d has no usable target (%s) — stop left at %s",
+                         pos.id, exc, live_sl)
+            await no_trade.record_degradation_once(
+                ctx().run_id, no_trade.ReasonCode.DATA_GAP, position_id=pos.id,
+                underlying=pos.underlying, reason=f"pos {pos.id}: {exc}",
+                context=no_trade.as_context(what="position_target", entry=entry,
+                                            target=pos.target),
+            )
+            progress = None
+
+        if progress is not None:
+            if (p.partial_exit_enabled and progress >= p.partial_exit_reward_frac
+                    and not pos.partial_closed and not pos.partial_skipped):
+                if (pos.lots or 0) >= 2:
+                    if await self._partial_close(pos, ltp, tick):
+                        pos.partial_closed = True
+                else:
+                    await self._skip_partial(pos, ltp)
+
+            res = trailing.next_stop(entry, pos.target, ltp, live_sl, p.trail_tiers)
+            if res is None:
+                logger.debug("pos %d: no stop advance at progress %.3f", pos.id, progress)
+            else:
+                new_sl, label = res
+                async with sessions()() as db:
+                    await db.execute(
+                        update(PaperPosition)
+                        .where(PaperPosition.id == pos.id)
+                        .values(stop_loss=new_sl, trailing_sl=new_sl)
+                    )
+                    db.add(PositionEvent(
+                        position_id=pos.id, run_id=ctx().run_id, event_type="TRAIL_ADVANCE",
+                        occurred_at=now_utc(), price=float(ltp), from_value=live_sl,
+                        to_value=new_sl, tier_label=label,
+                        detail={"progress": round(progress, 6)},
+                    ))
+                    await db.commit()
+                logger.debug("Trailing SL %s → %.2f (%s, progress=%.2f) for pos %d",
+                             live_sl, new_sl, label, progress, pos.id)
+
+        # ── 4. max-hold-time exit (params().max_hold_minutes, §8.3) ──────────
+        hold_limit = p.max_hold_minutes.get(pos.strategy_name, p.max_hold_minutes["DEFAULT"])
+        if pos.entry_time:
+            entry_utc = pos.entry_time
+            if entry_utc.tzinfo is None:
+                entry_utc = entry_utc.replace(tzinfo=timezone.utc)
+            hold_mins = (now_utc() - entry_utc).total_seconds() / 60
+            floor = entry * (1 + p.timeout_exit_min_gain_pct / 100)
+            if hold_mins > hold_limit and ltp < floor:
+                logger.info(
+                    "[PaperEngine] MAX-HOLD-TIME exit pos %d (%s) — held %.0f min "
+                    "(limit %d), LTP=%.2f < %.2f",
+                    pos.id, pos.strategy_name, hold_mins, hold_limit, ltp, floor,
+                )
+                await self._close_position(pos.id, ltp, "TIMEOUT")
+                self._forget(pos.id)
+
+    async def _stale_defer(self, pos: PaperPosition, ltp: float, age: Optional[float]) -> None:
+        """One STALE_DEFER position event per position per minute (ctx clock)."""
+        now = now_utc()
+        last = self._stale_deferred.get(pos.id)
+        if last is not None and (now - last).total_seconds() < STALE_DEFER_INTERVAL_SECS:
+            return
+        self._stale_deferred[pos.id] = now
+        async with sessions()() as db:
+            db.add(PositionEvent(
+                position_id=pos.id, run_id=ctx().run_id, event_type="STALE_DEFER",
+                occurred_at=now, price=float(ltp),
+                detail=no_trade.as_context(
+                    tick_age_s=age, target=pos.target,
+                    target_reached=bool(pos.target and ltp >= pos.target)),
+            ))
+            await db.commit()
+
+    async def _skip_partial(self, pos: PaperPosition, ltp: float) -> None:
+        """Single-lot position at the partial trigger: record it once (R5.6)."""
+        async with sessions()() as db:
+            upd = await db.execute(
+                update(PaperPosition)
+                .where(PaperPosition.id == pos.id, PaperPosition.partial_skipped == False)  # noqa: E712
+                .values(partial_skipped=True)
+            )
+            if upd.rowcount == 1:
+                db.add(PositionEvent(
+                    position_id=pos.id, run_id=ctx().run_id,
+                    event_type="PARTIAL_SKIPPED_SINGLE_LOT", occurred_at=now_utc(),
+                    price=float(ltp), detail={"lots": pos.lots},
+                ))
+            await db.commit()
+        pos.partial_skipped = True
 
     # ── Partial close ─────────────────────────────────────────────────────────
 
-    async def _partial_close(self, pos: PaperPosition, ltp: float):
+    async def _partial_close(self, pos: PaperPosition, ltp: float,
+                             tick: Optional[dict] = None) -> bool:
         """
-        Close 50% of lots at current LTP when position is up 35%.
-        Remaining lots continue with SL moved to breakeven (actual_entry).
+        Close partial_exit_fraction of the lots (at least one, never all) when
+        reward progress reaches partial_exit_reward_frac. Fires at most once:
+        the UPDATE is conditional on partial_closed = false, and rowcount 0
+        means another tick already did it (capital is then not released again).
 
-        Logic:
-          partial_qty  = floor(quantity / 2)  — at least lot_size
-          remain_qty   = quantity - partial_qty
-          partial_pnl  = (ltp - actual_entry) * partial_qty  (gross)
-          new SL       = actual_entry  (breakeven for the remainder)
+        The remainder's stop is NOT written here: _check_position runs
+        trailing.next_stop on the reduced position right after, so the stop is
+        the ladder's tier (LOCK_40 at the default 0.75 trigger). quantity and
+        lots shrink; original_quantity / original_lots, initial_stop_loss,
+        initial_risk and target are untouched.
+
+        Returns True when this call performed the partial.
         """
-        from app.services.trading.mode_manager import mode_manager
-
+        p = params()
         if not pos.actual_entry or not pos.lot_size:
-            return
+            return False
 
-        # Calculate partial qty — must be a whole number of lots
-        partial_lots = max(1, pos.lots // 2)
+        partial_lots = max(1, int(pos.lots * p.partial_exit_fraction))
+        if partial_lots >= pos.lots:
+            return False
         partial_qty  = partial_lots * pos.lot_size
         remain_qty   = pos.quantity - partial_qty
 
-        # If only 1 lot total, can't split — skip partial, let full close handle it
-        if remain_qty <= 0:
-            return
+        bid, ask, age = _quote(tick)
+        fill, _ = fills.exit_fill(ltp, ltp, bid, ask, age, "PARTIAL", p)
 
-        partial_gross = round((ltp - pos.actual_entry) * partial_qty, 2)
-        partial_brok  = round(BROKERAGE_PER_LOT * partial_lots, 2)
-        partial_net   = round(partial_gross - partial_brok, 2)
+        partial_gross = round((fill - pos.actual_entry) * partial_qty, 2)
+        partial_brok  = fills.brokerage(partial_lots, p)
+        # Statutory charges on both legs of the closed quantity (GST base =
+        # entry-leg + exit-leg brokerage of the closed lots)
+        partial_chg   = fills.statutory_charges(
+            pos.actual_entry * partial_qty, fill * partial_qty, 2 * partial_brok, p,
+        )
+        partial_net   = fills.net_pnl(partial_gross, partial_brok, partial_chg)
 
-        # Capital to release for the closed portion (proportional)
-        capital_fraction = (partial_qty / pos.quantity) if pos.quantity else 0.5
-        capital_released = round((pos.trade_amount_used or 0) * capital_fraction, 2)
+        # Capital released for the closed portion, against the ORIGINAL size
+        original_qty = pos.original_quantity or pos.quantity
+        capital_released = round((pos.trade_amount_used or 0) * partial_qty / original_qty, 2)
 
-        async with AsyncSessionLocal() as db:
-            await db.execute(
+        async with sessions()() as db:
+            upd = await db.execute(
                 update(PaperPosition)
-                .where(PaperPosition.id == pos.id)
+                .where(PaperPosition.id == pos.id, PaperPosition.partial_closed == False)  # noqa: E712
                 .values(
-                    # Mark partial close done
                     partial_closed      = True,
-                    partial_exit_price  = ltp,
+                    partial_exit_price  = fill,
                     partial_exit_qty    = partial_qty,
                     partial_pnl         = partial_net,
                     remaining_quantity  = remain_qty,
-                    # Reduce active quantity to remaining
                     quantity            = remain_qty,
                     lots                = pos.lots - partial_lots,
-                    # SL moves to breakeven for the remainder
-                    stop_loss           = pos.actual_entry,
-                    trailing_sl         = pos.actual_entry,
-                    # Accumulate partial P&L into gross_pnl for display
                     gross_pnl           = round((pos.gross_pnl or 0) + partial_gross, 2),
                     net_pnl             = round((pos.net_pnl or 0) + partial_net, 2),
                     brokerage           = round((pos.brokerage or 0) + partial_brok, 2),
-                    # Release proportional capital
+                    statutory_charges   = round((pos.statutory_charges or 0) + partial_chg, 2),
                     trade_amount_used   = round((pos.trade_amount_used or 0) - capital_released, 2),
                 )
             )
+            if upd.rowcount != 1:
+                await db.rollback()
+                logger.debug("[PaperEngine] pos %d partial already taken — skipping", pos.id)
+                return False
+            db.add(PositionEvent(
+                position_id=pos.id, run_id=ctx().run_id, event_type="PARTIAL_EXIT",
+                occurred_at=now_utc(), price=fill, from_value=float(pos.quantity),
+                to_value=float(remain_qty),
+                detail={"lots_closed": partial_lots, "pnl": partial_net,
+                        "capital_released": capital_released},
+            ))
             await db.commit()
 
-        # Release capital for the closed portion
-        await mode_manager.on_position_closed(capital_released)
+        pos.quantity, pos.lots = remain_qty, pos.lots - partial_lots
 
         logger.info(
-            "[PaperEngine] ⚡ PARTIAL CLOSE pos %d | "
-            "closed %d qty @ %.2f | partial_pnl=₹%.2f | "
-            "remain=%d qty | SL → breakeven %.2f",
-            pos.id, partial_qty, ltp, partial_net,
-            remain_qty, pos.actual_entry,
+            "[PaperEngine] ⚡ PARTIAL CLOSE pos %d | closed %d qty @ %.2f | "
+            "partial_pnl=₹%.2f | remain=%d qty",
+            pos.id, partial_qty, fill, partial_net, remain_qty,
         )
 
         # Notify frontend
-        await redis_cache.publish_signal("paper_trade", {
+        await market().publish_signal("paper_trade", {
             "event":        "PARTIAL_CLOSE",
             "pos_id":       pos.id,
             "partial_qty":  partial_qty,
-            "exit_price":   ltp,
+            "exit_price":   fill,
             "partial_pnl":  partial_net,
             "remain_qty":   remain_qty,
-            "new_sl":       pos.actual_entry,
+            "new_sl":       pos.stop_loss,
         })
+        return True
 
     # ── Full close ────────────────────────────────────────────────────────────
 
     async def _close_position(self, pos_id: int, exit_price: float, reason: str):
-        from app.services.trading.mode_manager import mode_manager
-
-        async with AsyncSessionLocal() as db:
+        """Final close. *exit_price* is the trigger (stop, target, or the price
+        the caller observed); the fill comes from fills.exit_fill with the tick
+        read here, so the observed LTP drives the gap-through rule and a
+        no-tick close is LAST_KNOWN."""
+        p = params()
+        async with sessions()() as db:
             result = await db.execute(
                 select(PaperPosition).where(PaperPosition.id == pos_id)
             )
             pos = result.scalar_one_or_none()
             if not pos or not pos.is_open:
                 return
+            # Detached: the guarded UPDATE below is the only write to this row,
+            # and a stats rollback cannot expire the values read here.
+            db.expunge(pos)
 
-            # Slippage on exit — extra on SL fills
-            exit_slip   = round(exit_price * 0.001, 2) if reason in {
-                "SL", "TARGET", "EOD", "TIMEOUT", "MANUAL"
-            } else 0.0
-            actual_exit = round(exit_price - exit_slip, 2)
+            tick = None
+            observed = None
+            try:
+                observed = await market().get_ltp(pos.token)
+                tick = await market().get_tick(pos.token)
+            except Exception:
+                tick = None
+            bid, ask, age = _quote(tick)
+            actual_exit, exit_source = fills.exit_fill(
+                exit_price, observed, bid, ask, age, reason, p)
+            exit_slip = round(exit_price - actual_exit, 2)
 
-            # Remaining-lot P&L (pos.quantity already reflects partial close reduction)
-            close_gross = round((actual_exit - pos.actual_entry) * pos.quantity, 2)
+            # Remaining-lot P&L (pos.quantity already reflects the partial)
+            close_qty = pos.quantity
+            close_gross = round((actual_exit - pos.actual_entry) * close_qty, 2)
 
-            # Brokerage for the remaining lots being closed NOW (not the full original)
-            # pos.brokerage already accumulated partial-close brokerage — add only the
-            # closing-leg cost for the remaining quantity.
-            remain_lots = (pos.quantity // pos.lot_size) if pos.lot_size else pos.lots
-            close_brok_now = round(BROKERAGE_PER_LOT * max(remain_lots, 1), 2)
+            # Brokerage for the lots closed NOW; pos.brokerage already holds the
+            # entry leg and any partial's exit leg.
+            remain_lots = (close_qty // pos.lot_size) if pos.lot_size else pos.lots
+            remain_lots = max(remain_lots or 0, 1)
+            close_brok_now = fills.brokerage(remain_lots, p)
             total_brok  = round((pos.brokerage or 0.0) + close_brok_now, 2)
+
+            # Statutory charges for the quantity closed now (both legs; GST base
+            # = entry-leg + exit-leg brokerage of these lots)
+            charges = fills.statutory_charges(
+                pos.actual_entry * close_qty, actual_exit * close_qty,
+                2 * close_brok_now, p,
+            )
+            total_charges = round((pos.statutory_charges or 0.0) + charges, 2)
 
             # Accumulate on top of any partial-close P&L already stored
             total_gross = round((pos.gross_pnl or 0) + close_gross, 2)
-            total_net   = round(total_gross - total_brok, 2)
+            total_net   = fills.net_pnl(total_gross, total_brok, total_charges)
 
-            await db.execute(
-                update(PaperPosition)
-                .where(PaperPosition.id == pos_id)
-                .values(
-                    is_open      = False,
-                    exit_price   = exit_price,
-                    exit_slippage= exit_slip,
-                    actual_exit  = actual_exit,
-                    exit_reason  = reason,
-                    exit_time    = datetime.now(timezone.utc),
-                    gross_pnl    = total_gross,
-                    brokerage    = total_brok,
-                    net_pnl      = total_net,
-                )
+            # Quantity-weighted exit across the partial and final legs, and R
+            # against the initial risk only (§8.4). Gross R is the glossary's
+            # R_Multiple; r_multiple_net subtracts costs per original unit.
+            original_qty = pos.original_quantity or (close_qty + (pos.partial_exit_qty or 0))
+            evw = ((pos.partial_exit_qty or 0) * (pos.partial_exit_price or 0.0)
+                   + close_qty * actual_exit) / original_qty
+            r_multiple = r_multiple_net = None
+            if pos.initial_stop_loss is not None and pos.initial_risk is not None \
+                    and pos.initial_risk > 0:
+                r_multiple = (evw - pos.actual_entry) / pos.initial_risk
+                cost_per_unit = (total_brok + total_charges) / original_qty
+                r_multiple_net = (evw - pos.actual_entry - cost_per_unit) / pos.initial_risk
+            exit_time = now_utc()
+            entry_utc = pos.entry_time
+            if entry_utc is not None and entry_utc.tzinfo is None:
+                entry_utc = entry_utc.replace(tzinfo=timezone.utc)
+            hold_minutes = ((exit_time - entry_utc).total_seconds() / 60
+                            if entry_utc is not None else None)
+
+            close_values = dict(
+                is_open      = False,
+                exit_price   = exit_price,
+                exit_slippage= exit_slip,
+                actual_exit  = actual_exit,
+                exit_reason  = reason,
+                exit_time    = exit_time,
+                gross_pnl    = total_gross,
+                brokerage    = total_brok,
+                statutory_charges = total_charges,
+                net_pnl      = total_net,
+                exit_fill_source    = exit_source,
+                exit_value_weighted = evw,
+                r_multiple          = r_multiple,
+                r_multiple_net      = r_multiple_net,
+                hold_minutes        = hold_minutes,
             )
-            await db.commit()
+            close_stmt = (update(PaperPosition)
+                          .where(PaperPosition.id == pos_id, PaperPosition.is_open == True)  # noqa: E712
+                          .values(**close_values))
+            # Conditional on is_open so two concurrent closers (monitor loop,
+            # EOD, kill switch) can never double-release capital.
+            upd = await db.execute(close_stmt)
+            if upd.rowcount != 1:
+                await db.rollback()
+                logger.info("[PaperEngine] pos %d already closed by another task — skipping", pos_id)
+                return
 
-        # total_net / total_gross computed inside the block — use them explicitly
-        # below so we never reference an uninitialised name after the block exits.
+            # One transaction: the close and its statistics (design §7). The
+            # final values are stamped on *pos* so the outcome reads them.
+            for k, v in close_values.items():
+                setattr(pos, k, v)
+            outcome = build_outcome(pos, run_id=ctx().run_id, trading_day=trading_day(),
+                                    params=p)
+            try:
+                await self._record_outcome(db, pos, outcome)
+                await db.commit()
+                stats_ok = True
+            except Exception as exc:
+                await db.rollback()
+                stats_ok = False
+                stats_error = exc
+
+        if not stats_ok:
+            # The position is never left open because of a statistics failure:
+            # close-only retry, then a visible degradation row. reconcile_performance
+            # rebuilds the aggregates from paper_positions.
+            async with sessions()() as db2:
+                upd = await db2.execute(close_stmt)
+                await db2.commit()
+            logger.error(
+                "[PaperEngine] stats write failed for pos %d — closed without stats, "
+                "run reconcile_performance to backfill: %s", pos_id, stats_error,
+                exc_info=stats_error,
+            )
+            await no_trade.record_degradation(
+                ctx().run_id, no_trade.ReasonCode.PERF_WRITE_FAILED, position_id=pos_id,
+                underlying=pos.underlying,
+                reason=f"stats write failed for pos {pos_id}: "
+                       f"{type(stats_error).__name__}: {stats_error}",
+                context=no_trade.as_context(strategy_name=pos.strategy_name,
+                                            regime=pos.entry_regime),
+            )
+            if upd.rowcount != 1:
+                logger.info("[PaperEngine] pos %d already closed by another task — skipping", pos_id)
+                return
+
         logger.info(
-            "[PaperEngine] 🔒 CLOSED pos %d | %s | exit=%.2f PnL=₹%.2f",
-            pos_id, reason, exit_price, total_net
+            "[PaperEngine] 🔒 CLOSED pos %d | %s | exit=%.2f (%s) PnL=₹%.2f R=%s",
+            pos_id, reason, actual_exit, exit_source, total_net,
+            f"{r_multiple:.3f}" if r_multiple is not None else "n/a",
         )
 
-        # Release locked capital.
-        # IMPORTANT: re-read trade_amount_used from the DB record we just
-        # fetched above — do NOT use pos.trade_amount_used from the in-memory
-        # snapshot passed into this method.  After a partial close the DB row
-        # already has the reduced value (proportional capital was released then),
-        # but the stale pos object still carries the original full amount, which
-        # would cause a double-release and push used_capital negative.
-        capital_to_release = pos.trade_amount_used or 0
-        await mode_manager.on_position_closed(capital_to_release)
+        # An exit not filled off a valid bid (other than a TARGET limit) is a recorded
+        # fallback (§12); exits are never refused, so this is the visible cost.
+        if exit_source == "LAST_KNOWN" or (exit_source == "TRIGGER_SLIPPED" and reason != "TARGET"):
+            await no_trade.record_degradation(
+                ctx().run_id, no_trade.ReasonCode.FALLBACK_FILL, position_id=pos_id,
+                underlying=pos.underlying,
+                reason=f"exit ({reason}) filled at {exit_source} (no valid quote)",
+                context=no_trade.as_context(leg="EXIT", source=exit_source, reason=reason))
 
-        # Stamp the fully-accumulated P&L onto the in-memory pos object so that
-        # _update_daily_pnl receives the correct total (pos.gross_pnl is still
-        # the pre-close snapshot from the DB fetch above).
-        pos.gross_pnl = total_gross
-        pos.net_pnl   = total_net
-
-        # Update daily P&L
-        await self._update_daily_pnl(pos, total_net)
-
-        # ── Record regime performance ─────────────────────────────────────────────
-        if getattr(pos, 'entry_regime', None):
-            try:
-                trade_rr_for_regime = None
-                if (pos.actual_entry and actual_exit and pos.stop_loss
-                        and pos.actual_entry > pos.stop_loss):
-                    risk = pos.actual_entry - pos.stop_loss
-                    reward = actual_exit - pos.actual_entry
-                    if risk > 0:
-                        trade_rr_for_regime = round(reward / risk, 3)
-                await strategy_orchestrator.record_trade_result(
-                    regime=pos.entry_regime,
-                    underlying=pos.underlying,
-                    strategy_name=pos.strategy_name or "UNKNOWN",
-                    pnl=total_net,
-                    rr=trade_rr_for_regime or 0.0,
-                )
-            except Exception as _rpe:
-                logger.warning("[PaperEngine] Regime performance record failed (non-fatal): %s", _rpe)
+        # Nothing to release: the row just left open_capital_used's sum (is_open = false).
 
         # Cleanup Redis
-        await redis_cache.delete(f"pos:{pos_id}")
+        await market().delete(f"pos:{pos_id}")
 
         # Notify frontend
-        await redis_cache.publish_signal("paper_trade", {
+        await market().publish_signal("paper_trade", {
             "event":   "POSITION_CLOSED",
             "pos_id":  pos_id,
             "reason":  reason,
@@ -695,94 +1080,78 @@ class PaperEngine:
             "exit":    exit_price,
         })
 
-    # ── Daily P&L aggregation ─────────────────────────────────────────────────
+    # ── Performance aggregates (design §7) ────────────────────────────────────
 
-    async def _update_daily_pnl(self, pos: PaperPosition, net_pnl: float):
-        today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+    async def _record_outcome(self, db: AsyncSession, pos: PaperPosition,
+                              outcome: TradeOutcome) -> None:
+        """regime_performance + strategy_perf + daily_pnl_summary, all on the
+        close's session. Any failure propagates to _close_position."""
+        from app.services.trading.mode_manager import mode_manager
 
-        # ── Compute avg_rr for this trade ──────────────────────────────────────
-        # Achieved R:R = (actual_exit - actual_entry) / (actual_entry - stop_loss)
-        # Use the original stop_loss (not trailing) for a fair R:R measurement.
-        # Falls back to None if we can't compute it (e.g. stop_loss not set).
-        trade_rr: float | None = None
-        if (pos.actual_entry and pos.actual_exit and pos.stop_loss
-                and pos.actual_entry > pos.stop_loss):
-            risk   = pos.actual_entry - pos.stop_loss
-            reward = pos.actual_exit  - pos.actual_entry
-            if risk > 0:
-                trade_rr = round(reward / risk, 3)
-
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(DailyPnLSummary).where(
-                    DailyPnLSummary.date          == today,
-                    DailyPnLSummary.strategy_name == pos.strategy_name,
-                    DailyPnLSummary.mode          == pos.mode,
-                )
+        if outcome.entry_regime:
+            await strategy_orchestrator.record_trade_result(
+                db,
+                regime=outcome.entry_regime,
+                underlying=outcome.underlying,
+                strategy_name=outcome.strategy_name,
+                outcome=outcome,
             )
-            summary = result.scalar_one_or_none()
-            won = net_pnl > 0
+        await mode_manager.update_strategy_perf(db, outcome.strategy_name, outcome)
+        await self._update_daily_pnl(db, pos, outcome)
 
-            # ── max_drawdown: largest single-trade loss for this strategy today ──
-            # Defined as the most negative net_pnl among all closed trades today.
-            # A positive number means "₹X was the worst loss" (stored as positive).
-            new_max_drawdown: float | None = None
-            if net_pnl < 0:
-                prev_dd = summary.max_drawdown if summary and summary.max_drawdown else 0.0
-                new_max_drawdown = round(max(prev_dd, abs(net_pnl)), 2)
-            elif summary:
-                new_max_drawdown = summary.max_drawdown  # keep existing
+    async def _update_daily_pnl(self, db: AsyncSession, pos: PaperPosition,
+                                outcome: TradeOutcome) -> None:
+        """Per strategy, trading day and mode (R4.4): exact sums of the four
+        P&L components (so gross − brokerage − charges == net holds on the
+        summary, R14.5), the R buckets, worst_trade_loss, and the day's
+        peak-to-trough max_equity_drawdown over this strategy's closes."""
+        from app.services.trading.session_times import trading_day_bounds_utc
+        from app.services.trading.trade_outcome import accumulate
 
-            # ── avg_rr: running mean of achieved R:R across all trades today ─────
-            new_avg_rr: float | None = None
-            if trade_rr is not None and summary and summary.total_trades > 0:
-                # Incremental mean: new_avg = (prev_avg * n + new_val) / (n + 1)
-                prev_avg = summary.avg_rr or 0.0
-                prev_n   = summary.total_trades   # count BEFORE this trade
-                new_avg_rr = round((prev_avg * prev_n + trade_rr) / (prev_n + 1), 3)
-            elif trade_rr is not None:
-                new_avg_rr = trade_rr  # first trade for this strategy today
+        today = outcome.trading_day
+        run_id = outcome.run_id
+        summary = (await db.execute(
+            select(DailyPnLSummary).where(
+                DailyPnLSummary.date          == today,
+                DailyPnLSummary.strategy_name == outcome.strategy_name,
+                DailyPnLSummary.mode          == pos.mode,
+                DailyPnLSummary.run_id        == run_id,
+            )
+        )).scalar_one_or_none()
+        if summary is None:
+            summary = DailyPnLSummary(run_id=run_id, date=today,
+                                      strategy_name=outcome.strategy_name, mode=pos.mode)
+            db.add(summary)
 
-            if summary:
-                summary.total_trades   += 1
-                summary.winning_trades += int(won)
-                summary.losing_trades  += int(not won)
-                summary.net_pnl    = round(summary.net_pnl   + net_pnl, 2)
-                summary.gross_pnl  = round(summary.gross_pnl + (pos.gross_pnl or 0), 2)
-                summary.brokerage  = round(summary.brokerage  + (pos.brokerage or 0), 2)
-                summary.win_rate   = round(
-                    summary.winning_trades / summary.total_trades * 100, 1
-                )
-                summary.total_lots    = (summary.total_lots or 0) + pos.lots
-                summary.max_drawdown  = new_max_drawdown
-                summary.avg_rr        = new_avg_rr
-            else:
-                summary = DailyPnLSummary(
-                    date           = today,
-                    strategy_name  = pos.strategy_name or "UNKNOWN",
-                    mode           = pos.mode,
-                    total_trades   = 1,
-                    winning_trades = int(won),
-                    losing_trades  = int(not won),
-                    win_rate       = 100.0 if won else 0.0,
-                    gross_pnl      = round(pos.gross_pnl or 0, 2),
-                    brokerage      = round(pos.brokerage or 0, 2),
-                    net_pnl        = round(net_pnl, 2),
-                    total_lots     = pos.lots,
-                    max_drawdown   = new_max_drawdown,
-                    avg_rr         = new_avg_rr,
-                )
-                db.add(summary)
-            await db.commit()
+        accumulate(summary, outcome)
+        summary.gross_pnl = float(summary.gross_pnl or 0.0) + outcome.gross_pnl
+        summary.brokerage = float(summary.brokerage or 0.0) + outcome.brokerage
+        summary.statutory_charges = float(summary.statutory_charges or 0.0) + outcome.statutory_charges
+        summary.net_pnl = float(summary.net_pnl or 0.0) + outcome.net_pnl
+        summary.total_lots = (summary.total_lots or 0) + outcome.lots
+        summary.avg_rr = summary.expectancy_r
+        if outcome.net_pnl < 0:
+            summary.worst_trade_loss = max(float(summary.worst_trade_loss or 0.0), -outcome.net_pnl)
 
-        # ── Update all-time StrategyPerf for half-Kelly sizing ────────────────
-        # This is fire-and-forget — a failure here must never break P&L recording.
-        from app.services.trading.mode_manager import mode_manager as _mm
-        await _mm.update_strategy_perf(
-            strategy_name = pos.strategy_name or "UNKNOWN",
-            won           = won,
-            achieved_rr   = trade_rr,
-        )
+        # Peak-to-trough of the day's cumulative net for this strategy. The
+        # close above is flushed in this transaction, so it is included.
+        start, end = trading_day_bounds_utc(today)
+        nets = (await db.execute(
+            select(PaperPosition.net_pnl)
+            .where(PaperPosition.run_id == run_id,
+                   PaperPosition.strategy_name == outcome.strategy_name,
+                   PaperPosition.mode == pos.mode,
+                   PaperPosition.is_open == False,  # noqa: E712
+                   PaperPosition.exit_time >= start, PaperPosition.exit_time < end)
+            .order_by(PaperPosition.exit_time, PaperPosition.id)
+        )).scalars().all()
+        cum = peak = dd = 0.0
+        for n in nets:
+            cum += float(n or 0.0)
+            peak = max(peak, cum)
+            dd = max(dd, peak - cum)
+        summary.max_equity_drawdown = dd
+        await db.flush()
 
     # ── Signal persistence ────────────────────────────────────────────────────
 
@@ -796,7 +1165,13 @@ class PaperEngine:
         rr:       Optional[float] = None,
         reason:   str = "",
         db:       Optional[AsyncSession] = None,
+        no_trade_decision_id: Optional[int] = None,
+        commit: bool = True,
+        selection=None,
     ) -> Optional[int]:
+        """Persist one StrategySignal. ``commit=False`` flushes on *db* and leaves
+        the commit to the caller, so the entry section can keep the signal row and
+        the position row in one transaction under the advisory lock."""
         from app.services.trading.mode_manager import mode_manager
         cfg  = await mode_manager.get_config()
         mode = TradingMode(cfg.mode) if cfg else TradingMode.PAPER
@@ -818,19 +1193,29 @@ class PaperEngine:
             risk_reward      = rr,
             indicators       = signal.indicators,
             mode             = mode,
-            skip_reason      = reason[:300] if reason else None,
+            skip_reason      = reason[:300] if reason else None,   # untruncated copy: no_trade_decisions
+            no_trade_decision_id = no_trade_decision_id,
+            run_id           = ctx().run_id,
         )
+        if selection is not None:
+            sig.expiry_band = selection.expiry.band
+            sig.expiry_reason = (selection.expiry.reason or "")[:200]
+            sig.selection_rejections = dict(selection.rejections)
+            sig.score_breakdown = selection.score_table
 
         async def _publish_recorded(channel: str, payload: dict) -> None:
             try:
-                await redis_cache.publish_signal(channel, payload)
+                await market().publish_signal(channel, payload)
             except Exception as exc:        # observability must never break persistence
                 logger.debug("Signal publish failed (non-fatal): %s", exc)
 
         async def _persist(session: AsyncSession) -> int:
             session.add(sig)
-            await session.commit()
-            await session.refresh(sig)
+            if commit:
+                await session.commit()
+                await session.refresh(sig)
+            else:
+                await session.flush()
             payload = {                     # built before scheduling — never touches an expired instance
                 "event":       "SIGNAL_RECORDED",
                 "signal_id":   sig.id,
@@ -849,20 +1234,20 @@ class PaperEngine:
 
         if db:
             return await _persist(db)
-        async with AsyncSessionLocal() as session:
+        async with sessions()() as session:
             return await _persist(session)
 
     # ── Manual close ──────────────────────────────────────────────────────────
 
     async def manual_close(self, pos_id: int) -> bool:
-        async with AsyncSessionLocal() as db:
+        async with sessions()() as db:
             result = await db.execute(
                 select(PaperPosition).where(PaperPosition.id == pos_id)
             )
             pos = result.scalar_one_or_none()
             if not pos or not pos.is_open:
                 return False
-        ltp = await redis_cache.get_ltp(pos.token) or pos.entry_price
+        ltp = await market().get_ltp(pos.token) or pos.entry_price
         await self._close_position(pos_id, ltp, "MANUAL")
         return True
 
@@ -870,10 +1255,8 @@ class PaperEngine:
 # ── IST time helper ───────────────────────────────────────────────────────────
 
 def _ist_time() -> dtime:
-    """Return current IST time (UTC+5:30)."""
-    from datetime import timezone, timedelta
-    ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-    return ist.time().replace(tzinfo=None)
+    """Current IST wall time from the ctx clock (naive)."""
+    return now_ist().time().replace(tzinfo=None)
 
 
 # Singleton

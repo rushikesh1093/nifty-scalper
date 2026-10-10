@@ -9,11 +9,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.db.base import AsyncSessionLocal
+from app.runtime.context import bind
+from app.runtime.live import live_context
+from app.runtime.middleware import RuntimeContextMiddleware
 from app.services.cache.redis_client import redis_cache
+from app.services.trading.startup_checks import (
+    StartupAssertionError, assert_paper_mode, run_startup_checks,
+)
 from app.services.market_data.market_manager import market_manager
 from app.api.routes import auth, market, instruments, trading
 from app.api.routes.report import router as report_router
 from app.api.routes.regime import router as regime_router
+from app.api.routes.analytics import router as analytics_router
 
 setup_logging("DEBUG" if settings.DEBUG else "INFO")
 logger = logging.getLogger(__name__)
@@ -22,30 +30,84 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
+    # Order is fixed by design §6.6. Nothing above the narrowed loop-start
+    # `try` may sit inside a handler that catches Exception: the paper guard
+    # must be able to stop the process (tests/test_lifespan_guard.py).
     logger.info("Starting %s...", settings.APP_NAME)
+
+    from app.services.trading.strategy_runner import strategy_runner
+    from app.services.market_data.study_collector import study_collector
+    from app.services.trading.mode_manager import mode_manager
 
     # Connect Redis
     await redis_cache.connect()
 
-    # Start market data pipeline (login → instrument sync → feed)
+    try:
+        # 1. Paper preflight: raw-scalar read, BEFORE any ORM hydration of trading_config
+        v = await assert_paper_mode(AsyncSessionLocal, allow_absent=True)
+        if v:
+            raise StartupAssertionError(v)
+        cfg_row = await mode_manager.ensure_config(session_factory=AsyncSessionLocal)  # creates the row if absent
+        await mode_manager.reconcile_used_capital(session_factory=AsyncSessionLocal)
+        live = live_context(cfg_row, AsyncSessionLocal)   # builds RunConfig incl. mode
+        bind(live)                                     # for tasks created below IN THIS TASK (loops, feed)
+        await run_startup_checks(require_config_row=True)   # raises on violation
+        app.state.runtime_context = live               # for request tasks, which do NOT inherit the
+                                                       # lifespan task's context (R5 finding 1); set only
+                                                       # after every check has passed
+    except StartupAssertionError:
+        logger.critical("Startup assertions failed -- refusing to start")  # violations already logged at ERROR
+        await redis_cache.disconnect()
+        raise                                           # propagates out of lifespan -> uvicorn exits non-zero
+    except Exception as exc:                            # DB unreachable, etc.
+        await redis_cache.disconnect()
+        raise StartupAssertionError([f"startup could not prove paper mode: {exc!r}"]) from exc
+
+    # 2. Market data: only after the guard has passed (login → instrument sync → feed)
     market_started = False
     try:
         await market_manager.startup()
         market_started = True
-    except Exception as exc:
+        try:                                            # logging only: never blocks startup
+            from app.services.trading.option_selector import option_selector
+            async with AsyncSessionLocal() as _db:
+                await option_selector.log_startup_summary(_db)
+        except Exception as exc:
+            logger.warning("Option-selector startup summary unavailable: %s", exc)
+    except Exception as exc:                            # unchanged tolerance: app may run feedless
         logger.error("MarketManager startup error: %s", exc, exc_info=True)
         logger.warning(
             "⚠️  App started WITHOUT live market feed. "
             "Check AngelOne credentials and Redis/Postgres connectivity."
         )
 
-    # Start strategy runner + study collector
-    from app.services.trading.strategy_runner import strategy_runner
-    from app.services.market_data.study_collector import study_collector
-    from app.services.trading.mode_manager import mode_manager
+    # 2b. Capital sufficiency: WARNING only (blockers-plan item 6), never blocks startup
     try:
-        await mode_manager.ensure_config()
-        await mode_manager.reconcile_used_capital()
+        from app.runtime.context import ctx, params
+        from app.services.trading.capital_check import (
+            REFERENCE_LOT_SIZE, capital_sufficiency_warnings,
+        )
+        lot_sizes: dict = {}
+        lot_source: dict = {}
+        async with AsyncSessionLocal() as _db:
+            for _und, _ref_lot in REFERENCE_LOT_SIZE.items():
+                _lot = None
+                try:
+                    _rows = await ctx().instruments.instruments_for(_db, _und)
+                    _lot = next((r.lot_size for r in _rows if r.lot_size), None)
+                except Exception as exc:
+                    logger.debug("capital check: %s lot size unavailable: %s", _und, exc)
+                    await _db.rollback()
+                lot_sizes[_und] = _lot or _ref_lot
+                lot_source[_und] = "instruments" if _lot else "reference"
+        for _w in capital_sufficiency_warnings(ctx().cfg.capital, params(), lot_sizes,
+                                               lot_source=lot_source):
+            logger.warning("Capital check: %s", _w)
+    except Exception as exc:
+        logger.warning("capital check unavailable: %s", exc)
+
+    # 3. Loops: the ONLY tolerant block left
+    try:
         await strategy_runner.start()
         await study_collector.start()
     except Exception as exc:
@@ -68,6 +130,14 @@ async def lifespan(app: FastAPI):
 
     import asyncio as _asyncio
     _token_refresh_task = _asyncio.create_task(_token_refresh_loop())
+
+    # ── Admin key posture (design §17.4, §20.1) ───────────────────────────────
+    from app.api.guards import ADMIN_ONLY_ENDPOINTS, admin_key_configured
+    if not admin_key_configured():
+        logger.warning(
+            "ADMIN_API_KEY is not set: %s return 503 until it is. Engaging a halt "
+            "(POST /api/v1/trading/halt) still works; releasing one needs a restart "
+            "with a key.", ", ".join(ADMIN_ONLY_ENDPOINTS))
 
     # ── Study-phase gate warning ──────────────────────────────────────────────
     try:
@@ -100,6 +170,7 @@ async def lifespan(app: FastAPI):
     await study_collector.stop()
     await market_manager.shutdown()
     await redis_cache.disconnect()
+    app.state.runtime_context = None    # nothing may run against a shut-down context
 
 
 app = FastAPI(
@@ -119,6 +190,10 @@ _LOCALHOST_ORIGINS = [
     f"http://127.0.0.1:{p}" for p in range(3000, 3011)
 ]
 
+# Registered BEFORE CORS: Starlette makes the last-added middleware outermost,
+# so CORS wraps this one and its 503 still carries CORS headers (design §6.6).
+app.add_middleware(RuntimeContextMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_LOCALHOST_ORIGINS,
@@ -134,6 +209,7 @@ app.include_router(instruments.router, prefix="/api/v1")
 app.include_router(trading.router,     prefix="/api/v1")
 app.include_router(report_router,      prefix="/api/v1")
 app.include_router(regime_router,      prefix="/api/v1/regime")
+app.include_router(analytics_router,   prefix="/api/v1")
 
 
 @app.get("/")

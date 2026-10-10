@@ -707,4 +707,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from app.runtime.context import using
+    from app.runtime.live import script_context
+    with using(script_context()):          # strategies read the ctx clock (design §14.2)
+        asyncio.run(main())

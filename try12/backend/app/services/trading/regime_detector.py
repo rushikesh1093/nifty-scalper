@@ -21,6 +21,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.services.trading.regime_indicators import (
     RegimeIndicators,
     build_regime_indicators,
@@ -32,11 +34,21 @@ from app.services.trading.regime_persistence import (
 )
 from app.services.trading.regime_rules import classify_regime
 from app.services.trading.regime_config import RegimeConfig, reload_config_if_stale
+from app.runtime.context import ctx, now_utc
 
 logger = logging.getLogger(__name__)
 
 # How often to emit a DEBUG heartbeat log when regime is unchanged (Req 15.6)
 _LOG_INTERVAL = timedelta(minutes=5)
+
+# Design §5: the transition cooldown is bounded so the retained history always
+# holds at least two non-transition entries after a full cooldown.
+# TradingParams.validate() enforces both bounds (§6.3 check 6).
+TRANSITION_COOLDOWN_CANDLES_MAX = 8
+
+
+def _history_len(cooldown: int) -> int:
+    return max(5, cooldown + 2)
 
 
 class RegimeDetector:
@@ -57,7 +69,7 @@ class RegimeDetector:
             "GLOBAL", db_session=None
         )
 
-        # In-memory regime history: underlying → last 5 RegimeState objects
+        # In-memory regime history: underlying → last _history_len(cooldown) states
         self._regime_history: dict[str, list[RegimeState]] = {}
 
         # Tracks the last time we emitted a "regime unchanged" heartbeat log
@@ -98,18 +110,23 @@ class RegimeDetector:
             RegimeState — never raises.
         """
         try:
-            # Step 1: Reload config (TTL cache, per-underlying override)
-            config: RegimeConfig = reload_config_if_stale(
-                underlying, db_session=db_session
-            )
+            # Step 1: Per-underlying config through the RegimeConfigPort
+            # (live: the TTL cache + loader; replay: the run's frozen config).
+            config: RegimeConfig = ctx().regime_config.for_underlying(underlying)
 
             # Step 2: Build regime-specific indicators
             regime_indicators: RegimeIndicators = build_regime_indicators(
                 candles, indicators, config
             )
 
-            # Step 3: Get previous state from in-memory history
-            history: list[RegimeState] = self._regime_history.get(underlying, [])
+            # Step 3: Previous states. After a restart the in-memory history is
+            # empty, so rehydrate once from Redis; load_regime_history drops
+            # every state from another trading day (§5).
+            if underlying not in self._regime_history:
+                self._regime_history[underlying] = (
+                    await self._persistence.load_regime_history(underlying)
+                )[-_history_len(config.TRANSITION_COOLDOWN_CANDLES):]
+            history: list[RegimeState] = list(self._regime_history[underlying])
             previous_regime: Optional[str] = (
                 history[-1].regime if history else None
             )
@@ -167,7 +184,7 @@ class RegimeDetector:
                     transition_cooldown_remaining = 0
 
             # Step 5: Build RegimeState
-            now = datetime.now(timezone.utc)
+            now = now_utc()
             state = RegimeState(
                 regime=regime,
                 underlying=underlying,
@@ -177,10 +194,10 @@ class RegimeDetector:
                 transition_cooldown_remaining=transition_cooldown_remaining,
             )
 
-            # Step 6: Update in-memory history (keep last 5)
+            # Step 6: Update in-memory history. It must outlast a full cooldown
+            # so at least two stable entries survive it (§5, R2 finding 9).
             history.append(state)
-            if len(history) > 5:
-                history = history[-5:]
+            history = history[-_history_len(config.TRANSITION_COOLDOWN_CANDLES):]
             self._regime_history[underlying] = history
 
             # Step 7: Logging (Req 15.1, 15.6)
@@ -197,9 +214,11 @@ class RegimeDetector:
             return state
 
         except Exception as exc:
+            # The history is NOT appended on this path, so a failure cannot
+            # manufacture a phantom flip on the next candle (§5).
             logger.error(
                 "[RegimeDetector] Unhandled exception for underlying=%s: %s — "
-                "returning UNKNOWN fallback",
+                "returning DETECTOR_ERROR fallback",
                 underlying, exc, exc_info=True,
             )
             return self._fallback_regime(underlying)
@@ -208,33 +227,20 @@ class RegimeDetector:
 
     @staticmethod
     def check_regime_transition(
-        current_regime: str,
-        regime_history: list[RegimeState],
-        transition_window: int = 2,
+        candidate: str,
+        history: list[RegimeState],
+        window: int = 2,
     ) -> bool:
+        """True iff *candidate* differs from the most recent NON-transition regime.
+
+        ``window`` is retained for config compatibility and is unused: a flip
+        is a flip the moment it differs from the last stable regime. Returns
+        False when no stable regime exists yet (first candles of a session).
+        The detector's own REGIME_TRANSITION entries are ignored, which is what
+        stops a single flip from re-arming the cooldown (bug 1).
         """
-        Return True if any of the last ``transition_window`` states in history
-        differs from ``current_regime``.
-
-        Returns False when history has fewer than ``transition_window`` entries
-        (not enough data to declare instability).
-
-        Args:
-            current_regime:    The newly classified regime name.
-            regime_history:    Ordered list of past RegimeState objects (newest last).
-            transition_window: How many recent states to inspect (default 2).
-
-        Returns:
-            True if a transition is detected, False otherwise.
-        """
-        if len(regime_history) < transition_window:
-            return False
-
-        for state in regime_history[-transition_window:]:
-            if state.regime != current_regime:
-                return True
-
-        return False
+        stable = [s.regime for s in history if s.regime != "REGIME_TRANSITION"]
+        return bool(stable) and candidate != stable[-1]
 
     # ── Query helpers ─────────────────────────────────────────────────────────
 
@@ -279,15 +285,11 @@ class RegimeDetector:
 
     def _fallback_regime(self, underlying: str) -> RegimeState:
         """
-        Build and return a safe UNKNOWN RegimeState with all indicators zeroed.
+        Build and return a DETECTOR_ERROR RegimeState with all indicators
+        zeroed and no cooldown. DETECTOR_ERROR is a no-trade regime (D7): a
+        detector that cannot classify the tape does not trade it.
 
         Used as the error-path return value from ``detect_regime()``.
-
-        Args:
-            underlying: Instrument name.
-
-        Returns:
-            RegimeState with regime="UNKNOWN".
         """
         zeroed_indicators = RegimeIndicators(
             adx=None,
@@ -304,9 +306,9 @@ class RegimeDetector:
             pdl=None,
         )
         return RegimeState(
-            regime="UNKNOWN",
+            regime="DETECTOR_ERROR",
             underlying=underlying,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=now_utc(),
             indicators=zeroed_indicators,
             previous_regime=None,
             transition_cooldown_remaining=0,

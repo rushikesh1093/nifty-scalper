@@ -3,7 +3,8 @@ Regime rules and classification logic.
 
 Provides:
   RegimeRule       — NamedTuple defining strategy/direction/sizing per regime.
-  REGIME_RULES     — Dict mapping all 11 regime names to their RegimeRule.
+  REGIME_RULES     — Dict mapping all 13 regime names to their RegimeRule (§6.2).
+  NEVER_ENABLED, POSITION_MULTIPLIERS — the declared sets startup checks 3-4 assert.
   get_regime_rule  — Retrieve a rule with dynamic ATR-based size adjustment.
   classify_regime  — Classify the current regime using a strict 9-priority order.
 """
@@ -11,6 +12,8 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, NamedTuple, Optional
+
+from app.strategies.names import StrategyName as S
 
 if TYPE_CHECKING:
     from app.services.trading.regime_indicators import RegimeIndicators
@@ -45,83 +48,98 @@ class RegimeRule(NamedTuple):
     notes: str
 
 
-# ── REGIME_RULES ──────────────────────────────────────────────────────────────
+# ── REGIME_RULES (design §6.2) ───────────────────────────────────────────────
+# 13 keys: 7 tradeable regimes, 5 no-trade regimes and the legacy UNKNOWN
+# alias. Every one of the 12 strategies is enabled somewhere (NEVER_ENABLED is
+# empty) and every multiplier is in POSITION_MULTIPLIERS. Startup checks 2-5
+# assert all of that (app/services/trading/startup_checks.py).
+
+_BUY = frozenset({"BUY"})
+_SELL = frozenset({"SELL"})
+_BOTH = frozenset({"BUY", "SELL"})
+_NONE: frozenset = frozenset()
+
+_TREND = frozenset({S.VWAP_PULLBACK.value, S.EMA_VWAP.value, S.SUPERTREND_VWAP.value,
+                    S.CPR_VWAP.value, S.OI_SPIKE.value})
+_BREAKOUT = frozenset({S.ORB_VWAP.value, S.PDH_PDL.value, S.BOLLINGER_BREAKOUT.value,
+                       S.OI_SPIKE.value, S.IV_CRUSH.value})
 
 REGIME_RULES: dict[str, RegimeRule] = {
     # ── Trend regimes ────────────────────────────────────────────────────────
     "BULL_TREND_NORMAL_VOL": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_PULLBACK"}),
-        allowed_directions=frozenset({"BUY"}),
-        position_multiplier=1.0,
-        notes="Confirmed uptrend with normal volatility — CE trades only",
+        enabled_strategies=_TREND, allowed_directions=_BUY, position_multiplier=1.0,
+        notes="Directional continuation with tradeable volatility — pullback and "
+              "trend-confirmation edges, CE only",
     ),
     "BEAR_TREND_NORMAL_VOL": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_PULLBACK"}),
-        allowed_directions=frozenset({"SELL"}),
-        position_multiplier=1.0,
-        notes="Confirmed downtrend with normal volatility — PE trades only",
+        enabled_strategies=_TREND, allowed_directions=_SELL, position_multiplier=1.0,
+        notes="Mirror of BULL_TREND_NORMAL_VOL — PE only",
     ),
     "TREND_HIGH_VOL": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_PULLBACK"}),
-        # Both directions allowed; filtered at signal time by price vs VWAP
-        allowed_directions=frozenset({"BUY", "SELL"}),
-        position_multiplier=0.5,
-        notes="Trending but elevated volatility — reduced position sizing",
+        enabled_strategies=frozenset({S.VWAP_PULLBACK.value, S.SUPERTREND_VWAP.value,
+                                      S.IV_CRUSH.value}),
+        # Both directions here; should_allow_signal narrows by price vs VWAP
+        allowed_directions=_BOTH, position_multiplier=0.5,
+        notes="Trend intact but ATR elevated: the two widest-stop trend entries plus "
+              "the IV-expansion edge, half size",
     ),
     # ── Breakout regimes ─────────────────────────────────────────────────────
     "BREAKOUT_EVENT_BULLISH": RegimeRule(
-        enabled_strategies=frozenset({"ORB_VWAP"}),
-        allowed_directions=frozenset({"BUY"}),
-        # Adjusted to 0.5 dynamically when ATR_percentile > 70
-        position_multiplier=1.0,
-        notes="Volume-confirmed bullish breakout",
+        enabled_strategies=_BREAKOUT, allowed_directions=_BUY,
+        position_multiplier=1.0,          # 0.5 when ATR_percentile > 70 (get_regime_rule)
+        notes="Level broken on volume — range/level breakout edges",
     ),
     "BREAKOUT_EVENT_BEARISH": RegimeRule(
-        enabled_strategies=frozenset({"ORB_VWAP"}),
-        allowed_directions=frozenset({"SELL"}),
-        # Adjusted to 0.5 dynamically when ATR_percentile > 70
-        position_multiplier=1.0,
-        notes="Volume-confirmed bearish breakout",
+        enabled_strategies=_BREAKOUT, allowed_directions=_SELL,
+        position_multiplier=1.0,          # 0.5 when ATR_percentile > 70 (get_regime_rule)
+        notes="Mirror of BREAKOUT_EVENT_BULLISH",
     ),
     # ── Compression / range regimes ──────────────────────────────────────────
     "LOW_VOL_COMPRESSION": RegimeRule(
-        enabled_strategies=frozenset({"BOLLINGER_BREAKOUT"}),
-        allowed_directions=frozenset({"BUY", "SELL"}),
-        position_multiplier=1.0,
-        notes="Low volatility compression — await expansion breakout",
+        enabled_strategies=frozenset({S.BOLLINGER_BREAKOUT.value, S.ORB_VWAP.value,
+                                      S.CPR_VWAP.value, S.GAP_VWAP_FILL.value}),
+        allowed_directions=_BOTH, position_multiplier=1.0,
+        notes="Coiled tape: squeeze-expansion and narrow-CPR/gap-fill edges",
     ),
     "RANGE_NORMAL_VOL": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_REVERSAL"}),
-        allowed_directions=frozenset({"BUY", "SELL"}),
-        position_multiplier=1.0,
-        notes="Range-bound with normal volatility — mean-reversion trades",
+        enabled_strategies=frozenset({S.VWAP_REVERSAL.value, S.RSI_VWAP.value,
+                                      S.CPR_VWAP.value, S.GAP_VWAP_FILL.value}),
+        allowed_directions=_BOTH, position_multiplier=1.0,
+        notes="Mean reversion around VWAP / pivot / gap",
     ),
-    # ── No-trade regimes ─────────────────────────────────────────────────────
+    # ── No-trade regimes (D7) ────────────────────────────────────────────────
     "HIGH_VOL_CHOP": RegimeRule(
-        enabled_strategies=frozenset({"BOLLINGER_BREAKOUT", "VWAP_REVERSAL"}),
-        allowed_directions=frozenset({"BUY", "SELL"}),
-        position_multiplier=0.3,
-        notes="High volatility chop — scaled-down breakout and reversal trades",
+        enabled_strategies=_NONE, allowed_directions=_NONE, position_multiplier=0.0,
+        notes="High volatility chop — unfavourable by definition (spec Req 8.2/8.3)",
     ),
     "REGIME_TRANSITION": RegimeRule(
-        enabled_strategies=frozenset(),
-        allowed_directions=frozenset(),
-        position_multiplier=0.0,
+        enabled_strategies=_NONE, allowed_directions=_NONE, position_multiplier=0.0,
         notes="Regime transition detected — pause trading during instability",
     ),
     "EXPIRY_DAY": RegimeRule(
-        enabled_strategies=frozenset(),
-        allowed_directions=frozenset(),
-        position_multiplier=0.0,
-        notes="Option expiry day — no regime-based trades (let expiry guards handle)",
+        enabled_strategies=_NONE, allowed_directions=_NONE, position_multiplier=0.0,
+        notes="Option expiry day — gamma/pin risk",
+    ),
+    "UNCLASSIFIED": RegimeRule(
+        enabled_strategies=_NONE, allowed_directions=_NONE, position_multiplier=0.0,
+        notes="No classifier condition matched — no-trade until the regime "
+              "histogram says otherwise",
+    ),
+    "DETECTOR_ERROR": RegimeRule(
+        enabled_strategies=_NONE, allowed_directions=_NONE, position_multiplier=0.0,
+        notes="The detector raised, or a regime name was not recognised",
     ),
     "UNKNOWN": RegimeRule(
-        enabled_strategies=frozenset({"VWAP_PULLBACK", "VWAP_REVERSAL"}),
-        allowed_directions=frozenset({"BUY", "SELL"}),
-        position_multiplier=0.5,
-        notes="Regime classification failed — trade at half size using mean reversion",
+        enabled_strategies=_NONE, allowed_directions=_NONE, position_multiplier=0.0,
+        notes="Legacy alias, never emitted — resolves historical rows only",
     ),
 }
+
+# Every strategy is mapped to at least one regime: nothing is excluded on purpose.
+NEVER_ENABLED: frozenset[str] = frozenset()
+
+# The only multipliers a rule (including the dynamic ATR adjustment) may produce.
+POSITION_MULTIPLIERS: frozenset[float] = frozenset({0.0, 0.5, 1.0})
 
 
 # ── get_regime_rule ───────────────────────────────────────────────────────────
@@ -130,28 +148,21 @@ def get_regime_rule(regime: str, atr_percentile: float = 50.0) -> RegimeRule:
     """
     Return the ``RegimeRule`` for *regime* with dynamic sizing adjustments.
 
-    Falls back to the UNKNOWN rule when *regime* is not found in
-    ``REGIME_RULES``.
+    An unrecognised name gets the ``DETECTOR_ERROR`` rule (no strategies,
+    0.0) and is logged at ERROR. ``UNKNOWN`` still resolves, via the retained
+    legacy key.
 
     Dynamic adjustment
     ------------------
     For ``BREAKOUT_EVENT_BULLISH`` and ``BREAKOUT_EVENT_BEARISH``, the base
     position_multiplier is 1.0 but is reduced to 0.5 whenever
     ``atr_percentile > 70`` (per Requirements 5.4 and 5.5).
-
-    Parameters
-    ----------
-    regime:
-        One of the 11 recognised regime name strings.
-    atr_percentile:
-        Current ATR percentile (0–100).  Defaults to 50.0 (neutral).
-
-    Returns
-    -------
-    RegimeRule
-        Possibly with an adjusted ``position_multiplier``.
     """
-    rule = REGIME_RULES.get(regime, REGIME_RULES["UNKNOWN"])
+    rule = REGIME_RULES.get(regime)
+    if rule is None:
+        logger.error("[regime_rules] unrecognised regime %r — applying the DETECTOR_ERROR rule",
+                     regime)
+        return REGIME_RULES["DETECTOR_ERROR"]
 
     # Dynamic breakout size reduction under high volatility
     if regime in {"BREAKOUT_EVENT_BULLISH", "BREAKOUT_EVENT_BEARISH"}:
@@ -185,7 +196,7 @@ def classify_regime(
     8.  TREND_HIGH_VOL        — ADX > trend_thr AND high ATR%ile
     9.  LOW_VOL_COMPRESSION   — low ATR%ile AND price hugs VWAP
     10. RANGE_NORMAL_VOL      — ADX < range_thr AND normal ATR%ile
-    11. UNKNOWN               — no conditions matched
+    11. UNCLASSIFIED          — no conditions matched
 
     Parameters
     ----------
@@ -343,7 +354,8 @@ def classify_regime(
     elif range_normal_vol:
         regime = "RANGE_NORMAL_VOL"
     else:
-        regime = "UNKNOWN"
+        # An ordinary tape that matched no condition — not a failure (§6.2)
+        regime = "UNCLASSIFIED"
 
     logger.debug(
         "[classify_regime] underlying=%s → %s",

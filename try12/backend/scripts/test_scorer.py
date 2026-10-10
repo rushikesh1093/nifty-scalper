@@ -8,15 +8,25 @@ sys.path.insert(0, ".")
 from app.services.trading.option_selector import (
     _hard_filter, _score_liquidity, _score_spread, _score_delta,
     _score_moneyness, _score_oi_change, _score_volume_trend, _score_expiry,
-    HF_MAX_SPREAD_PCT, HF_MIN_OI, HF_MIN_VOLUME, HF_MIN_LTP, HF_MAX_LTP,
-    HF_MAX_SLIPPAGE_PCT, HF_MIN_RR, MIN_SCORE,
     W_LIQUIDITY, W_SPREAD, W_DELTA, W_MONEYNESS,
     W_OI_CHANGE, W_VOLUME_TREND, W_EXPIRY, W_PRICE_BEHAV,
 )
 from datetime import date, timedelta
 
-SL_PCT     = 0.35   # ORB_VWAP strategy defaults
-TARGET_PCT = 0.60
+from app.runtime.context import bind, params
+from app.runtime.live import script_context
+
+bind(script_context())     # the scorer reads the ctx trading day (design §14.2)
+
+# Every threshold is a TradingParams field (design §10); there are no module constants.
+P = params()
+HF_MAX_SPREAD_PCT, HF_MIN_OI, HF_MIN_VOLUME = P.max_spread_pct, P.min_oi, P.min_volume
+HF_MIN_LTP, HF_MAX_LTP = P.premium_band["NIFTY"]
+HF_MAX_SLIPPAGE_PCT, MIN_RR, MIN_SCORE = P.max_slippage_pct, P.min_rr, P.min_score
+
+SL_PCT     = 0.15   # the setup every strategy trades: 1:2
+TARGET_PCT = 0.30
+TICK_AGE_S = 1.0    # a fresh quote; a missing or stale one is a rejection, not a skipped filter
 
 EXPIRY_7DTE = date.today() + timedelta(days=7)
 
@@ -28,7 +38,7 @@ print(f"  OI min        : {HF_MIN_OI:,}")
 print(f"  Volume min    : {HF_MIN_VOLUME:,}")
 print(f"  LTP range     : ₹{HF_MIN_LTP} – ₹{HF_MAX_LTP}")
 print(f"  Slippage max  : {HF_MAX_SLIPPAGE_PCT}%")
-print(f"  Min R:R       : {HF_MIN_RR}:1")
+print(f"  Min R:R       : {MIN_RR}:1  (un-stretched target_pct / sl_pct)")
 print(f"  Min score     : {MIN_SCORE}/100")
 print()
 
@@ -43,7 +53,7 @@ cases = [
     ("❌ OI too low",                55.0,  54.5,  55.5,    60_000,  3_500),   # OI < 1L
     ("❌ Volume insufficient",       90.0,  89.5,  90.5,   500_000,  2_000),   # vol < 5k
     ("❌ LTP too cheap",              8.0,   7.5,   8.5,   300_000,  6_000),   # LTP < ₹15
-    ("❌ LTP too expensive",        650.0, 649.0, 651.0, 1_000_000, 12_000),  # LTP > ₹600
+    ("❌ LTP too expensive",        750.0, 749.0, 751.0, 1_000_000, 12_000),  # LTP > ₹700
     ("❌ Slippage too high",         50.0,  47.0,  54.0,   400_000,  7_000),   # spread=13.6%
 ]
 
@@ -52,7 +62,8 @@ print(f"  {'Description':<35}  {'Result':<10}  {'Filter'}")
 print("=" * 70)
 for desc, ltp, bid, ask, oi, vol in cases:
     result = _hard_filter(ltp=ltp, bid=bid, ask=ask, oi=oi, volume=vol,
-                          sl_pct=SL_PCT, target_pct=TARGET_PCT)
+                          sl_pct=SL_PCT, target_pct=TARGET_PCT, min_rr=MIN_RR,
+                          tick_age_s=TICK_AGE_S)
     if result.passed:
         print(f"  {desc:<35}  PASSED")
     else:
@@ -88,7 +99,8 @@ print("  " + "-" * 72)
 scored = []
 for strike, ltp, bid, ask, oi, oi_chg, vol, iv in good_candidates:
     hf = _hard_filter(ltp=ltp, bid=bid, ask=ask, oi=oi, volume=vol,
-                      sl_pct=SL_PCT, target_pct=TARGET_PCT)
+                      sl_pct=SL_PCT, target_pct=TARGET_PCT, min_rr=MIN_RR,
+                      tick_age_s=TICK_AGE_S)
     if not hf.passed:
         print(f"  {strike:>8.0f}  {ltp:>7.2f}  {'n/a':>6}  {oi:>9,}  "
               f"  {'---':>9}  HARD FILTER: {hf.filter}")
@@ -129,10 +141,10 @@ print()
 if scored and scored[0][5] == "OK":
     best_strike, best_ltp = scored[0][0], scored[0][1]
     sl  = round(best_ltp * (1 - SL_PCT), 1)
-    tgt = round(best_ltp + (best_ltp - sl) * HF_MIN_RR, 1)
+    tgt = round(best_ltp * (1 + TARGET_PCT), 1)
     print(f"  TRADE: {best_strike:.0f} CE @ ₹{best_ltp}")
     print(f"  SL     = ₹{sl}  ({SL_PCT*100:.0f}% below LTP)")
-    print(f"  Target = ₹{tgt}  (R:R = {HF_MIN_RR}:1)")
+    print(f"  Target = ₹{tgt}  (R:R = {TARGET_PCT / SL_PCT:.1f}:1)")
     print(f"  Max loss / lot   = ₹{round((best_ltp - sl) * 50):.0f}")
     print(f"  Max profit / lot = ₹{round((tgt - best_ltp) * 50):.0f}")
 else:

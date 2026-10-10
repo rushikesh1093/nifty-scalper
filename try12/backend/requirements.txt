@@ -19,7 +19,9 @@ httpx==0.27.0
 pyotp==2.9.0
 
 # WebSocket
-websockets==12.0
+# Pinned to the version actually installed/running. feed.py uses the >=14
+# asyncio client API (connect(additional_headers=...), connection.state).
+websockets==17.1
 
 # Config
 pydantic==2.7.1

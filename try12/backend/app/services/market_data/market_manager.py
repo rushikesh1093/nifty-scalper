@@ -20,6 +20,7 @@ from app.db.models.instrument import Instrument, InstrumentType
 from app.services.broker.angel_client import angel_client
 from app.services.broker.instrument_sync import sync_instruments, get_active_expiries, get_option_tokens
 from app.services.cache.redis_client import redis_cache
+from app.runtime.context import trading_day
 from app.services.market_data.feed import market_feed, TickData
 from app.services.market_data.tick_writer import tick_writer
 
@@ -164,7 +165,7 @@ class MarketManager:
         result = []
         async with AsyncSessionLocal() as db:
             for underlying in ["NIFTY", "BANKNIFTY"]:
-                expiries = await get_active_expiries(db, underlying)
+                expiries = await get_active_expiries(db, underlying, as_of=trading_day())
                 if not expiries:
                     logger.warning("No expiries found for %s", underlying)
                     continue

@@ -5,46 +5,46 @@ Translates regime state into strategy enable/disable flags and position
 size multipliers. Sits between RegimeDetector and StrategyRunner.
 
 Responsibilities:
-  - Convert regime → strategy_flags dict (all 12 strategies)
-  - Enforce REGIME_TRANSITION cooldown
-  - Filter signals by regime-permitted directions
-  - Record per-regime P&L performance in the DB
-  - Expose current regime via RegimePersistence
+  - Convert regime → strategy_flags dict (all 12 strategies, design §6.2)
+  - Merge regime flags with user flags (absent = disabled, user disable wins)
+    and remember the result, so paper_engine can re-check authority (§6.4)
+  - Filter signals by regime-permitted directions (fail closed on no state)
+  - Record per-regime performance (one TradeOutcome, on the close's session)
+  - Mirror the detector's transition cooldown for display only (§5)
+
+The REGIME_TRANSITION cooldown is owned by RegimeDetector alone. This class
+holds no counter: during a transition the REGIME_TRANSITION rule enables no
+strategy, which is the suppression. ``is_in_cooldown`` is a read-only,
+expiring mirror for the API and gates nothing.
 
 Requirements: 11.2–11.7, 12.2, 16.1–16.7, 19.1, 19.2, 19.5, 19.6, 20.1–20.5
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from app.services.trading.trade_outcome import TradeOutcome
     from app.strategies.base import SignalEvent
 
 from app.services.trading.regime_persistence import RegimeState, regime_persistence
 from app.services.trading.regime_rules import get_regime_rule
+from app.strategies.names import ALL_STRATEGY_NAMES
+from app.runtime.context import ctx, now_utc, params
+from app.services.trading.no_trade import ReasonCode
 
 logger = logging.getLogger(__name__)
 
-# ── All strategy names known to the system ────────────────────────────────────
-_ALL_STRATEGIES: tuple[str, ...] = (
-    "ORB_VWAP",
-    "VWAP_PULLBACK",
-    "EMA_VWAP",
-    "SUPERTREND_VWAP",
-    "PDH_PDL",
-    "VWAP_REVERSAL",
-    "BOLLINGER_BREAKOUT",
-    "RSI_VWAP",
-    "OI_SPIKE",
-    "IV_CRUSH",
-    "PCR_SIGNAL",
-    "GAP_FILL",
-)
-
-# Default cooldown length when no config is available
-_DEFAULT_COOLDOWN_CANDLES = 3
+# Closed set of per-strategy reasons (design §6.5)
+REASON_ENABLED = "enabled"
+REASON_REGIME_RULE = "regime_rule"
+REASON_USER_DISABLED = "user_disabled"
+REASON_TRANSITION_COOLDOWN = "transition_cooldown"
+REASON_DAILY_STRATEGY_HALT = "daily_strategy_halt"
+REASON_REGIME_UNAVAILABLE = "regime_unavailable"
+REASON_NOT_COMPUTED = "regime flags not yet computed"
 
 
 class StrategyOrchestrator:
@@ -54,10 +54,16 @@ class StrategyOrchestrator:
     """
 
     def __init__(self) -> None:
-        # underlying → remaining cooldown candle count
-        self._transition_cooldown: dict[str, int] = {}
+        # underlying → (cooldown remaining, as_of_utc): display mirror with a TTL
+        self._regime_cooldown: dict[str, tuple[int, datetime]] = {}
         # underlying → last known regime name
         self._current_regime: dict[str, str] = {}
+        # underlying → {strategy: (enabled, reason)} from the last merge
+        self._flag_state: dict[str, dict[str, tuple[bool, str]]] = {}
+        # (run_id, trading_day) → strategies halted for the day by the losing
+        # streak (design §9.4). A cache of state derived from closed positions
+        # by risk_state and pushed here; never a counter.
+        self._daily_halts: dict[tuple, frozenset] = {}
 
     # ── on_regime_detected ────────────────────────────────────────────────────
 
@@ -68,9 +74,9 @@ class StrategyOrchestrator:
         """
         Called after every regime classification.
 
-        Derives enabled-strategy flags from REGIME_RULES, enforces transition
-        cooldown, logs every strategy state change and position-size multiplier
-        change, then returns the flag dict.
+        Derives the 12 strategy flags from REGIME_RULES, refreshes the cooldown
+        mirror from the detector's state, logs every strategy state change and
+        position-size multiplier change, then returns the flag dict.
 
         Requirements: 11.2, 11.3, 11.4, 11.6, 11.7, 15.2, 15.3, 15.4,
                       20.1, 20.2, 20.3, 20.4, 20.5
@@ -86,49 +92,20 @@ class StrategyOrchestrator:
         # ── Build base flags from rule ────────────────────────────────────────
         flags: dict[str, bool] = {
             name: (name in rule.enabled_strategies)
-            for name in _ALL_STRATEGIES
+            for name in ALL_STRATEGY_NAMES
         }
 
-        # ── Transition cooldown bookkeeping ───────────────────────────────────
-        if regime == "REGIME_TRANSITION":
-            # Entering / staying in REGIME_TRANSITION → (re)start cooldown
-            self._transition_cooldown[underlying] = _DEFAULT_COOLDOWN_CANDLES
-            logger.debug(
-                "[StrategyOrchestrator] underlying=%s REGIME_TRANSITION — "
-                "cooldown set to %d candles",
-                underlying, _DEFAULT_COOLDOWN_CANDLES,
-            )
-        elif self.is_in_cooldown(underlying):
-            # Cooldown still ticking in the new regime — override all flags
-            remaining = self._transition_cooldown[underlying]
-            logger.info(
-                "[StrategyOrchestrator] underlying=%s regime=%s "
-                "transition cooldown active — %d candle(s) remaining; "
-                "all strategies suppressed",
-                underlying, regime, remaining,
-            )
-            flags = {name: False for name in _ALL_STRATEGIES}
-            # Decrement
-            self._transition_cooldown[underlying] = remaining - 1
-            if self._transition_cooldown[underlying] <= 0:
-                del self._transition_cooldown[underlying]
-                logger.info(
-                    "[StrategyOrchestrator] underlying=%s cooldown expired — "
-                    "strategies will be evaluated from next candle",
-                    underlying,
-                )
+        # ── Cooldown mirror (display only; the detector owns the counter) ─────
+        remaining = (int(regime_state.transition_cooldown_remaining or 0)
+                     if regime == "REGIME_TRANSITION" else 0)
+        self._regime_cooldown[underlying] = (remaining, now_utc())
 
         # ── Log per-strategy state changes ────────────────────────────────────
         # Req 15.2, 15.3: log every enable/disable with regime/underlying/ts
         prev_regime = self._current_regime.get(underlying)
         if prev_regime != regime:
-            # Regime changed — log every strategy that changed state
-            # We don't know previous flags by name, but any regime change
-            # potentially flips strategies, so log everything that is enabled
-            # or disabled under the new regime.
-            for name in _ALL_STRATEGIES:
-                new_state = flags[name]
-                if new_state:
+            for name in ALL_STRATEGY_NAMES:
+                if flags[name]:
                     logger.info(
                         "[StrategyOrchestrator] ENABLED  strategy=%s "
                         "regime=%s underlying=%s ts=%s",
@@ -144,11 +121,7 @@ class StrategyOrchestrator:
             # ── Log position-size multiplier change (Req 15.4) ───────────────
             old_multiplier: Optional[float] = None
             if prev_regime is not None:
-                try:
-                    old_rule = get_regime_rule(prev_regime, atr_pct)
-                    old_multiplier = old_rule.position_multiplier
-                except Exception:
-                    pass
+                old_multiplier = get_regime_rule(prev_regime, atr_pct).position_multiplier
 
             new_multiplier = rule.position_multiplier
             if old_multiplier is None or old_multiplier != new_multiplier:
@@ -164,18 +137,73 @@ class StrategyOrchestrator:
 
         return flags
 
+    # ── flag merge (design §6.4) ──────────────────────────────────────────────
+
+    def merge_flags(
+        self, underlying: str, regime_flags: dict[str, bool], user_flags: dict[str, bool],
+    ) -> dict[str, bool]:
+        """Final flags over the 12 canonical names only.
+
+        A strategy missing from *regime_flags* is disabled (R3.6); a
+        user-disabled strategy stays disabled in every regime (R3.7). The user
+        default stays True so a fresh strategy_flags JSON disables nothing.
+        The result is remembered for ``is_strategy_enabled``.
+        """
+        in_transition = self._current_regime.get(underlying) == "REGIME_TRANSITION"
+        state: dict[str, tuple[bool, str]] = {}
+        for name in ALL_STRATEGY_NAMES:
+            if not user_flags.get(name, True):
+                state[name] = (False, REASON_USER_DISABLED)
+            elif not regime_flags.get(name, False):
+                state[name] = (False, REASON_TRANSITION_COOLDOWN if in_transition
+                               else REASON_REGIME_RULE)
+            else:
+                state[name] = (True, REASON_ENABLED)
+        self._flag_state[underlying] = state
+        return {name: on for name, (on, _) in state.items()}
+
+    def mark_regime_unavailable(self, underlying: str) -> dict[str, bool]:
+        """Detection failed: every flag False (never the raw user flags)."""
+        self._flag_state[underlying] = {
+            name: (False, REASON_REGIME_UNAVAILABLE) for name in ALL_STRATEGY_NAMES
+        }
+        return {name: False for name in ALL_STRATEGY_NAMES}
+
+    def current_regime_name(self, underlying: str) -> Optional[str]:
+        """The last regime the orchestrator saw for *underlying*, or None."""
+        return self._current_regime.get(underlying)
+
+    def is_strategy_enabled(self, underlying: str, strategy_name: str) -> tuple[bool, str]:
+        """(enabled, reason) from the last merged flag set for *underlying*.
+        Fails closed when no flags have been computed yet."""
+        state = self._flag_state.get(underlying)
+        if state is None:
+            return False, REASON_NOT_COMPUTED
+        enabled, why = state.get(strategy_name, (False, REASON_REGIME_RULE))
+        if enabled and strategy_name in self._daily_halts.get(
+                (ctx().run_id, ctx().clock.trading_day()), frozenset()):
+            return False, REASON_DAILY_STRATEGY_HALT
+        return enabled, why
+
+    def set_daily_halts(self, strategies) -> None:
+        """Publish today's streak-halted strategies (risk_state.streak_state)."""
+        key = (ctx().run_id, ctx().clock.trading_day())
+        self._daily_halts = {key: frozenset(strategies)}
+
     # ── get_position_multiplier ───────────────────────────────────────────────
 
     def get_position_multiplier(self, underlying: str) -> float:
         """
         Return the position size multiplier for *underlying*'s current regime.
 
-        Returns 0.0 on any exception or when no regime is known.
+        Returns 0.0 on any exception or when no regime is known: an underlying
+        with no regime computed yet resolves to the no-trade DETECTOR_ERROR
+        rule, never to a tradeable-looking default.
 
         Requirements: 12.2
         """
         try:
-            regime = self._current_regime.get(underlying, "UNKNOWN")
+            regime = self._current_regime.get(underlying, "DETECTOR_ERROR")
             rule = get_regime_rule(regime)
             return rule.position_multiplier
         except Exception as exc:
@@ -192,159 +220,144 @@ class StrategyOrchestrator:
         self,
         signal: "SignalEvent",
         regime_state: Optional[RegimeState],
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, Optional[ReasonCode], str]:
         """
         Check whether *signal* is permitted by the current regime rules.
+        Returns (ok, code, reason); the caller records the code (design §12),
+        which keeps the orchestrator I/O-free.
 
-        If *regime_state* is None the signal passes through (no regime data →
-        don't block).
+        No regime state fails closed (§6.4): a signal the system cannot place
+        in a regime is not traded. TREND_HIGH_VOL permits only the direction
+        on the price side of VWAP.
 
         Requirements: 16.1–16.7
         """
         if regime_state is None:
-            return True, ""
+            return False, ReasonCode.REGIME_STATE_UNAVAILABLE, "regime state unavailable"
 
         underlying = signal.underlying
         regime = regime_state.regime
         atr_pct = regime_state.indicators.atr_percentile
         rule = get_regime_rule(regime, atr_pct)
 
-        # No directions allowed — regime blocks all trades
+        reason = ""
         if not rule.allowed_directions:
             reason = f"Regime {regime} allows no trades"
-            logger.info(
-                "[StrategyOrchestrator] SIGNAL SUPPRESSED strategy=%s "
-                "direction=%s underlying=%s regime=%s reason='%s' ts=%s",
-                signal.strategy_name, signal.direction.value, underlying,
-                regime, reason,
-                datetime.now(timezone.utc).isoformat(),
-            )
-            return False, reason
-
-        # Direction not permitted
-        if signal.direction.value not in rule.allowed_directions:
+        elif signal.direction.value not in rule.allowed_directions:
             reason = (
                 f"Regime {regime} does not permit direction "
-                f"{signal.direction.value} (allowed: {rule.allowed_directions})"
+                f"{signal.direction.value} (allowed: {sorted(rule.allowed_directions)})"
             )
+        elif regime == "TREND_HIGH_VOL":
+            ind = regime_state.indicators
+            required = "BUY" if ind.price > ind.vwap else "SELL"
+            if signal.direction.value != required:
+                reason = f"TREND_HIGH_VOL permits {required} only (price vs VWAP)"
+
+        if reason:
             # Req 16.6: log suppression
             logger.info(
                 "[StrategyOrchestrator] SIGNAL SUPPRESSED strategy=%s "
                 "direction=%s underlying=%s regime=%s reason='%s' ts=%s",
                 signal.strategy_name, signal.direction.value, underlying,
-                regime, reason,
-                datetime.now(timezone.utc).isoformat(),
+                regime, reason, now_utc().isoformat(),
             )
-            return False, reason
+            return False, ReasonCode.REGIME_DIRECTION_MISMATCH, reason
 
-        # Transition cooldown blocks everything
-        if self.is_in_cooldown(underlying):
-            reason = f"Transition cooldown active for {underlying}"
-            return False, reason
+        return True, None, ""
 
-        return True, ""
+    # ── cooldown mirror (read-only; gates nothing) ────────────────────────────
 
-    # ── is_in_cooldown ────────────────────────────────────────────────────────
+    def cooldown_remaining(self, underlying: str) -> int:
+        """The detector's remaining cooldown as last mirrored, or 0 when the
+        mirror is absent or older than cooldown_mirror_ttl_s."""
+        entry = self._regime_cooldown.get(underlying)
+        if entry is None:
+            return 0                       # never detected: the cycle gate owns this case
+        remaining, as_of = entry
+        if (now_utc() - as_of) > timedelta(seconds=params().cooldown_mirror_ttl_s):
+            return 0                       # stale mirror: REGIME_UNAVAILABLE gates the cycle
+        return remaining
 
     def is_in_cooldown(self, underlying: str) -> bool:
         """
-        Return True while the post-transition cooldown counter is > 0.
+        True while the detector's last mirrored state is REGIME_TRANSITION and
+        the mirror is fresh. Display only (GET /regime/strategy-map and the
+        diagnostics probe): a static test asserts it gates nothing outside
+        app/api/.
 
         Requirements: 20.2, 20.3
         """
-        return self._transition_cooldown.get(underlying, 0) > 0
+        return self.cooldown_remaining(underlying) > 0
 
     # ── record_trade_result ───────────────────────────────────────────────────
 
     async def record_trade_result(
         self,
+        db_session,
+        *,
         regime: str,
         underlying: str,
         strategy_name: str,
-        pnl: float,
-        rr: float,
-        db_session=None,
+        outcome: "TradeOutcome",
     ) -> None:
         """
-        Upsert a ``regime_performance`` row with trade outcome data.
+        Upsert the run's ``regime_performance`` row with one TradeOutcome, on
+        the CLOSE's session (design §7). The caller commits.
+
+        A None session is a programming error, never a silent skip (R4.2).
+        Write failures propagate: paper_engine rolls the stats back, closes
+        the position without them and records PERF_WRITE_FAILED, and
+        reconcile_performance backfills.
+
+        Exact sums, not running means, so reconcile can recompute every
+        derived field (R15.6). Legacy Numeric columns are rounded to their
+        scale, as reconcile stores them.
 
         Requirements: 19.1, 19.2, 19.5, 19.6
         """
         if db_session is None:
-            logger.warning(
-                "[StrategyOrchestrator] record_trade_result called without "
-                "db_session — skipping performance update for "
-                "regime=%s underlying=%s strategy=%s pnl=%.2f",
-                regime, underlying, strategy_name, pnl,
-            )
-            return
+            raise TypeError("record_trade_result requires the close's db session")
 
-        try:
-            from sqlalchemy import select
-            from app.db.models.regime import RegimePerformanceModel
+        from sqlalchemy import select
+        from app.db.models.regime import RegimePerformanceModel
+        from app.services.trading.trade_outcome import accumulate
 
-            # Load or create the performance row
-            row: Optional[RegimePerformanceModel] = (
-                await db_session.execute(
-                    select(RegimePerformanceModel).where(
-                        RegimePerformanceModel.regime == regime,
-                        RegimePerformanceModel.underlying == underlying,
-                        RegimePerformanceModel.strategy_name == strategy_name,
-                    )
+        run_id = ctx().run_id
+        row: Optional[RegimePerformanceModel] = (
+            await db_session.execute(
+                select(RegimePerformanceModel).where(
+                    RegimePerformanceModel.regime == regime,
+                    RegimePerformanceModel.underlying == underlying,
+                    RegimePerformanceModel.strategy_name == strategy_name,
+                    RegimePerformanceModel.run_id == run_id,
                 )
-            ).scalars().first()
-
-            if row is None:
-                row = RegimePerformanceModel(
-                    regime=regime,
-                    underlying=underlying,
-                    strategy_name=strategy_name,
-                    total_trades=0,
-                    winning_trades=0,
-                    losing_trades=0,
-                    total_pnl=0.0,
-                    first_trade_at=datetime.now(timezone.utc),
-                )
-                db_session.add(row)
-
-            # Update counters
-            row.total_trades = (row.total_trades or 0) + 1
-            if pnl > 0:
-                row.winning_trades = (row.winning_trades or 0) + 1
-            else:
-                row.losing_trades = (row.losing_trades or 0) + 1
-
-            row.total_pnl = float(row.total_pnl or 0.0) + pnl
-            row.avg_pnl = row.total_pnl / row.total_trades
-            row.win_rate = (row.winning_trades / row.total_trades) * 100.0
-
-            # Rolling average R:R
-            if row.avg_rr is None:
-                row.avg_rr = rr
-            else:
-                # Simple running mean: avg = old_avg + (new - old_avg) / n
-                n = row.total_trades
-                row.avg_rr = float(row.avg_rr) + (rr - float(row.avg_rr)) / n
-
-            row.last_trade_at = datetime.now(timezone.utc)
-
-            await db_session.flush()
-
-            logger.debug(
-                "[StrategyOrchestrator] Recorded trade result: "
-                "regime=%s underlying=%s strategy=%s pnl=%.2f "
-                "total_trades=%d win_rate=%.1f%%",
-                regime, underlying, strategy_name, pnl,
-                row.total_trades, row.win_rate,
             )
+        ).scalars().first()
 
-        except Exception as exc:
-            # Req 19.6: catch and log, never raise
-            logger.warning(
-                "[StrategyOrchestrator] Failed to record trade result for "
-                "regime=%s underlying=%s strategy=%s: %s",
-                regime, underlying, strategy_name, exc,
+        if row is None:
+            row = RegimePerformanceModel(
+                run_id=run_id, regime=regime, underlying=underlying,
+                strategy_name=strategy_name, first_trade_at=outcome.exit_time,
             )
+            db_session.add(row)
+
+        accumulate(row, outcome)
+        row.total_pnl = round(float(row.total_pnl or 0.0) + outcome.net_pnl, 2)
+        row.avg_pnl = round(row.expectancy_inr, 2)
+        row.win_rate = round(row.win_rate, 2)
+        row.avg_r_multiple = row.expectancy_r
+        row.avg_rr = round(row.expectancy_r, 3) if row.expectancy_r is not None else None
+        row.last_trade_at = outcome.exit_time
+
+        await db_session.flush()
+
+        logger.debug(
+            "[StrategyOrchestrator] Recorded trade result: regime=%s underlying=%s "
+            "strategy=%s net=%.2f R=%s total_trades=%d win_rate=%.1f%%",
+            regime, underlying, strategy_name, outcome.net_pnl, outcome.r_multiple,
+            row.total_trades, float(row.win_rate),
+        )
 
     # ── get_current_regime ────────────────────────────────────────────────────
 

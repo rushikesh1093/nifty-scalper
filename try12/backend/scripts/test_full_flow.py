@@ -29,7 +29,14 @@ from app.db.models.paper_trade import (
 )
 from app.services.trading.mode_manager import mode_manager
 from app.services.trading.paper_engine import paper_engine, _calc_lots
-from app.services.trading.option_selector import option_selector, _hard_filter, MIN_SCORE
+from app.services.trading.option_selector import option_selector, _hard_filter
+from app.services.trading.risk_gate import round_to_500
+from app.runtime.context import ctx, now_utc, params
+from app.services.trading import fills
+
+
+def _tick_age(tick):
+    return fills.tick_age_seconds(tick, now_utc())
 from app.services.cache.redis_client import redis_cache
 from app.strategies.base import SignalEvent, Direction, signal_aggregator
 from sqlalchemy import select, func
@@ -160,7 +167,8 @@ async def run():
         volume = int(tick.get("volume")     or 0)
 
         hf = _hard_filter(ltp=ltp, bid=bid, ask=ask, oi=oi, volume=volume,
-                          sl_pct=0.35, target_pct=0.60)
+                          sl_pct=0.15, target_pct=0.30, min_rr=params().min_rr,
+                          tick_age_s=_tick_age(tick))
         status = "✅ PASS" if hf.passed else f"❌ {hf.filter}"
         print(f"    {inst.strike:>7.0f} CE  ltp=₹{ltp:>7.2f}  oi={oi:>9,}  vol={volume:>7,}  → {status}")
         if hf.passed: passed += 1
@@ -171,14 +179,17 @@ async def run():
     # ── Step 5: Option selector ───────────────────────────────────────────────
     sep("Step 5: Option Selector (Full Scoring)")
     async with AsyncSessionLocal() as db:
-        selected = await option_selector.select(
+        selected = (await option_selector.select(
             db=db,
             direction=Direction.BUY,
             underlying="NIFTY",
             spot_price=SPOT,
-            sl_pct=0.35,
-            target_pct=0.60,
-        )
+            sl_pct=0.15,
+            target_pct=0.30,
+            params=params(),
+            base_amount=round_to_500(params().fixed_fraction_pct / 100.0 * ctx().cfg.capital),
+            regime_multiplier=1.0,
+        )).candidate
 
     if not selected:
         print("  ⚠️  No candidate passed filters.")
@@ -237,11 +248,13 @@ async def _simulate_with_mock_data(cfg, spot, expiry, instruments):
     from app.services.trading.option_selector import ScoredCandidate
     from datetime import date as dt
     async with AsyncSessionLocal() as db:
-        selected = await option_selector.select(
+        selected = (await option_selector.select(
             db=db, direction=Direction.BUY,
             underlying="NIFTY", spot_price=spot,
-            sl_pct=0.35, target_pct=0.60,
-        )
+            sl_pct=0.15, target_pct=0.30, params=params(),
+            base_amount=round_to_500(params().fixed_fraction_pct / 100.0 * ctx().cfg.capital),
+            regime_multiplier=1.0,
+        )).candidate
 
     if not selected:
         print("  Still no candidate — mock data may not have been fetched by selector.")
@@ -455,7 +468,8 @@ async def _run_paper_trade(cfg, selected, spot):
     async with AsyncSessionLocal() as db:
         await db.execute(
             update(PaperPosition)
-            .where(PaperPosition.strategy_name == "TEST_ORB_VWAP")
+            .where(PaperPosition.run_id == "PAPER",
+                   PaperPosition.strategy_name == "TEST_ORB_VWAP")
             .values(strategy_name="TEST_ORB_VWAP_DONE")
         )
         await db.commit()
@@ -471,4 +485,7 @@ async def _run_paper_trade(cfg, selected, spot):
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    from app.runtime.context import using
+    from app.runtime.live import script_context
+    with using(script_context()):          # trading code reads ctx() (design §14.1)
+        asyncio.run(run())

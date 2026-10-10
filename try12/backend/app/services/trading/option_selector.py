@@ -3,23 +3,34 @@ Option Selector Engine — Hard Filters + Multi-Factor Scoring Model
 ===================================================================
 
 Architecture:
-  Signal arrives
+  Signal arrives (already past the risk gate's phase one)
        ↓
-  HARD FILTERS  (binary — any fail = NO TRADE, reason logged)
+  EXPIRY POLICY  (per-underlying DTE bands: DTE 0 never, DTE 1 only before noon)
+       ↓
+  HARD FILTERS  (binary — any fail = this contract is out, ReasonCode tallied)
   ─────────────────────────────────────────────────────────────
-  1. Spread > 3.0% of mid        → REJECT: spread too wide
-  2. OI < 50,000                 → REJECT: liquidity too low
-  3. Volume < 1,000              → REJECT: volume insufficient
-  4. LTP < ₹10 or > ₹700        → REJECT: contract unsuitable
-  5. Expected slippage > 2.0%   → REJECT: slippage too high
-  6. R:R < 1.5 (after stretch)   → REJECT: risk/reward unacceptable
+  R:R         un-stretched target_pct / sl_pct (RR_EPSILON), floor = params().min_rr
+  Tick        no tick / no LTP                         → TICK_UNAVAILABLE
+  Premium     LTP outside the per-underlying band      → CONTRACT_UNSUITABLE
+              LTP above what the budget can buy        → PREMIUM_ABOVE_AFFORDABLE
+  Quote       missing / crossed bid-ask                → QUOTE_UNAVAILABLE
+              older than stale_tick_seconds            → QUOTE_STALE
+  Spread      > max_spread_pct of mid                  → SPREAD_TOO_WIDE
+  OI          missing (or the -1 sentinel)             → OI_UNAVAILABLE
+              < min_oi                                 → LIQUIDITY_TOO_LOW
+  Volume      missing (or the -1 sentinel)             → VOLUME_UNAVAILABLE
+              < min_volume                             → VOLUME_INSUFFICIENT
+  Slippage    half-spread > max_slippage_pct           → SLIPPAGE_TOO_HIGH
   ─────────────────────────────────────────────────────────────
        ↓
   SOFT SCORING  (0–100 composite, 8 factors)
        ↓
-  SELECT best scoring candidate (if score ≥ MIN_SCORE=40)
+  SELECT best scoring candidate (if score ≥ params().min_score)
        ↓
   NO TRADE if all candidates filtered/scored-out
+
+Missing data is a rejection, never a skipped filter. Every threshold comes from
+TradingParams; there are no module-level R:R, premium or liquidity constants.
 
 Principle:
   Great NIFTY signal + Bad option → NO TRADE
@@ -38,17 +49,22 @@ Scoring factors (weights sum to 1.0):
   Price behavior    0.03    LTP momentum direction
   ──────────────────────────────────────────────────────────────────
 """
+import json
 import logging
 import math
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
+from app.core.trading_params import TradingParams
 from app.db.models.instrument import Instrument, InstrumentType, OptionType
-from app.services.cache.redis_client import redis_cache
+from app.runtime.context import ctx, market, now_ist, now_utc, params, trading_day
+from app.services.trading import fills
+from app.services.trading.fills import RR_EPSILON
+from app.services.trading.no_trade import ReasonCode
 from app.strategies.base import Direction
 
 logger = logging.getLogger(__name__)
@@ -66,25 +82,14 @@ W_PRICE_BEHAV  = 0.03
 assert abs(W_LIQUIDITY + W_SPREAD + W_DELTA + W_MONEYNESS +
            W_OI_CHANGE + W_VOLUME_TREND + W_EXPIRY + W_PRICE_BEHAV - 1.0) < 1e-9
 
-# ── Thresholds — Soft scoring ─────────────────────────────────────────────────
-MIN_LTP          = 10.0       # ₹10 minimum premium (matches hard filter)
-MAX_LTP          = 600.0      # ₹600 maximum premium
-MIN_SCORE        = 40.0       # Minimum composite score to be eligible
+# ── Soft-scoring scales (not thresholds: nothing is accepted or rejected on these) ─
 OI_GOOD          = 5_00_000   # 5 lakh OI = excellent liquidity
 OI_OK            = 1_00_000   # 1 lakh OI = acceptable
 VOL_GOOD         = 30_000     # 30k contracts = good volume
 NIFTY_STEP       = 50         # Nifty strike gap
 BANKNIFTY_STEP   = 100        # BankNifty strike gap
 
-# ── Hard filter thresholds (binary pass/fail) ─────────────────────────────────
-HF_MAX_SPREAD_PCT    = 3.0     # Reject if (ask-bid)/mid > 3%  (was 2% — too tight pre-10am)
-HF_MIN_OI            = 50_000  # Reject if OI < 50k  (was 1L — too strict early morning)
-HF_MIN_VOLUME        = 1_000   # Reject if volume < 1,000  (was 5k — unreachable early-day)
-HF_MIN_LTP           = 10.0   # Reject if LTP < ₹10  (was ₹15 — excludes valid deep OTM)
-HF_MAX_LTP           = 700.0  # Reject if LTP > ₹700 for NIFTY; BankNifty uses 1500 (see below)
-HF_MAX_LTP_BANKNIFTY = 1500.0  # BankNifty monthly expiry: near-ATM options routinely > ₹700
-HF_MAX_SLIPPAGE_PCT  = 2.0    # Reject if expected slippage > 2% of LTP  (was 1.5%)
-HF_MIN_RR            = 1.5    # Reject if R:R < 1.5 (was 2.0 — PaperEngine enforces its own)
+SCORE_TABLE_ROWS = 8          # rows of the scoring table persisted with the signal
 
 
 @dataclass
@@ -92,109 +97,123 @@ class FilterResult:
     """Result of hard filter check — passed or rejected with reason."""
     passed:  bool
     reason:  str = ""          # populated when passed=False
-    filter:  str = ""          # which filter triggered the rejection
+    filter:  str = ""          # the ReasonCode value that triggered the rejection
+
+
+def _reject(code: ReasonCode, reason: str) -> FilterResult:
+    return FilterResult(passed=False, filter=code.value, reason=reason)
+
+
+def _quote_usable(bid, ask) -> bool:
+    try:
+        return bid is not None and ask is not None and float(bid) > 0 \
+            and float(ask) > 0 and float(ask) >= float(bid)
+    except (TypeError, ValueError):
+        return False
 
 
 def _hard_filter(
-    ltp:     float,
-    bid:     float,
-    ask:     float,
-    oi:      int,
-    volume:  int,
-    sl_pct:  float,
+    ltp:        float,
+    bid:        Optional[float],
+    ask:        Optional[float],
+    oi:         Optional[int],
+    volume:     Optional[int],
+    sl_pct:     float,
     target_pct: float,
-    underlying: str = "NIFTY",   # needed to apply the correct LTP ceiling
+    underlying: str = "NIFTY",
+    *,
+    min_rr:     float,
+    tick_age_s: Optional[float] = None,
+    max_premium: Optional[float] = None,
+    tp:         Optional[TradingParams] = None,
 ) -> FilterResult:
     """
-    Run all 6 hard filters in order.
-    Returns FilterResult(passed=True) if all pass.
-    Returns FilterResult(passed=False, reason=..., filter=...) on first failure.
+    Run every hard filter in order; the first failure wins and names a ReasonCode.
+
+    ``min_rr`` is a required argument: the floor has one source,
+    ``params().min_rr``, read by the caller at the point of use (design §10.1,
+    startup check 7). ``oi``/``volume`` of None (or the legacy -1 sentinel) and a
+    missing quote are rejections, not skipped filters (§10.2). ``max_premium`` is
+    the affordability ceiling ``base_amount × regime_multiplier / lot_size``.
 
     These are BINARY gates — if any fails the option is rejected
     regardless of how well it scores on other factors.
     """
+    tp = tp or params()
 
-    # ── Filter 1: Contract suitability (LTP range) ────────────────────────────
-    max_ltp = HF_MAX_LTP_BANKNIFTY if underlying.upper() == "BANKNIFTY" else HF_MAX_LTP
-    if ltp < HF_MIN_LTP:
-        return FilterResult(
-            passed=False,
-            filter="CONTRACT_UNSUITABLE",
-            reason=f"LTP ₹{ltp:.2f} < minimum ₹{HF_MIN_LTP} — too cheap, "
-                   f"gamma risk too high near expiry",
-        )
-    if ltp > max_ltp:
-        return FilterResult(
-            passed=False,
-            filter="CONTRACT_UNSUITABLE",
-            reason=f"LTP ₹{ltp:.2f} > maximum ₹{max_ltp} — too expensive, "
-                   f"can't achieve 2× target within reasonable move",
-        )
+    # ── Filter 0: R:R on the UN-stretched setup ───────────────────────────────
+    # The old gate stretched the target to the floor before testing it, which
+    # made it identically true. A setup below 1:2 is rejected as it stands.
+    if sl_pct is None or sl_pct <= 0 or target_pct is None:
+        return _reject(ReasonCode.RR_INSUFFICIENT,
+                       f"R:R undefined: sl_pct={sl_pct} target_pct={target_pct}")
+    rr = target_pct / sl_pct
+    if rr + RR_EPSILON < min_rr:
+        return _reject(ReasonCode.RR_INSUFFICIENT,
+                       f"R:R {rr:.3f} < minimum {min_rr} (sl_pct={sl_pct}, "
+                       f"target_pct={target_pct}); the target is never stretched to fit")
 
-    # ── Filter 2: Bid-ask spread ──────────────────────────────────────────────
-    if bid > 0 and ask > bid:
-        mid = (bid + ask) / 2.0
-        spread_pct = (ask - bid) / mid * 100.0
-        if spread_pct > HF_MAX_SPREAD_PCT:
-            return FilterResult(
-                passed=False,
-                filter="SPREAD_TOO_WIDE",
-                reason=f"Spread {spread_pct:.2f}% > limit {HF_MAX_SPREAD_PCT}% — "
-                       f"bid={bid:.2f} ask={ask:.2f} mid={mid:.2f}. "
-                       f"Entry cost too high.",
-            )
-    # If bid/ask are both zero (paper mode / feed gap) we skip the spread filter
-    # rather than rejecting — the option may still be valid on LTP alone.
+    # ── Filter 1: Contract suitability (premium band) and affordability ───────
+    lo, hi = tp.premium_band.get((underlying or "NIFTY").upper(), tp.premium_band["NIFTY"])
+    if ltp < lo:
+        return _reject(ReasonCode.CONTRACT_UNSUITABLE,
+                       f"LTP ₹{ltp:.2f} < minimum ₹{lo} — too cheap, "
+                       f"gamma risk too high near expiry")
+    if ltp > hi:
+        return _reject(ReasonCode.CONTRACT_UNSUITABLE,
+                       f"LTP ₹{ltp:.2f} > maximum ₹{hi} — too expensive, "
+                       f"can't achieve 2× target within reasonable move")
+    if max_premium is not None and ltp > max_premium:
+        return _reject(ReasonCode.PREMIUM_ABOVE_AFFORDABLE,
+                       f"LTP ₹{ltp:.2f} > affordable ceiling ₹{max_premium:.2f} "
+                       f"(budget cannot buy one lot)")
 
-    # ── Filter 3: OI (liquidity) ──────────────────────────────────────────────
-    # oi == -1 is a sentinel meaning "not yet received from feed" — skip filter.
-    if oi >= 0 and oi < HF_MIN_OI:
-        return FilterResult(
-            passed=False,
-            filter="LIQUIDITY_TOO_LOW",
-            reason=f"OI {oi:,} < minimum {HF_MIN_OI:,} — insufficient "
-                   f"open interest, exit may be difficult",
-        )
+    # ── Filter 2: quote presence and freshness ────────────────────────────────
+    has_quote = _quote_usable(bid, ask)
+    if not has_quote and not tp.allow_ltp_only_fill:
+        return _reject(ReasonCode.QUOTE_UNAVAILABLE,
+                       f"no usable bid/ask (bid={bid} ask={ask}) — entries fill off the "
+                       f"ask, so a quote-less contract is refused")
+    if (has_quote or tick_age_s is not None) and \
+            (tick_age_s is None or tick_age_s > tp.stale_tick_seconds):
+        age = "unknown" if tick_age_s is None else f"{tick_age_s:.0f}s"
+        return _reject(ReasonCode.QUOTE_STALE,
+                       f"quote age {age} > {tp.stale_tick_seconds}s")
 
-    # ── Filter 4: Volume ──────────────────────────────────────────────────────
-    # volume == -1 is a sentinel meaning "not yet received from feed" — skip filter.
-    if volume >= 0 and volume < HF_MIN_VOLUME:
-        return FilterResult(
-            passed=False,
-            filter="VOLUME_INSUFFICIENT",
-            reason=f"Volume {volume:,} < minimum {HF_MIN_VOLUME:,} — "
-                   f"low participation, wide fills expected",
-        )
+    # ── Filter 3: bid-ask spread ──────────────────────────────────────────────
+    if has_quote and float(ask) > float(bid):
+        mid = (float(bid) + float(ask)) / 2.0
+        spread_pct = (float(ask) - float(bid)) / mid * 100.0
+        if spread_pct > tp.max_spread_pct:
+            return _reject(ReasonCode.SPREAD_TOO_WIDE,
+                           f"Spread {spread_pct:.2f}% > limit {tp.max_spread_pct}% — "
+                           f"bid={bid} ask={ask}. Entry cost too high.")
 
-    # ── Filter 5: Expected slippage ───────────────────────────────────────────
-    # Slippage approximation: half the spread as market impact
-    if bid > 0 and ask > bid:
-        mid = (bid + ask) / 2.0
-        expected_slippage_pct = ((ask - mid) / mid) * 100.0   # one-way
-        if expected_slippage_pct > HF_MAX_SLIPPAGE_PCT:
-            return FilterResult(
-                passed=False,
-                filter="SLIPPAGE_TOO_HIGH",
-                reason=f"Expected slippage {expected_slippage_pct:.2f}% > "
-                       f"limit {HF_MAX_SLIPPAGE_PCT}% — "
-                       f"market impact will erode edge",
-            )
+    # ── Filter 4: OI (liquidity) — missing is a rejection ─────────────────────
+    if oi is None or oi < 0:
+        return _reject(ReasonCode.OI_UNAVAILABLE, f"OI not received from feed (oi={oi})")
+    if oi < tp.min_oi:
+        return _reject(ReasonCode.LIQUIDITY_TOO_LOW,
+                       f"OI {oi:,} < minimum {tp.min_oi:,} — insufficient "
+                       f"open interest, exit may be difficult")
 
-    # ── Filter 6: Risk/reward ─────────────────────────────────────────────────
-    sl     = ltp * (1.0 - sl_pct)
-    target = ltp * (1.0 + target_pct)
-    rr     = (target - ltp) / max(ltp - sl, 0.01)
-    if rr < HF_MIN_RR:
-        # Try stretching target
-        target_stretched = ltp + (ltp - sl) * HF_MIN_RR
-        rr_stretched = (target_stretched - ltp) / max(ltp - sl, 0.01)
-        if rr_stretched < HF_MIN_RR:
-            return FilterResult(
-                passed=False,
-                filter="RR_INSUFFICIENT",
-                reason=f"R:R {rr:.2f} < minimum {HF_MIN_RR} even after target "
-                       f"adjustment. ltp={ltp:.2f} sl={sl:.2f} target={target:.2f}",
-            )
+    # ── Filter 5: Volume — missing is a rejection ─────────────────────────────
+    if volume is None or volume < 0:
+        return _reject(ReasonCode.VOLUME_UNAVAILABLE,
+                       f"volume not received from feed (volume={volume})")
+    if volume < tp.min_volume:
+        return _reject(ReasonCode.VOLUME_INSUFFICIENT,
+                       f"Volume {volume:,} < minimum {tp.min_volume:,} — "
+                       f"low participation, wide fills expected")
+
+    # ── Filter 6: Expected slippage (half the spread as one-way impact) ───────
+    if has_quote and float(ask) > float(bid):
+        mid = (float(bid) + float(ask)) / 2.0
+        expected_slippage_pct = ((float(ask) - mid) / mid) * 100.0
+        if expected_slippage_pct > tp.max_slippage_pct:
+            return _reject(ReasonCode.SLIPPAGE_TOO_HIGH,
+                           f"Expected slippage {expected_slippage_pct:.2f}% > "
+                           f"limit {tp.max_slippage_pct}% — market impact will erode edge")
 
     return FilterResult(passed=True)
 
@@ -229,16 +248,82 @@ class ScoredCandidate:
     score_expiry:    float = 0.0
     score_price_beh: float = 0.0
 
+    # The single tick read that produced every price above (design §10.3): the
+    # hard filter, the score, the fill and the momentum check all judge THIS quote.
+    tick_age_s:   Optional[float] = None
+    tick_open:    float = 0.0
+
     # Hard filter result (always passed=True for candidates that reach scoring)
     filter_result: FilterResult = None
 
     @property
     def selected(self) -> bool:
-        return self.score >= MIN_SCORE
+        return self.score >= params().min_score
 
 
 # Keep SelectedOption as alias for backward compatibility
 SelectedOption = ScoredCandidate
+
+
+@dataclass(frozen=True)
+class ExpiryChoice:
+    """The expiry the policy picked, or why none qualified (design §10.4)."""
+    expiry:   Optional[date]
+    dte:      Optional[int]
+    band:     Optional[str]           # PREFERRED | FALLBACK_n | DTE1_MORNING | EXPLICIT
+    reason:   str                     # rationale, persisted with the signal
+    cause:    Optional[str] = None    # NO_INSTRUMENT_MASTER | NO_BANDED_EXPIRY when expiry is None
+    observed: tuple = ()              # every expiry in the universe, with its DTE
+
+
+@dataclass(frozen=True)
+class SelectionResult:
+    candidate:          Optional[ScoredCandidate]
+    rejections:         dict          # ReasonCode value -> count
+    evaluated:          int
+    expiry:             ExpiryChoice
+    ltp_only_fallbacks: int
+    score_table:        list          # top rows, persisted with the signal
+    ranked:             list = field(default_factory=list)   # every passing candidate, best first
+
+
+# ── Expiry policy ─────────────────────────────────────────────────────────────
+
+def _band_label(i: int) -> str:
+    return "PREFERRED" if i == 0 else f"FALLBACK_{i}"
+
+
+def choose_expiry(expiries: list[date], *, today: date, now_t: dtime, underlying: str,
+                  tp: TradingParams) -> ExpiryChoice:
+    """Walk ``tp.dte_bands[underlying]`` in order and return the first expiry whose
+    DTE falls in a band. DTE 0 is never traded; DTE 1 only before
+    ``dte1_cutoff_ist`` and only when no banded expiry exists. Pure."""
+    distinct = sorted(set(expiries))
+    observed = tuple((e.isoformat(), (e - today).days) for e in distinct)
+    if not distinct:
+        return ExpiryChoice(None, None, None,
+                            f"NO_INSTRUMENT_MASTER: no instruments for {underlying}",
+                            cause="NO_INSTRUMENT_MASTER", observed=observed)
+    bands = tp.dte_bands.get(underlying.upper(), ())
+    for i, (lo, hi) in enumerate(bands):
+        for e in distinct:
+            dte = (e - today).days
+            if dte >= 2 and lo <= dte <= hi:
+                return ExpiryChoice(e, dte, _band_label(i),
+                                    f"{_band_label(i)} band [{lo},{hi}] DTE {dte}",
+                                    observed=observed)
+    hh, mm = (int(x) for x in tp.dte1_cutoff_ist.split(":")[:2])
+    one = [e for e in distinct if (e - today).days == 1]
+    if one and now_t < dtime(hh, mm):
+        return ExpiryChoice(one[0], 1, "DTE1_MORNING",
+                            f"DTE 1 before {tp.dte1_cutoff_ist} and no banded expiry",
+                            observed=observed)
+    return ExpiryChoice(
+        None, None, None,
+        f"NO_BANDED_EXPIRY: expiries {[o[0] for o in observed]} (DTE "
+        f"{[o[1] for o in observed]}) fall outside bands {list(bands)}; nearest DTE "
+        f"{observed[0][1]}",
+        cause="NO_BANDED_EXPIRY", observed=observed)
 
 
 # ── Black-Scholes delta approximation ─────────────────────────────────────────
@@ -430,7 +515,7 @@ def _score_expiry(expiry: date) -> float:
     DTE 15-30: 55
     DTE >30:   30  (monthly expiry — slow theta)
     """
-    dte = max((expiry - datetime.now(timezone(timedelta(hours=5, minutes=30))).date()).days, 0)
+    dte = max((expiry - trading_day()).days, 0)
     if dte == 0:
         return 10.0   # expiry day — avoid unless before noon
     elif dte == 1:
@@ -486,51 +571,56 @@ def score_candidate(
     ltp_history: list[float] = None,
     prev_oi:     int = 0,
     avg_volume:  float = 0.0,   # rolling average volume from Redis; 0 = unknown
-    sl_pct:      float = 0.30,
-    target_pct:  float = 0.55,
-) -> Optional[ScoredCandidate]:
+    *,
+    sl_pct:      float,
+    target_pct:  float,
+    tp:          Optional[TradingParams] = None,
+    max_premium: Optional[float] = None,
+) -> tuple[Optional[ScoredCandidate], FilterResult]:
     """
-    Score a single option candidate.
-    Runs 6 hard filters first — returns None if any filter fails.
-    Returns ScoredCandidate only if all filters pass.
+    Run the hard filters on ONE tick, then score the survivors.
+    Returns (candidate, FilterResult). ``candidate`` is None when a hard filter
+    rejected the contract; the FilterResult names the ReasonCode.
     """
+    tp = tp or params()
     ltp    = float(tick.get("ltp")       or 0)
-    bid    = float(tick.get("best_bid")  or 0)
-    ask    = float(tick.get("best_ask")  or 0)
-    # -1 sentinel = "not received from feed yet" — pass through to _hard_filter
-    # which will skip the OI/volume filters for that sentinel value.
+    _bid   = tick.get("best_bid")
+    _ask   = tick.get("best_ask")
+    bid    = float(_bid or 0)
+    ask    = float(_ask or 0)
     _oi_raw     = tick.get("oi")
     _vol_raw    = tick.get("volume")
-    oi          = int(_oi_raw)    if _oi_raw    is not None else -1
-    volume      = int(_vol_raw)   if _vol_raw   is not None else -1
+    oi          = int(_oi_raw)    if _oi_raw    is not None else None
+    volume      = int(_vol_raw)   if _vol_raw   is not None else None
     iv_raw = float(tick.get("iv")        or 0)
     # Normalise IV to percentage form (20.0 for 20%).
     # Tick data from WebSocket may be decimal (0.20); chain_iv is already percent.
     iv = iv_raw * 100 if (0 < iv_raw < 1.0) else iv_raw
+    age = fills.tick_age_seconds(tick, now_utc())
 
     opt_type_str = inst.option_type.value if inst.option_type else "CE"
 
     # ── STEP 1: Hard filters — binary pass/fail ───────────────────────────────
     hf = _hard_filter(
-        ltp=ltp, bid=bid, ask=ask, oi=oi, volume=volume,
+        ltp=ltp, bid=_bid, ask=_ask, oi=oi, volume=volume,
         sl_pct=sl_pct, target_pct=target_pct,
-        underlying=inst.name or "NIFTY",
+        underlying=inst.name or "NIFTY", min_rr=tp.min_rr,
+        tick_age_s=age, max_premium=max_premium, tp=tp,
     )
     if not hf.passed:
-        logger.warning(
+        logger.debug(
             "[HardFilter] REJECTED %s %.0f%s  ltp=%.2f bid=%.2f ask=%.2f "
             "oi=%s vol=%s | [%s] %s",
-            inst.symbol, inst.strike, opt_type_str, ltp, bid, ask,
-            f"{oi:,}", f"{volume:,}", hf.filter, hf.reason,
+            inst.symbol, inst.strike, opt_type_str, ltp, bid, ask, oi, volume,
+            hf.filter, hf.reason,
         )
-        return None
+        return None, hf
 
     # ── STEP 2: Soft scoring ──────────────────────────────────────────────────
     iv_decimal = (iv or 20.0) / 100.0
-    dte        = max((expiry - datetime.now(timezone(timedelta(hours=5, minutes=30))).date()).days, 0)
-    # Normalise sentinel -1 → 0 for scoring (gives low but valid score)
-    oi_score   = max(oi, 0)
-    vol_score  = max(volume, 0)
+    dte        = max((expiry - trading_day()).days, 0)
+    oi_score   = oi        # both are real, non-negative values past the hard filter
+    vol_score  = volume
     oi_change  = oi_score - prev_oi
 
     # ── Compute all 8 factor scores ─────────────────────────────────────────
@@ -558,7 +648,7 @@ def score_candidate(
     mid = (bid + ask) / 2.0 if bid and ask else ltp
     spread_pct = round((ask - bid) / mid * 100, 2) if mid > 0 and ask > bid else 0.0
 
-    return ScoredCandidate(
+    cand = ScoredCandidate(
         token        = inst.token,
         symbol       = inst.symbol,
         strike       = inst.strike,
@@ -583,10 +673,33 @@ def score_candidate(
         score_vol_trend = round(s_voltrd, 2),
         score_expiry    = round(s_expiry, 2),
         score_price_beh = round(s_pbehav, 2),
+        tick_age_s      = age,
+        tick_open       = float(tick.get("open") or 0),
+        filter_result   = hf,
     )
+    return cand, hf
 
 
 # ── OptionSelector class ───────────────────────────────────────────────────────
+
+# Rejection codes that describe the expiry/universe rather than a contract; they do
+# not count toward ``evaluated``.
+_EXPIRY_CODES = {ReasonCode.NO_SUITABLE_EXPIRY.value, ReasonCode.NO_INSTRUMENTS.value}
+
+
+def _tally(rejections: dict, code: str) -> None:
+    rejections[code] = rejections.get(code, 0) + 1
+
+
+def _score_row(c: ScoredCandidate) -> dict:
+    return {
+        "strike": c.strike, "option_type": c.option_type, "ltp": c.ltp, "score": c.score,
+        "delta": c.delta_est, "oi": c.oi, "volume": c.volume, "spread_pct": c.spread_pct,
+        "liquidity": c.score_liquidity, "spread": c.score_spread, "delta_score": c.score_delta,
+        "moneyness": c.score_moneyness, "oi_change": c.score_oi_change,
+        "vol_trend": c.score_vol_trend, "expiry": c.score_expiry, "price": c.score_price_beh,
+    }
+
 
 class OptionSelector:
     """
@@ -600,33 +713,67 @@ class OptionSelector:
         direction:   Direction,
         underlying:  str,
         spot_price:  float,
+        *,
+        sl_pct:      float,
+        target_pct:  float,
+        params:      TradingParams,
+        base_amount: float,
+        regime_multiplier: float,
         expiry:      Optional[date] = None,
-        min_ltp:     float = MIN_LTP,
-        max_ltp:     float = MAX_LTP,
-        sl_pct:      float = 0.30,
-        target_pct:  float = 0.55,
-    ) -> Optional[ScoredCandidate]:
+    ) -> SelectionResult:
         """
-        Main entry point — returns the single best option.
+        Main entry point — returns a SelectionResult whose ``candidate`` is the
+        single best option, or None (NO TRADE) with the per-ReasonCode tally of why.
         direction = BUY → CE,  SELL → PE.
-        Returns None (NO TRADE) if no candidate passes all hard filters.
+
+        ``base_amount`` is pre-multiplier: the affordability ceiling applies the
+        regime multiplier here, and sizing applies it to the deployed amount, each
+        exactly once.
+
+        Every call is tallied once in the per-day rejection counter (item 7);
+        ``select_top_n`` (diagnostics only) is not.
         """
-        candidates, rejected, no_tick_count = await self._build_candidates(
-            db, direction, underlying, spot_price, expiry,
-            min_ltp, max_ltp, sl_pct, target_pct,
+        res = await self._select(
+            db, direction, underlying, spot_price, sl_pct=sl_pct, target_pct=target_pct,
+            params=params, base_amount=base_amount, regime_multiplier=regime_multiplier,
+            expiry=expiry)
+        _REJECTION_COUNTER.record(underlying, res)
+        return res
+
+    async def _select(
+        self,
+        db:          AsyncSession,
+        direction:   Direction,
+        underlying:  str,
+        spot_price:  float,
+        *,
+        sl_pct:      float,
+        target_pct:  float,
+        params:      TradingParams,
+        base_amount: float,
+        regime_multiplier: float,
+        expiry:      Optional[date] = None,
+    ) -> SelectionResult:
+        candidates, rejections, expiry_choice = await self._build_candidates(
+            db, direction, underlying, spot_price, sl_pct=sl_pct, target_pct=target_pct,
+            params=params, base_amount=base_amount, regime_multiplier=regime_multiplier,
+            expiry=expiry,
         )
+        n_fallback = sum(1 for c in candidates
+                         if not fills.quote_valid(c.bid, c.ask, c.tick_age_s, params))
+        evaluated = len(candidates) + sum(
+            n for k, n in rejections.items() if k not in _EXPIRY_CODES)
 
         if not candidates:
-            logger.warning(
-                "[OptionSelector] ❌ NO TRADE — %s %s spot=%.1f | "
-                "%d candidates all REJECTED by hard filters  "
-                "(no_tick_fallbacks=%d — if high, option LTPs not in Redis yet)",
-                underlying, direction, spot_price, rejected, no_tick_count,
+            logger.info(
+                "[OptionSelector] ❌ NO TRADE — %s %s spot=%.1f | %d evaluated, all rejected: %s "
+                "(expiry: %s)", underlying, direction, spot_price, evaluated, rejections,
+                expiry_choice.reason,
             )
-            return None
+            return SelectionResult(None, rejections, evaluated, expiry_choice, n_fallback, [])
 
         candidates.sort(key=lambda c: c.score, reverse=True)
-        self._log_table(candidates, underlying, rejected)
+        self._log_table(candidates, underlying, sum(rejections.values()))
 
         best = candidates[0]
         logger.info(
@@ -636,9 +783,11 @@ class OptionSelector:
             underlying, best.strike, best.option_type,
             best.score, best.ltp, best.delta_est, best.iv,
             best.spread_pct, f"{best.oi:,}",
-            len(candidates), rejected,
+            len(candidates), sum(rejections.values()),
         )
-        return best
+        return SelectionResult(
+            best, rejections, evaluated, expiry_choice, n_fallback,
+            [_score_row(c) for c in candidates[:SCORE_TABLE_ROWS]], ranked=list(candidates))
 
     async def select_top_n(
         self,
@@ -646,19 +795,38 @@ class OptionSelector:
         direction:  Direction,
         underlying: str,
         spot_price: float,
-        n:          int = 3,
-        sl_pct:     float = 0.30,
-        target_pct: float = 0.55,
-    ) -> list[ScoredCandidate]:
-        """Return top N scored candidates (for frontend option selector widget)."""
-        candidates, _, _ntc = await self._build_candidates(
-            db, direction, underlying, spot_price,
-            sl_pct=sl_pct, target_pct=target_pct,
-        )
-        candidates.sort(key=lambda c: c.score, reverse=True)
-        return candidates[:n]
+        *,
+        n:          int,
+        sl_pct:     float,
+        target_pct: float,
+        params:     TradingParams,
+        base_amount: float,
+        regime_multiplier: float,
+    ) -> SelectionResult:
+        """Top N scored candidates (frontend option selector widget): the same
+        SelectionResult as ``select``, with ``ranked`` truncated to *n*."""
+        res = await self._select(
+            db, direction, underlying, spot_price, sl_pct=sl_pct, target_pct=target_pct,
+            params=params, base_amount=base_amount, regime_multiplier=regime_multiplier)
+        return SelectionResult(
+            res.candidate, res.rejections, res.evaluated, res.expiry, res.ltp_only_fallbacks,
+            res.score_table, ranked=res.ranked[:n])
 
     # ── Internal ──────────────────────────────────────────────────────────────
+
+    async def _resolve_expiry(
+        self, db: AsyncSession, underlying: str, option_type: OptionType, now: datetime,
+        tp: TradingParams,
+    ) -> ExpiryChoice:
+        """Deliberate expiry choice (design §10.4) over the instrument universe
+        for the ctx trading day."""
+        universe = [
+            i for i in await ctx().instruments.instruments_for(db, underlying.upper())
+            if i.instrument_type == InstrumentType.OPTIDX and i.option_type == option_type
+            and i.expiry is not None
+        ]
+        return choose_expiry([i.expiry for i in universe], today=trading_day(),
+                             now_t=now.time().replace(tzinfo=None), underlying=underlying, tp=tp)
 
     async def _build_candidates(
         self,
@@ -666,115 +834,104 @@ class OptionSelector:
         direction:  Direction,
         underlying: str,
         spot_price: float,
+        *,
+        sl_pct:     float,
+        target_pct: float,
+        params:     TradingParams,
+        base_amount: float,
+        regime_multiplier: float,
         expiry:     Optional[date] = None,
-        min_ltp:    float = MIN_LTP,
-        max_ltp:    float = MAX_LTP,
-        sl_pct:     float = 0.30,
-        target_pct: float = 0.55,
-    ) -> tuple[list[ScoredCandidate], int]:
+    ) -> tuple[list[ScoredCandidate], dict, ExpiryChoice]:
         """
-        Build and score all candidates. Returns (passed_list, rejected_count, no_tick_count).
-        rejected_count  = number of candidates that failed hard filters or soft score.
-        no_tick_count   = number of candidates that had no tick in Redis (LTP-only fallback).
+        Build and score all candidates. EVERY path returns the same 3-tuple
+        ``(candidates, rejections, expiry_choice)``; ``rejections`` maps
+        ReasonCode values to counts.
         """
-
-        option_type_enum = (
-            OptionType.CE if direction == Direction.BUY else OptionType.PE
-        )
+        tp = params
+        rejections: dict[str, int] = {}
+        option_type_enum = OptionType.CE if direction == Direction.BUY else OptionType.PE
         step = NIFTY_STEP if underlying.upper() == "NIFTY" else BANKNIFTY_STEP
 
-        # Resolve expiry
-        if not expiry:
-            exp_result = await db.execute(
-                select(Instrument.expiry)
-                .where(
-                    Instrument.name             == underlying.upper(),
-                    Instrument.instrument_type  == InstrumentType.OPTIDX,
-                    Instrument.option_type      == option_type_enum,
-                    Instrument.is_active        == True,
-                    Instrument.expiry           >= datetime.now(timezone(timedelta(hours=5, minutes=30))).date(),
-                )
-                .distinct()
-                .order_by(Instrument.expiry)
-                .limit(1)
-            )
-            expiry = exp_result.scalar()
-            if not expiry:
-                return [], 0
+        # Universe through the InstrumentPort (design §10.4, §14.2): live =
+        # active rows with expiry >= the ctx trading day; replay = the day's
+        # traded tokens. No inline is_active / wall-clock filter here.
+        universe = [
+            i for i in await ctx().instruments.instruments_for(db, underlying.upper())
+            if i.instrument_type == InstrumentType.OPTIDX and i.option_type == option_type_enum
+        ]
+
+        today = trading_day()
+        if expiry is not None:
+            choice = ExpiryChoice(expiry, (expiry - today).days, "EXPLICIT",
+                                  f"explicit expiry {expiry}")
+        else:
+            choice = choose_expiry([i.expiry for i in universe if i.expiry], today=today,
+                                   now_t=now_ist().time().replace(tzinfo=None),
+                                   underlying=underlying, tp=tp)
+        if choice.expiry is None:
+            _tally(rejections, ReasonCode.NO_INSTRUMENTS.value
+                   if choice.cause == "NO_INSTRUMENT_MASTER"
+                   else ReasonCode.NO_SUITABLE_EXPIRY.value)
+            return [], rejections, choice
+        expiry = choice.expiry
 
         # Fetch strikes: ATM ± 5 strikes
         atm  = round(spot_price / step) * step
         low  = atm - 5 * step
         high = atm + 5 * step
-
-        inst_result = await db.execute(
-            select(Instrument).where(
-                Instrument.name             == underlying.upper(),
-                Instrument.instrument_type  == InstrumentType.OPTIDX,
-                Instrument.option_type      == option_type_enum,
-                Instrument.expiry           == expiry,
-                Instrument.is_active        == True,
-                Instrument.strike           >= low,
-                Instrument.strike           <= high,
-            ).order_by(Instrument.strike)
+        instruments = sorted(
+            (i for i in universe
+             if i.expiry == expiry and i.strike is not None and low <= i.strike <= high),
+            key=lambda i: i.strike,
         )
-        instruments = inst_result.scalars().all()
         if not instruments:
-            return [], 0
+            _tally(rejections, ReasonCode.NO_INSTRUMENTS.value)
+            return [], rejections, choice
 
         # Fetch IV from option chain cache (best-effort)
         chain_iv: dict[str, float] = {}
-        chain = await redis_cache.get_option_chain(underlying, str(expiry))
+        chain = await market().get_option_chain(underlying, str(expiry))
         if chain:
             for s in chain.get("strikes", []):
                 if s.get("token") and s.get("iv"):
                     raw_iv = float(s["iv"])
                     # Normalise to percentage form (e.g. 20.0 for 20%).
-                    # AngelOne may return either decimal (0.20) or percent (20.0).
-                    # Values < 1 are treated as decimal and multiplied by 100.
                     chain_iv[s["token"]] = raw_iv * 100 if raw_iv < 1.0 else raw_iv
 
         # Fetch previous OI snapshot from Redis for OI-change scoring
         prev_oi_map: dict[str, int] = {}
         prev_snap_key = f"prev_oi:{underlying}:{expiry}"
-        prev_snap = await redis_cache.get(prev_snap_key)
+        prev_snap = await market().get(prev_snap_key)
         if prev_snap and isinstance(prev_snap, dict):
             prev_oi_map = {k: int(v) for k, v in prev_snap.items()}
 
         # Fetch rolling average volume from Redis for volume-trend scoring
         avg_vol_key = f"avg_vol:{underlying}:{expiry}"
-        avg_vol_snap = await redis_cache.get(avg_vol_key)
+        avg_vol_snap = await market().get(avg_vol_key)
         avg_vol_map: dict[str, float] = {}
         if avg_vol_snap and isinstance(avg_vol_snap, dict):
             avg_vol_map = {k: float(v) for k, v in avg_vol_snap.items()}
 
         candidates: list[ScoredCandidate] = []
-        rejected = 0
-        no_tick_count = 0
+        ticks: dict[str, dict] = {}          # the ONE tick read per instrument (§10.3)
 
         for inst in instruments:
-            tick = await redis_cache.get_tick(inst.token)
-            if not tick:
-                ltp_val = await redis_cache.get_ltp(inst.token)
-                if not ltp_val:
-                    rejected += 1
-                    continue
-                # We have LTP but no full tick (bid/ask/OI/volume not yet received).
-                # Use sentinel value -1 for OI and volume so _hard_filter knows
-                # to SKIP those filters rather than reject on a zero value that
-                # simply means "not yet received from feed".
-                tick = {"ltp": ltp_val, "best_bid": 0, "best_ask": 0,
-                        "oi": -1, "volume": -1, "iv": chain_iv.get(inst.token, 0)}
-                no_tick_count += 1
+            tick = await market().get_tick(inst.token)
+            if not tick or not float(tick.get("ltp") or 0) > 0:
+                _tally(rejections, ReasonCode.TICK_UNAVAILABLE.value)
+                continue
+            ticks[inst.token] = tick
 
             # Inject IV from chain snapshot if tick doesn't have it
             if not tick.get("iv") and inst.token in chain_iv:
                 tick = dict(tick)
                 tick["iv"] = chain_iv[inst.token]
 
-            prev_oi = prev_oi_map.get(inst.token, 0)
+            # affordable_max_premium: the regime multiplier is applied ONCE, here
+            lot = inst.lot_size or 0
+            max_premium = (base_amount * regime_multiplier) / lot if lot > 0 else 0.0
 
-            cand = score_candidate(
+            cand, hf = score_candidate(
                 inst        = inst,
                 spot        = spot_price,
                 tick        = tick,
@@ -782,57 +939,59 @@ class OptionSelector:
                 direction   = direction,
                 step        = step,
                 ltp_history = [],
-                prev_oi     = prev_oi,
+                prev_oi     = prev_oi_map.get(inst.token, 0),
                 avg_volume  = avg_vol_map.get(inst.token, 0.0),
                 sl_pct      = sl_pct,
                 target_pct  = target_pct,
+                tp          = tp,
+                max_premium = max_premium,
             )
-            if cand:
-                if cand.score >= MIN_SCORE:
-                    candidates.append(cand)
-                else:
-                    rejected += 1
-                    logger.debug(
-                        "[SoftFilter] REJECTED %s %.0f%s score=%.1f < %.1f",
-                        inst.symbol, inst.strike,
-                        inst.option_type.value if inst.option_type else "",
-                        cand.score, MIN_SCORE,
-                    )
+            if cand is None:
+                _tally(rejections, hf.filter)
+            elif cand.score < tp.min_score:
+                _tally(rejections, ReasonCode.SCORE_BELOW_MIN.value)
+                logger.debug("[SoftFilter] REJECTED %s %.0f%s score=%.1f < %.1f",
+                             inst.symbol, inst.strike, cand.option_type, cand.score, tp.min_score)
             else:
-                rejected += 1
+                candidates.append(cand)
 
-        # Save current OI snapshot for next cycle's OI-change scoring
-        # Also update rolling average volume (EMA α=0.3) for volume-trend scoring
-        if instruments:
-            new_snap: dict[str, int] = {}
-            new_avg_vol: dict[str, float] = {}
-            for inst in instruments:
-                tick = await redis_cache.get_tick(inst.token)
-                if tick:
-                    # OI snapshot — used for OI-change scoring next cycle
-                    cur_oi = int(tick.get("oi") or 0)
-                    new_snap[inst.token] = cur_oi
-                    # Volume EMA — used for volume-trend scoring (was wrongly using OI)
-                    prev_avg = avg_vol_map.get(inst.token, 0.0)
-                    cur_volume = float(tick.get("volume") or 0)
-                    if prev_avg <= 0:
-                        new_avg_vol[inst.token] = cur_volume
-                    else:
-                        new_avg_vol[inst.token] = round(0.3 * cur_volume + 0.7 * prev_avg, 1)
-            if new_snap:
-                await redis_cache.set(prev_snap_key, new_snap, ttl=3600)
-            if new_avg_vol:
-                await redis_cache.set(avg_vol_key, new_avg_vol, ttl=28800)
+        # Save current OI snapshot for next cycle's OI-change scoring and update the
+        # rolling average volume (EMA α=0.3) — from the ticks already read above.
+        new_snap: dict[str, int] = {}
+        new_avg_vol: dict[str, float] = {}
+        for token, tick in ticks.items():
+            new_snap[token] = int(tick.get("oi") or 0)
+            prev_avg = avg_vol_map.get(token, 0.0)
+            cur_volume = float(tick.get("volume") or 0)
+            new_avg_vol[token] = cur_volume if prev_avg <= 0 else \
+                round(0.3 * cur_volume + 0.7 * prev_avg, 1)
+        if new_snap:
+            await market().set(prev_snap_key, new_snap, ttl=3600)
+        if new_avg_vol:
+            await market().set(avg_vol_key, new_avg_vol, ttl=28800)
 
-        if no_tick_count > 0:
-            logger.warning(
-                "[OptionSelector] %d / %d instruments had NO tick in Redis "
-                "(LTP-only fallback used). OI & volume hard filters were bypassed "
-                "for those — if all still rejected, check LTP range or spread.",
-                no_tick_count, len(instruments) if instruments else 0,
+        return candidates, rejections, choice
+
+    async def log_startup_summary(self, db: AsyncSession) -> None:
+        """Observed expiries, nearest DTE and the premium ceiling per underlying
+        (design §10.2, §10.4), so an operator sees the effective bands at boot."""
+        tp = params()
+        for und in ("NIFTY", "BANKNIFTY"):
+            rows = [i for i in await ctx().instruments.instruments_for(db, und)
+                    if i.instrument_type == InstrumentType.OPTIDX and i.expiry is not None]
+            choice = choose_expiry([i.expiry for i in rows], today=trading_day(),
+                                   now_t=dtime(9, 15), underlying=und, tp=tp)
+            lot = next((i.lot_size for i in rows if i.lot_size), None)
+            ceiling = (round(tp.fixed_fraction_pct / 100.0 * ctx().cfg.capital / lot, 2)
+                       if lot else None)
+            logger.info(
+                "[OptionSelector] %s: expiries=%s nearest_dte=%s bands=%s -> %s | "
+                "lot=%s premium ceiling (1.0x) ₹%s, band %s",
+                und, [o[0] for o in choice.observed],
+                choice.observed[0][1] if choice.observed else None,
+                list(tp.dte_bands.get(und, ())), choice.reason, lot, ceiling,
+                tp.premium_band.get(und),
             )
-
-        return candidates, rejected, no_tick_count
 
     def _log_table(self, candidates: list[ScoredCandidate], underlying: str, rejected: int = 0):
         """Log the full scoring table with pass/reject summary."""
@@ -850,7 +1009,7 @@ class OptionSelector:
         )
         logger.info(header)
         logger.info("  " + "─" * 112)
-        for i, c in enumerate(candidates[:8]):
+        for i, c in enumerate(candidates[:SCORE_TABLE_ROWS]):
             marker = "  ← SELECTED" if i == 0 else ""
             logger.info(
                 "  %8.0f  %7.2f  %6.3f  %5.1f%%  %9s  %6.2f%%  "
@@ -861,6 +1020,67 @@ class OptionSelector:
                 c.score_moneyness, c.score_oi_change,
                 marker,
             )
+
+
+# ── Rejection visibility (blockers-plan item 7; thresholds unchanged) ─────────
+
+class SelectionRejectionCounter:
+    """Per (trading_day, underlying) tally of select() outcomes: evaluated,
+    selected and a ReasonCode Counter. Logs one structured INFO line
+    ``SELECTION_REJECTIONS {json}`` on the first rejection of the day and then at
+    most once per LOG_INTERVAL_S per underlying (ctx clock). Days other than the
+    current one are dropped on roll. Observability only: never raises."""
+
+    LOG_INTERVAL_S = 300
+
+    def __init__(self) -> None:
+        self._tallies: dict[tuple[date, str], dict] = {}
+
+    def reset(self) -> None:
+        self._tallies.clear()
+
+    def get(self, day: date, underlying: str) -> Optional[dict]:
+        t = self._tallies.get((day, underlying.upper()))
+        if t is None:
+            return None
+        return {"evaluated": t["evaluated"], "selected": t["selected"],
+                "by_code": dict(t["by_code"])}
+
+    def record(self, underlying: str, result: SelectionResult) -> None:
+        try:
+            self._record(underlying.upper(), result)
+        except Exception as exc:
+            logger.debug("selection rejection counter failed: %s", exc)
+
+    def _record(self, und: str, result: SelectionResult) -> None:
+        day, now = trading_day(), now_utc()
+        for key in [k for k in self._tallies if k[0] != day]:
+            del self._tallies[key]
+        t = self._tallies.setdefault((day, und), {
+            "evaluated": 0, "selected": 0, "by_code": Counter(), "last_logged_at": None})
+        t["evaluated"] += int(result.evaluated or 0)
+        t["selected"] += 1 if result.candidate is not None else 0
+        t["by_code"].update({k: int(n) for k, n in (result.rejections or {}).items()})
+        last = t["last_logged_at"]
+        if last is None:
+            due = bool(t["by_code"])                       # the first rejection of the day
+        else:
+            due = (now - last).total_seconds() >= self.LOG_INTERVAL_S
+        if not due:
+            return
+        t["last_logged_at"] = now
+        logger.info("SELECTION_REJECTIONS %s", json.dumps({
+            "run_id": ctx().run_id, "trading_day": day.isoformat(), "underlying": und,
+            "evaluated": t["evaluated"], "selected": t["selected"],
+            "by_code": dict(t["by_code"]),
+        }, sort_keys=True))
+
+
+_REJECTION_COUNTER = SelectionRejectionCounter()
+
+
+def rejection_counters() -> SelectionRejectionCounter:
+    return _REJECTION_COUNTER
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────

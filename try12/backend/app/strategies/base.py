@@ -10,6 +10,10 @@ from datetime import datetime, timezone
 from typing import Optional, Callable, Awaitable
 from enum import Enum
 
+from app.runtime.context import now_utc, params
+from app.services.trading import no_trade
+from app.services.trading.no_trade import ReasonCode
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +40,7 @@ class SignalEvent:
     # Standard 1:2 R:R — entry=100, SL=90 (−10%), target=120 (+20%)
     sl_pct:          float = 0.10   # SL as 10% of option LTP
     target_pct:      float = 0.20   # Target as 20% of option LTP → R:R = 2.0
-    min_rr:          float = 2.0    # Min R:R required (enforced in PaperEngine)
+    min_rr:          float = 2.0    # RECORD of the floor applied (params().min_rr); never a source
     # Suggested entry params (filled by option selector later)
     suggested_strike: Optional[float] = None
     entry_price_ref:  Optional[float] = None
@@ -67,8 +71,10 @@ class SignalAggregator:
         # key: (underlying, direction) → last acted timestamp
         self._last_acted: dict[tuple, datetime] = {}
 
-    def should_act(self, signal: SignalEvent) -> tuple[bool, str]:
-        now = datetime.now(timezone.utc)
+    def should_act(self, signal: SignalEvent) -> tuple[bool, Optional[ReasonCode], str]:
+        """(ok, code, reason). The aggregator is the one component that knows
+        which rule fired, so it returns the code; callers never parse reason."""
+        now = now_utc()
         key_same = (signal.underlying, signal.direction)
         key_opp  = (
             signal.underlying,
@@ -82,7 +88,7 @@ class SignalAggregator:
                 last_t = last_t.replace(tzinfo=timezone.utc)
             elapsed = (now - last_t).total_seconds()
             if elapsed < self.SAME_DIR_COOLDOWN_SECS:
-                return False, (
+                return False, ReasonCode.AGGREGATOR_SAME_DIRECTION, (
                     f"Same direction ({signal.direction}) already acted on "
                     f"{signal.underlying} {elapsed:.0f}s ago. "
                     f"Cooldown: {self.SAME_DIR_COOLDOWN_SECS}s"
@@ -95,16 +101,16 @@ class SignalAggregator:
                 last_opp = last_opp.replace(tzinfo=timezone.utc)
             elapsed = (now - last_opp).total_seconds()
             if elapsed < self.CONFLICT_COOLDOWN_SECS:
-                return False, (
+                return False, ReasonCode.AGGREGATOR_CONFLICT, (
                     f"Opposite direction signal on {signal.underlying} "
                     f"fired {elapsed:.0f}s ago — conflicting signals."
                 )
 
-        return True, ""
+        return True, None, ""
 
     def record_acted(self, signal: SignalEvent):
         key = (signal.underlying, signal.direction)
-        self._last_acted[key] = datetime.now(timezone.utc)
+        self._last_acted[key] = now_utc()
 
     def clear_acted(self, signal: SignalEvent):
         """Remove an optimistic cooldown entry when no position was opened."""
@@ -131,6 +137,11 @@ class SignalBus:
         cls._handlers.append(handler)
 
     @classmethod
+    def reset_handlers(cls):
+        """Drop every subscriber (used by wiring.wire_signal_handlers)."""
+        cls._handlers.clear()
+
+    @classmethod
     async def publish(cls, signal: SignalEvent) -> bool:
         """
         Route signal through aggregator → handlers.
@@ -139,12 +150,19 @@ class SignalBus:
         signal (no option, capital exhausted, etc.) does not waste the 90s
         same-direction cooldown for subsequent valid signals.
         """
-        # ── Signal aggregator gate ────────────────────────────────────────────
-        ok, reason = signal_aggregator.should_act(signal)
+        no_trade.note_signal_emitted()      # cycle_stats.signals_emitted
+
+        # ── Signal aggregator gate (a recorded decision, design §12) ──────────
+        ok, code, reason = signal_aggregator.should_act(signal)
         if not ok:
             logger.debug(
                 "[SignalBus] AGGREGATOR blocked %s %s %s: %s",
                 signal.strategy_name, signal.underlying, signal.direction, reason
+            )
+            # own short-lived session, commits, never raises
+            await no_trade.record_signal_gate(
+                code=code, reason=reason,
+                underlying=signal.underlying, strategy_name=signal.strategy_name,
             )
             return False
 
@@ -187,7 +205,6 @@ class BaseStrategy(ABC):
     # Standard 1:2 R:R — entry=100, SL=90 (−10%), target=120 (+20%)
     sl_pct:      float = 0.10   # SL as 10% of option LTP
     target_pct:  float = 0.20   # Target as 20% of option LTP → R:R = 2.0
-    min_rr:      float = 2.0    # Hard minimum R:R — trade skipped if below this
 
     def __init__(self, underlying: str = "NIFTY"):
         self.underlying = underlying
@@ -225,7 +242,7 @@ class BaseStrategy(ABC):
         last_time = self._last_signal_time
         if last_time.tzinfo is None:
             last_time = last_time.replace(tzinfo=timezone.utc)
-        elapsed = (datetime.now(timezone.utc) - last_time).total_seconds() / 60
+        elapsed = (now_utc() - last_time).total_seconds() / 60
         return elapsed >= self._cooldown_minutes
 
     def _make_signal(self, direction: Direction, spot: float,
@@ -235,11 +252,11 @@ class BaseStrategy(ABC):
             underlying=self.underlying,
             direction=direction,
             spot_price=spot,
-            signal_time=datetime.now(timezone.utc),
+            signal_time=now_utc(),
             vwap=indicators.get("vwap"),
             indicators=indicators,
             sl_pct=self.sl_pct,
             target_pct=self.target_pct,
-            min_rr=self.min_rr,
+            min_rr=params().min_rr,   # a record of the floor applied; params() is the only source
             notes=notes,
         )

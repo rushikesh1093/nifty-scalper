@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.guards import LIVE_RUN_ID, run_id_query
 from app.db.base import get_db
 from app.db.models.regime import RegimePerformanceModel, RegimeStateModel
 from app.services.cache.redis_client import redis_cache
@@ -27,17 +28,19 @@ async def get_regime_performance(
     underlying: Optional[str] = Query(None, description="Filter by underlying (e.g. NIFTY, BANKNIFTY)"),
     date_from:  Optional[str] = Query(None, description="ISO date string — include rows with last_trade_at >= this date"),
     date_to:    Optional[str] = Query(None, description="ISO date string — include rows with last_trade_at <= this date"),
+    run_id:     str = Depends(run_id_query),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Return regime performance statistics.
+    Return regime performance statistics for one run (default PAPER).
 
     Computes win_rate dynamically from winning_trades / total_trades so the
     value is always current even when the stored column is stale or NULL.
     Results are ordered by total_pnl DESC.
     """
     try:
-        q = select(RegimePerformanceModel).order_by(desc(RegimePerformanceModel.total_pnl))
+        q = select(RegimePerformanceModel).where(RegimePerformanceModel.run_id == run_id) \
+            .order_by(desc(RegimePerformanceModel.total_pnl))
 
         if underlying:
             q = q.where(RegimePerformanceModel.underlying == underlying.upper())
@@ -120,6 +123,55 @@ async def get_regime_current(
         raise HTTPException(status_code=503, detail=f"regime cache unavailable: {exc}")
 
 
+@router.get("/strategy-map")
+async def get_strategy_map():
+    """
+    The regime → strategy map (design §6.2) plus live per-underlying state
+    (§6.5). Reasons are a closed set: enabled, regime_rule, user_disabled,
+    daily_strategy_halt, transition_cooldown, regime_unavailable.
+    """
+    from app.runtime.context import ctx
+    from app.services.trading.regime_rules import (
+        NEVER_ENABLED, POSITION_MULTIPLIERS, REGIME_RULES,
+    )
+    from app.services.trading.strategy_orchestrator import strategy_orchestrator
+    from app.strategies.names import ALL_STRATEGY_NAMES
+
+    regimes = [
+        {
+            "regime": name,
+            "strategies": sorted(rule.enabled_strategies),
+            "directions": sorted(rule.allowed_directions),
+            "multiplier": rule.position_multiplier,
+            "notes": rule.notes,
+        }
+        for name, rule in REGIME_RULES.items()
+    ]
+    user_flags = ctx().user_flags.current()
+    current = []
+    for u in ctx().cfg.underlyings:
+        strategies = []
+        for name in ALL_STRATEGY_NAMES:
+            enabled, reason = strategy_orchestrator.is_strategy_enabled(u, name)
+            if not user_flags.get(name, True):
+                enabled, reason = False, "user_disabled"
+            elif reason == "regime flags not yet computed":
+                reason = "regime_unavailable"
+            strategies.append({"name": name, "enabled": enabled, "reason": reason})
+        current.append({
+            "underlying": u,
+            "regime": strategy_orchestrator.current_regime_name(u),
+            "cooldown_remaining": strategy_orchestrator.cooldown_remaining(u),
+            "strategies": strategies,
+        })
+    return {
+        "multiplier_set": sorted(POSITION_MULTIPLIERS),
+        "never_enabled": sorted(NEVER_ENABLED),
+        "regimes": regimes,
+        "current": current,
+    }
+
+
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -159,6 +211,7 @@ async def get_regime_history(
     hours: int = Query(24, ge=1, le=168, description="Number of hours to look back"),
     limit: int = Query(500, ge=1, le=2000, description="Max rows scanned before collapsing (most recent kept)"),
     collapse: bool = Query(True, description="Merge consecutive equal regimes into spans"),
+    run_id: str = Depends(run_id_query),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -183,6 +236,7 @@ async def get_regime_history(
         q = (
             select(RegimeStateModel)
             .where(
+                RegimeStateModel.run_id == run_id,
                 RegimeStateModel.underlying == u,
                 RegimeStateModel.timestamp >= cutoff,
             )
@@ -208,6 +262,8 @@ async def get_regime_history(
         if not collapse:
             return [{**r, "timestamp": r["timestamp"].isoformat()} for r in db_rows]   # descending, as before
         return _collapse_spans(list(reversed(db_rows)), "db", now)
+    if run_id != LIVE_RUN_ID and db_error is None:
+        return []          # the Redis keys hold the LIVE regime; never mix runs (D12)
 
     # Redis fallback (regime_states empty or unreachable)
     try:

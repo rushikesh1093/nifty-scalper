@@ -39,7 +39,9 @@ class CandleBuilder:
         Process a tick. Returns a completed candle dict if the minute flipped,
         otherwise None.
         """
-        now = tick.received_at.replace(second=0, microsecond=0, tzinfo=timezone.utc)
+        # received_at is aware UTC (TickData); astimezone keeps the instant even
+        # if a non-UTC aware value slips through, instead of relabelling it.
+        now = tick.received_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
         token = tick.token
         completed = None
 

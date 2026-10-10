@@ -18,6 +18,9 @@ from app.services.broker.angel_client import angel_client
 from app.services.cache.redis_client import redis_cache
 from app.strategies.indicators import compute_all, cpr
 from app.core.config import settings
+from app.runtime.context import now_utc, trading_day
+from app.services.market_data import chain_snapshots as cs
+from app.services.trading import session_times
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +31,13 @@ VIX_TOKEN              = settings.VIX_TOKEN  # India VIX token (centralised in c
 
 class StudyCollector:
 
-    def __init__(self):
+    def __init__(self, chain_source=None):
         self._running            = False
+        # Option-chain source: async (name, expiry_str, strike_str) -> raw chain.
+        # None = angel_client.get_option_chain, resolved at call time.
+        self._chain_source       = chain_source
+        self._chain_fail_streak  = 0     # consecutive intervals with a failing underlying
+        self._chain_lock:       Optional[asyncio.Lock] = None
         self._snap_task:        Optional[asyncio.Task] = None
         self._eod_task:         Optional[asyncio.Task] = None
         self._chain_task:       Optional[asyncio.Task] = None
@@ -131,7 +139,7 @@ class StudyCollector:
             async with AsyncSessionLocal() as db:
                 # Nearest expiry
                 from app.services.broker.instrument_sync import get_active_expiries
-                expiries = await get_active_expiries(db, underlying)
+                expiries = await get_active_expiries(db, underlying, as_of=trading_day())
                 if not expiries:
                     return
                 expiry = expiries[0]
@@ -257,7 +265,8 @@ class StudyCollector:
     async def _option_chain_loop(self):
         """
         Every 5 minutes during market hours, fetch the AngelOne option chain REST
-        snapshot for NIFTY and BANKNIFTY and write it to Redis.
+        snapshot for NIFTY and BANKNIFTY, write it to Redis and persist it to
+        option_chain_snapshots (the replay engine's chain/mark source).
 
         This is the ONLY source of IV data in the system — the WebSocket binary
         feed does not carry IV.  Without this loop:
@@ -287,17 +296,63 @@ class StudyCollector:
                 await asyncio.sleep(60)
 
     async def _refresh_all_option_chains(self):
-        """Fetch and cache option chains for both underlyings."""
-        for underlying in ["NIFTY", "BANKNIFTY"]:
-            try:
-                await self._fetch_option_chain(underlying)
-            except Exception as e:
-                logger.error("Option chain fetch error for %s: %s", underlying, e)
-
-    async def _fetch_option_chain(self, underlying: str):
         """
-        Fetch the AngelOne option chain REST snapshot for the nearest expiry
-        and write it to Redis via redis_cache.set_option_chain().
+        Fetch, cache and persist option chains for both underlyings. Never raises.
+
+        Logging per call (one call per 300 s interval): exactly one WARNING when
+        any underlying failed, e.g.
+          option-chain snapshot: NIFTY=EMPTY_BODY BANKNIFTY=EMPTY_BODY
+          (consecutive failing intervals: 3); next attempt in 300 s
+        per-underlying failure detail at DEBUG, one INFO on the first fully
+        successful interval after failures, and one INFO per successful
+        underlying with strikes and rows written.
+        """
+        if self._chain_lock is None:
+            self._chain_lock = asyncio.Lock()
+        # The startup seed and the loop's first pass run concurrently; serialise
+        # them so the bucket check-then-insert in persist_chain_snapshot holds.
+        async with self._chain_lock:
+            try:
+                now = now_utc()
+            except Exception:
+                now = datetime.now(timezone.utc)
+            outcomes = []
+            for underlying in ["NIFTY", "BANKNIFTY"]:
+                try:
+                    outcomes.append(await self._fetch_option_chain(underlying, now=now))
+                except Exception as e:      # belt: _fetch_option_chain does not raise
+                    outcomes.append(cs.ChainFetchOutcome(underlying, cs.ERROR, repr(e)))
+
+            failed = [o for o in outcomes if o.failed]
+            for o in failed:
+                logger.debug("option-chain snapshot %s: %s %s", o.underlying, o.status, o.detail)
+            if failed:
+                self._chain_fail_streak += 1
+                logger.warning(
+                    "option-chain snapshot: %s (consecutive failing intervals: %d); "
+                    "next attempt in %d s",
+                    " ".join(f"{o.underlying}={o.status}" for o in outcomes),
+                    self._chain_fail_streak, OPTION_CHAIN_INTERVAL,
+                )
+            elif self._chain_fail_streak:
+                logger.info("option-chain snapshot recovered after %d failing intervals",
+                            self._chain_fail_streak)
+                self._chain_fail_streak = 0
+            for o in outcomes:
+                if not o.failed:
+                    logger.info("Option chain cached: %s %s strikes=%d rows_written=%d%s",
+                                o.underlying, o.detail, o.strikes, o.rows_written,
+                                " (out of session: Redis only)"
+                                if o.status == cs.OUT_OF_SESSION else "")
+            return outcomes
+
+    async def _fetch_option_chain(self, underlying: str,
+                                  now: Optional[datetime] = None) -> cs.ChainFetchOutcome:
+        """
+        Fetch the AngelOne option chain REST snapshot for the nearest expiry,
+        write it to Redis via redis_cache.set_option_chain() and, during market
+        hours, persist it to option_chain_snapshots (one set per 300 s bucket).
+        Never raises: every failure is returned as a ChainFetchOutcome status.
 
         Builds the chain dict in the same format consumed by:
           - strategy_runner._inject_oi_iv()  (reads chain["strikes"][*]["iv"])
@@ -325,21 +380,33 @@ class StudyCollector:
             ]
           }
         """
-        from sqlalchemy import select
-        from app.db.models.instrument import Instrument, InstrumentType
         from app.services.broker.instrument_sync import get_active_expiries
 
+        Outcome = cs.ChainFetchOutcome
+        if now is None:
+            try:
+                now = now_utc()
+            except Exception:
+                now = datetime.now(timezone.utc)
+
         # Get nearest expiry from DB
-        async with AsyncSessionLocal() as db:
-            expiries = await get_active_expiries(db, underlying)
+        try:
+            async with AsyncSessionLocal() as db:
+                expiries = await get_active_expiries(
+                    db, underlying, as_of=session_times.trading_day(now))
+        except Exception as exc:
+            return Outcome(underlying, cs.DB_ERROR, f"expiry lookup: {exc!r}")
         if not expiries:
-            logger.debug("_fetch_option_chain: no expiries for %s", underlying)
-            return
+            return Outcome(underlying, cs.NO_EXPIRY, "no active expiry")
         expiry = expiries[0]
 
         # Get current spot LTP for ATM calculation
         spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
-        spot_ltp   = await redis_cache.get_ltp(spot_token) or 0.0
+        try:
+            spot_ltp = await redis_cache.get_ltp(spot_token) or 0.0
+        except Exception as exc:
+            logger.debug("_fetch_option_chain: spot LTP read failed for %s: %s", underlying, exc)
+            spot_ltp = 0.0
 
         # ATM strike
         step    = 50 if underlying == "NIFTY" else 100
@@ -347,90 +414,25 @@ class StudyCollector:
 
         # Use AngelOne's option chain REST endpoint (requires login)
         # The endpoint accepts: name, expirydate (DD-Mon-YYYY), strikeprice
+        source = self._chain_source or angel_client.get_option_chain
         try:
             expiry_str   = expiry.strftime("%d-%b-%Y").upper()  # e.g. "26-SEP-2024"
             strike_param = str(int(atm)) if atm else "0"
-            raw_chain    = await angel_client.get_option_chain(underlying, expiry_str, strike_param)
+            raw_chain    = await source(underlying, expiry_str, strike_param)
         except Exception as exc:
-            logger.warning(
-                "_fetch_option_chain: AngelOne REST failed for %s expiry=%s: %s",
-                underlying, expiry, exc,
-            )
-            return
+            return Outcome(underlying, cs.classify_fetch_error(exc),
+                           f"expiry={expiry}: {type(exc).__name__}: {exc}")
 
-        if not raw_chain:
-            logger.debug("_fetch_option_chain: empty response for %s", underlying)
-            return
-
-        # AngelOne option chain response structure varies by API version.
-        # It may return a list directly or a dict with "data" key.
-        # Normalise to a list of strike dicts.
-        raw_strikes = []
-        if isinstance(raw_chain, list):
-            raw_strikes = raw_chain
-        elif isinstance(raw_chain, dict):
-            # Check common wrapper keys
-            for key in ("data", "fetched", "optionChainData", "strikes"):
-                if key in raw_chain and isinstance(raw_chain[key], list):
-                    raw_strikes = raw_chain[key]
-                    break
-            if not raw_strikes and "CE" in raw_chain:
-                # Some versions: {CE: {strike: {...}}, PE: {strike: {...}}}
-                for opt_type, strikes_dict in raw_chain.items():
-                    if opt_type not in ("CE", "PE"):
-                        continue
-                    if isinstance(strikes_dict, dict):
-                        for strike_key, strike_data in strikes_dict.items():
-                            if isinstance(strike_data, dict):
-                                strike_data["option_type"] = opt_type
-                                raw_strikes.append(strike_data)
-
-        if not raw_strikes:
-            logger.debug(
-                "_fetch_option_chain: could not parse strikes for %s — keys=%s",
-                underlying, list(raw_chain.keys()) if isinstance(raw_chain, dict) else type(raw_chain),
-            )
-            return
-
-        # Build normalised strikes list
-        strikes_out = []
-        for s in raw_strikes:
-            if not isinstance(s, dict):
-                continue
-
-            # Extract fields — AngelOne uses different key names across API versions
-            token       = str(s.get("token") or s.get("symboltoken") or "")
-            strike_val  = float(s.get("strikePrice") or s.get("strike_price") or s.get("strike") or 0)
-            opt_type    = str(s.get("optionType") or s.get("option_type") or s.get("instrumentType") or "")
-            opt_type    = "CE" if "CE" in opt_type.upper() else ("PE" if "PE" in opt_type.upper() else opt_type)
-            ltp         = float(s.get("lastPrice") or s.get("ltp") or s.get("close") or 0)
-            bid         = float(s.get("bidprice") or s.get("bid") or s.get("best_bid") or 0)
-            ask         = float(s.get("askprice") or s.get("ask") or s.get("best_ask") or 0)
-            oi          = int(s.get("openInterest") or s.get("oi") or 0)
-            volume      = int(s.get("tradedVolume") or s.get("volume") or 0)
-            iv_raw      = float(s.get("impliedVolatility") or s.get("iv") or 0)
-
-            # Normalise IV to percentage form (e.g. 0.185 → 18.5, 18.5 → 18.5)
-            iv = iv_raw * 100.0 if (0 < iv_raw < 1.0) else iv_raw
-
-            if not token:
-                continue
-
-            strikes_out.append({
-                "token":       token,
-                "strike":      strike_val,
-                "option_type": opt_type,
-                "ltp":         ltp,
-                "bid":         bid,
-                "ask":         ask,
-                "oi":          oi,
-                "volume":      volume,
-                "iv":          iv,
-            })
-
+        try:
+            strikes_out = cs.normalise_chain(raw_chain)
+        except Exception as exc:
+            return Outcome(underlying, cs.UNPARSEABLE, f"normalise failed: {exc!r}")
         if not strikes_out:
-            logger.debug("_fetch_option_chain: no parseable strikes for %s", underlying)
-            return
+            return Outcome(
+                underlying, cs.UNPARSEABLE,
+                "no parseable strikes; keys=%s" % (
+                    list(raw_chain.keys()) if isinstance(raw_chain, dict) else type(raw_chain)),
+            )
 
         chain_doc = {
             "underlying": underlying,
@@ -439,11 +441,25 @@ class StudyCollector:
             "strikes":    strikes_out,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
-        await redis_cache.set_option_chain(underlying, str(expiry), chain_doc)
-        logger.info(
-            "Option chain cached: %s expiry=%s spot=%.1f strikes=%d",
-            underlying, expiry, spot_ltp, len(strikes_out),
-        )
+        try:
+            await redis_cache.set_option_chain(underlying, str(expiry), chain_doc)
+        except Exception as exc:
+            logger.error("Option chain Redis write failed for %s: %s", underlying, exc)
+
+        detail = f"expiry={expiry} spot={spot_ltp:.1f}"
+        n = len(strikes_out)
+        if not session_times.is_market_hours(now.astimezone(session_times.IST).time()):
+            return Outcome(underlying, cs.OUT_OF_SESSION, detail, strikes=n)
+        if spot_ltp <= 0:
+            return Outcome(underlying, cs.NO_SPOT, detail, strikes=n)
+        try:
+            rows = await cs.persist_chain_snapshot(
+                AsyncSessionLocal, underlying=underlying, expiry=expiry, spot=spot_ltp,
+                strikes=strikes_out, snapshot_time=cs.snapshot_bucket(now, OPTION_CHAIN_INTERVAL),
+            )
+        except Exception as exc:
+            return Outcome(underlying, cs.DB_ERROR, f"{detail}: {exc!r}", strikes=n)
+        return Outcome(underlying, cs.OK, detail, strikes=n, rows_written=rows)
 
     # ── EOD summary loop ──────────────────────────────────────────────────────
 
@@ -536,7 +552,7 @@ class StudyCollector:
 
                 # Expiry info
                 from app.services.broker.instrument_sync import get_active_expiries
-                expiries = await get_active_expiries(db, underlying)
+                expiries = await get_active_expiries(db, underlying, as_of=trading_day())
                 nearest_expiry = expiries[0] if expiries else None
                 dte = (nearest_expiry - today).days if nearest_expiry else None
 

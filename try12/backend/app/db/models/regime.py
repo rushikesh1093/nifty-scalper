@@ -41,8 +41,12 @@ class RegimeStateModel(Base):
     previous_regime     = Column(String(50),  nullable=True)
     transition_detected = Column(Boolean,      nullable=False, default=False)
 
+    # migration 0011: a replay of the same window must not collide with live rows
+    run_id              = Column(String(32), nullable=False, default="PAPER", server_default="PAPER")
+
     __table_args__ = (
-        UniqueConstraint("underlying", "timestamp", name="regime_states_underlying_timestamp_key"),
+        UniqueConstraint("run_id", "underlying", "timestamp",
+                         name="uq_regime_states_run_underlying_ts"),
         Index("idx_regime_states_underlying_timestamp", "underlying", "timestamp"),
         Index("idx_regime_states_regime", "regime"),
     )
@@ -87,10 +91,25 @@ class RegimePerformanceModel(Base):
         onupdate=func.now(),
     )
 
+    # ── migration 0011: exact sums (design §7). All Float, never Numeric. ───
+    # avg_rr above is kept for /regime/performance and recomputed as
+    # sum_r / r_sample_size.
+    run_id          = Column(String(32), nullable=False, default="PAPER", server_default="PAPER")
+    flat_trades     = Column(Integer, nullable=False, default=0, server_default="0")
+    sum_r           = Column(Float,   nullable=False, default=0.0, server_default="0")
+    sum_r_win       = Column(Float,   nullable=False, default=0.0, server_default="0")
+    sum_r_loss      = Column(Float,   nullable=False, default=0.0, server_default="0")
+    r_sample_size   = Column(Integer, nullable=False, default=0, server_default="0")
+    avg_r_multiple  = Column(Float,   nullable=True)
+    expectancy_r    = Column(Float,   nullable=True)
+    expectancy_inr  = Column(Float,   nullable=True)
+    gross_profit    = Column(Float,   nullable=False, default=0.0, server_default="0")
+    gross_loss      = Column(Float,   nullable=False, default=0.0, server_default="0")
+
     __table_args__ = (
         UniqueConstraint(
-            "regime", "underlying", "strategy_name",
-            name="regime_performance_unique",
+            "regime", "underlying", "strategy_name", "run_id",
+            name="uq_regime_perf_key_run",
         ),
         Index("idx_regime_performance_regime",     "regime"),
         Index("idx_regime_performance_underlying", "underlying"),

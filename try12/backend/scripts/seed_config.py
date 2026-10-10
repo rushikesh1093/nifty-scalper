@@ -1,12 +1,14 @@
 """Seed default trading_config row after migration."""
-import json, psycopg2
+import json, os, sys
+import psycopg2
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.strategies.names import ALL_STRATEGY_NAMES  # noqa: E402
 
 conn = psycopg2.connect(host="localhost", port=5432, user="postgres", password="1093", dbname="nifty_scalper")
 conn.autocommit = True
 cur = conn.cursor()
-flags = {s: True for s in ["ORB_VWAP","VWAP_PULLBACK","EMA_VWAP","SUPERTREND_VWAP",
-                             "PDH_PDL","VWAP_REVERSAL","BOLLINGER_BREAKOUT","RSI_VWAP",
-                             "OI_SPIKE","IV_CRUSH","CPR_VWAP","GAP_VWAP_FILL"]}
+flags = {s: True for s in ALL_STRATEGY_NAMES}
 cur.execute(
     "INSERT INTO trading_config (id,mode,max_daily_loss,max_daily_loss_pct,"
     "max_open_positions,max_lots_per_trade,capital,slippage_pct,"
