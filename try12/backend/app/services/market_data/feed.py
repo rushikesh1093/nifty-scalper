@@ -37,7 +37,8 @@ Binary packet layout (little-endian):
   123-131: last_traded_timestamp (q)
   131-139: open_interest (q)
   139-147: oi_change_pct (q)
-  147-347: best_5_buy_sell (20 packets × 20 bytes)
+  147-347: best_5_buy_sell (10 packets × 20 bytes: flag H, qty q, price q /100,
+           orders H; sides resolved by price, see parse_best_five)
   347-355: upper_circuit (q, /100)
   355-363: lower_circuit (q, /100)
   363-371: 52w_high (q, /100)
@@ -154,6 +155,55 @@ def _unpack(data: bytes, start: int, end: int, fmt: str):
     return struct.unpack_from("<" + fmt, data, start)[0]
 
 
+# SnapQuote best-five block: 10 packets × 20 bytes, each little-endian
+# <H flag> <q qty> <q price in paise> <H orders>.
+BEST_FIVE_OFFSET = 147
+BEST_FIVE_PACKETS = 10
+BEST_FIVE_PACKET_LEN = 20
+BEST_FIVE_END = BEST_FIVE_OFFSET + BEST_FIVE_PACKETS * BEST_FIVE_PACKET_LEN   # 347
+
+
+def parse_best_five(block: bytes) -> tuple[float, int, float, int]:
+    """(best_bid, best_bid_qty, best_ask, best_ask_qty) from the 200-byte best-five
+    block. Pure. An unresolvable book is (0.0, 0, 0.0, 0).
+
+    Packets are grouped by their buy/sell flag. The flag's meaning is ambiguous
+    (the reference SDK maps flag 0 to buy and then swaps the buy and sell lists),
+    so the sides are resolved by price: the lower-priced group is the bid side,
+    the higher-priced group the ask side. best_bid is the bid side's highest
+    price, best_ask the ask side's lowest, each with its own packet's quantity.
+    Empty levels (qty or price <= 0) are ignored. A one-sided book cannot be
+    labelled by price, and an overlapping one is inconsistent: both return the
+    defaults, because every consumer needs both sides anyway.
+    """
+    empty = (0.0, 0, 0.0, 0)
+    if len(block) < BEST_FIVE_PACKETS * BEST_FIVE_PACKET_LEN:
+        return empty
+    groups: dict[bool, list[tuple[int, int]]] = {False: [], True: []}   # flag != 0 → [(paise, qty)]
+    for i in range(BEST_FIVE_PACKETS):
+        off = i * BEST_FIVE_PACKET_LEN
+        flag = struct.unpack_from("<H", block, off)[0]
+        qty = struct.unpack_from("<q", block, off + 2)[0]
+        paise = struct.unpack_from("<q", block, off + 10)[0]
+        if qty <= 0 or paise <= 0:
+            continue
+        groups[flag != 0].append((paise, qty))
+    g0, g1 = groups[False], groups[True]
+    if not g0 or not g1:
+        return empty
+    if max(p for p, _ in g0) <= min(p for p, _ in g1):
+        bids, asks = g0, g1
+    elif max(p for p, _ in g1) <= min(p for p, _ in g0):
+        bids, asks = g1, g0
+    else:
+        # per tick: never above DEBUG
+        logger.debug("best-five sides overlap, bid/ask left unset: flag0=%s flag1=%s", g0, g1)
+        return empty
+    bid_paise, bid_qty = max(bids, key=lambda pq: pq[0])     # first on a tie (wire order)
+    ask_paise, ask_qty = min(asks, key=lambda pq: pq[0])
+    return bid_paise / 100.0, int(bid_qty), ask_paise / 100.0, int(ask_qty)
+
+
 def _parse_binary_tick(data: bytes) -> Optional[TickData]:
     """Parse SmartWebSocketV2 binary packet into TickData."""
     try:
@@ -183,19 +233,12 @@ def _parse_binary_tick(data: bytes) -> Optional[TickData]:
             tick.oi        = _unpack(data, 131, 139, "q")
             tick.oi_change = _unpack(data, 139, 147, "q")
 
-            # Best 5 buy/sell starts at 147, each packet = 20 bytes
-            # Layout per packet: [flag(2)] [qty(8, unsigned)] [price(8, signed/100)] [orders(2)]
-            # flag=0 → buy, flag=1 → sell
-            if len(data) >= 167:
-                b1_price = _unpack(data, 147 + 10, 147 + 18, "q") / 100.0
-                b1_qty   = _unpack(data, 147 + 2,  147 + 10, "Q")   # unsigned qty
-                tick.best_bid     = b1_price
-                tick.best_bid_qty = b1_qty
-            if len(data) >= 187:
-                a1_price = _unpack(data, 167 + 10, 167 + 18, "q") / 100.0
-                a1_qty   = _unpack(data, 167 + 2,  167 + 10, "Q")   # unsigned qty
-                tick.best_ask     = a1_price
-                tick.best_ask_qty = a1_qty
+            # Best five (147-347). A truncated block cannot be trusted: the
+            # bid/ask stay at their 0.0 defaults.
+            if len(data) >= BEST_FIVE_END:
+                (tick.best_bid, tick.best_bid_qty,
+                 tick.best_ask, tick.best_ask_qty) = parse_best_five(
+                    data[BEST_FIVE_OFFSET:BEST_FIVE_END])
 
         return tick
 
