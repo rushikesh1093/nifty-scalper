@@ -7,8 +7,10 @@ guarded default updates would rewrite, and the smallest correction that leaves
 ``validate()`` empty. ``scripts/reconcile_live_config.py`` prints the result; it
 writes only under ``--apply`` with every safety condition met.
 
-Never touched here: ``capital`` and ``fixed_fraction_pct``. Whether ₹15,000 at
-10 % can buy a useful contract is the operator's decision (item 6).
+Never touched here: ``capital`` and ``fixed_fraction_pct`` (at most
+``MAX_FIXED_FRACTION_PCT``, 40 %, of capital per trade). Whether the capital at
+that fraction can buy a useful contract is the operator's decision (item 6);
+the startup capital-sufficiency warning shows the numbers.
 """
 from __future__ import annotations
 

@@ -34,6 +34,7 @@ FORBIDDEN_KEYS: dict[str, str] = {
 
 TRADE_AMOUNT_TOLERANCE = 500.0     # ₹ — display cache vs fixed_fraction × capital
 MAX_HOLD_MINUTES_MAX = 374         # one session is 375 one-minute candles
+MAX_FIXED_FRACTION_PCT = 40.0      # % of capital one trade may be sized on (the only bound)
 
 
 def _default_max_hold() -> dict[str, int]:
@@ -133,6 +134,14 @@ class TradingParams:
     replay_max_bracket_gap_s: int = 120
     replay_min_option_tick_minutes: int = 300
 
+    # ── derived ──────────────────────────────────────────────────────────────
+
+    @property
+    def kelly_cap_effective_pct(self) -> float:
+        """The Kelly fraction's ceiling: Kelly can only size DOWN from the fixed
+        fraction, never above it, whatever kelly_fraction_cap_pct says."""
+        return min(self.kelly_fraction_cap_pct, self.fixed_fraction_pct)
+
     # ── construction ─────────────────────────────────────────────────────────
 
     @classmethod
@@ -177,13 +186,11 @@ class TradingParams:
         if not (0 < self.max_daily_loss_pct <= 100):
             v.append(f"max_daily_loss_pct={self.max_daily_loss_pct} must be in (0, 100]")
 
-        if not (0 < self.fixed_fraction_pct <= 100):
-            v.append(f"fixed_fraction_pct={self.fixed_fraction_pct} must be in (0, 100]")
-        if self.kelly_fraction_cap_pct < self.fixed_fraction_pct:
-            v.append(
-                f"kelly_fraction_cap_pct={self.kelly_fraction_cap_pct} must be >= "
-                f"fixed_fraction_pct={self.fixed_fraction_pct}"
-            )
+        if not (0 < self.fixed_fraction_pct <= MAX_FIXED_FRACTION_PCT):
+            v.append(f"fixed_fraction_pct={self.fixed_fraction_pct} must be in "
+                     f"(0, {MAX_FIXED_FRACTION_PCT:g}]")
+        # kelly_fraction_cap_pct may sit below fixed_fraction_pct: Kelly is capped at
+        # kelly_cap_effective_pct = min(both), so it can only size down.
         if not (0 < self.kelly_multiplier <= 0.5):
             v.append(f"kelly_multiplier={self.kelly_multiplier} must be in (0, 0.5]")
         if not (0 < self.kelly_fraction_cap_pct <= 25.0):

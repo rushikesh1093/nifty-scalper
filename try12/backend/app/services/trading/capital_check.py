@@ -6,15 +6,15 @@ The affordability ceiling is the same arithmetic as ``risk_gate.fraction_decisio
 ``option_selector._build_candidates`` (ceiling = base × regime_multiplier / lot).
 When that ceiling is below the premium-band floor or a typical ATM premium, the
 system can only buy deep-OTM contracts. This module says so with the numbers;
-it changes no default. Raising capital or fixed_fraction_pct is the operator's
-decision.
+it changes no default. Raising capital or fixed_fraction_pct (at most
+MAX_FIXED_FRACTION_PCT, 40 % of capital per trade) is the operator's decision.
 """
 from __future__ import annotations
 
 import math
 from typing import Mapping, Union
 
-from app.core.trading_params import TradingParams
+from app.core.trading_params import MAX_FIXED_FRACTION_PCT, TradingParams
 from app.services.trading.risk_gate import round_to_500
 
 # Operator reference for this warning only — an ASSUMPTION about a typical ATM
@@ -65,7 +65,8 @@ def capital_sufficiency_warnings(capital: float, tp: TradingParams,
         lo, hi = tp.premium_band.get(und, tp.premium_band["NIFTY"])
         atm = REFERENCE_ATM_PREMIUM.get(und)
         lot_txt = f"{und} lot {lot} ({'reference fallback' if source == 'reference' else source})"
-        head = (f"capital {_rs(capital)} × fixed_fraction_pct {frac:g}% → base {_rs(base)}; "
+        head = (f"capital {_rs(capital)} × fixed_fraction_pct {frac:g}% "
+                f"(max {MAX_FIXED_FRACTION_PCT:g}%) → base {_rs(base)}; "
                 f"{lot_txt} → premium ceiling {_rs(round(ceiling, 2))}/contract")
         if ceiling < lo:
             what = (f" < premium band floor {_rs(lo)}: no contract in the band "

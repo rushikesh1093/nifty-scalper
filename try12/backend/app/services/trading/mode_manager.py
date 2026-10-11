@@ -404,7 +404,7 @@ class ModeManager:
         if isinstance(res, str) or res[4] <= 0:
             return None
         p = params()
-        return round(min(p.kelly_multiplier * res[4], p.kelly_fraction_cap_pct / 100.0), 6)
+        return round(min(p.kelly_multiplier * res[4], p.kelly_cap_effective_pct / 100.0), 6)
 
     async def reset_daily_counter(self):
         """Manual reset of daily_trades_count (stamps today's IST date)."""

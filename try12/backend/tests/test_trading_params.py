@@ -100,9 +100,18 @@ def test_loss_cap_above_capital():
     _assert_one_naming(_violations(max_daily_loss=250_000.0), "max_daily_loss")
 
 
-def test_fraction_cap_below_fraction():
-    _assert_one_naming(_violations(fixed_fraction_pct=20.0, kelly_fraction_cap_pct=15.0),
-                       "kelly_fraction_cap_pct")
+def test_kelly_cap_below_fraction_is_valid_and_bounds_kelly():
+    # a Kelly cap below the fixed fraction no longer fails: Kelly is capped at
+    # min(kelly_fraction_cap_pct, fixed_fraction_pct), so it can only size down
+    assert _violations(fixed_fraction_pct=20.0, kelly_fraction_cap_pct=15.0) == []
+    assert dataclasses.replace(TradingParams(), fixed_fraction_pct=20.0,
+                               kelly_fraction_cap_pct=15.0).kelly_cap_effective_pct == 15.0
+    assert TradingParams().kelly_cap_effective_pct == 10.0      # defaults 10 / 15
+
+
+@pytest.mark.parametrize("value", [0.0, 40.01, 100.0])
+def test_fixed_fraction_bounds(value):
+    _assert_one_naming(_violations(fixed_fraction_pct=value), "fixed_fraction_pct")
 
 
 @pytest.mark.parametrize("value", [0.0, 0.6])

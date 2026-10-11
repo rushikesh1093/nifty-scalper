@@ -982,8 +982,10 @@ class OptionSelector:
             choice = choose_expiry([i.expiry for i in rows], today=trading_day(),
                                    now_t=dtime(9, 15), underlying=und, tp=tp)
             lot = next((i.lot_size for i in rows if i.lot_size), None)
-            ceiling = (round(tp.fixed_fraction_pct / 100.0 * ctx().cfg.capital / lot, 2)
-                       if lot else None)
+            # the ceiling sizing applies: base = round_to_500(fraction × capital)
+            from app.services.trading.risk_gate import round_to_500
+            ceiling = (round(round_to_500(tp.fixed_fraction_pct / 100.0 * ctx().cfg.capital)
+                             / lot, 2) if lot else None)
             logger.info(
                 "[OptionSelector] %s: expiries=%s nearest_dte=%s bands=%s -> %s | "
                 "lot=%s premium ceiling (1.0x) ₹%s, band %s",

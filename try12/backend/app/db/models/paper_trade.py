@@ -317,7 +317,8 @@ class StrategyPerf(Base):
         decided_r = winning_trades_r + losing_trades_r   (R-valid, non-R-flat)
         p         = winning_trades_r / decided_r
         b         = avg_win_r / avg_loss_r      (NOT the mean R: that was bug 6)
-        f         = min(kelly_multiplier × (p·b − q) / b, kelly_fraction_cap)
+        f         = min(kelly_multiplier × (p·b − q) / b,
+                        min(kelly_fraction_cap, fixed_fraction))
     base_amount = round_to_500(f × capital); no floor — a strategy with no edge
     is skipped (KELLY_NO_EDGE). Below kelly_min_trades decided trades the
     fixed fraction applies. ``kelly_fraction`` here is only a cache of f.

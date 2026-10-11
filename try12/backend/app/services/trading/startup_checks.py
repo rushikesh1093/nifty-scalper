@@ -20,6 +20,7 @@ from typing import Optional
 
 from sqlalchemy import text
 
+from app.core.trading_params import MAX_FIXED_FRACTION_PCT
 from app.db.models.paper_trade import TradingMode
 from app.runtime.context import ctx, params
 
@@ -224,8 +225,8 @@ PARAM_FIXES: dict[str, str] = {
     "capital": "set > 0",
     "max_daily_loss": "set within (0, capital]",
     "max_daily_loss_pct": "set within (0, 100]",
-    "fixed_fraction_pct": "set within (0, 100] and <= kelly_fraction_cap_pct",
-    "kelly_fraction_cap_pct": "set within [fixed_fraction_pct, 25]",
+    "fixed_fraction_pct": f"set within (0, {MAX_FIXED_FRACTION_PCT:g}]",
+    "kelly_fraction_cap_pct": "set within (0, 25]; Kelly never sizes above fixed_fraction_pct",
     "kelly_multiplier": "set within (0, 0.5]",
     "min_rr": "set >= 2.0",
 }

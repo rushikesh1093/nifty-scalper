@@ -1,5 +1,10 @@
 """Bug 6 (design §9.5, R7): Kelly b = avg_win_r / avg_loss_r over the R-valid,
-non-R-flat population; quarter Kelly, 15% cap, no floor, no edge → skip."""
+non-R-flat population; quarter Kelly, capped at min(kelly_fraction_cap_pct 15%,
+fixed_fraction_pct) so Kelly only ever sizes down; no floor, no edge → skip.
+
+Tests whose Kelly fraction is above the 10% default fixed fraction run with
+fixed_fraction_pct=15 so the arithmetic they pin (b, quarter Kelly, the 15% cap
+clamp) is unchanged; tests/test_sizing_40pct.py pins the cap at the fraction."""
 import math
 from datetime import datetime, time as dtime, timezone
 from types import SimpleNamespace
@@ -49,7 +54,8 @@ def test_b_is_avg_win_over_avg_loss_and_the_legacy_fraction_was_larger(runtime_c
     _seed_perf(sqlite_db, winning_trades_r=21, losing_trades_r=9, sum_r_win=84.0,
                sum_r_loss=-27.0, total_trades=30, winning_trades=21, win_rate=70.0,
                avg_rr=(84.0 - 27.0) / 30)
-    d = _decide(sqlite_db)
+    with using(with_params(runtime_ctx, fixed_fraction_pct=15.0)):     # 11.875% < 15%
+        d = _decide(sqlite_db)
     assert d.method == "KELLY"
     assert d.p == pytest.approx(0.7)
     assert d.avg_win == pytest.approx(4.0) and d.avg_loss == pytest.approx(3.0)
@@ -64,7 +70,8 @@ def test_b_is_avg_win_over_avg_loss_and_the_legacy_fraction_was_larger(runtime_c
 def test_fraction_cap_binds_and_is_recorded(runtime_ctx, sqlite_db):
     _seed_perf(sqlite_db, winning_trades_r=25, losing_trades_r=5, sum_r_win=200.0,
                sum_r_loss=-5.0)                                    # b = 8, kelly ≈ 0.81
-    d = _decide(sqlite_db)
+    with using(with_params(runtime_ctx, fixed_fraction_pct=15.0)):
+        d = _decide(sqlite_db)
     assert d.applied_fraction == pytest.approx(0.15) and "fraction_cap" in d.clamps
     assert d.base_amount == 30_000.0
 
@@ -72,7 +79,7 @@ def test_fraction_cap_binds_and_is_recorded(runtime_ctx, sqlite_db):
 def test_kelly_multiplier_is_data_not_a_label(runtime_ctx, sqlite_db):
     _seed_perf(sqlite_db, winning_trades_r=20, losing_trades_r=20, sum_r_win=40.0,
                sum_r_loss=-20.0)                                   # p=.5, b=2, kelly=.25
-    with using(with_params(runtime_ctx, kelly_multiplier=0.5)):
+    with using(with_params(runtime_ctx, kelly_multiplier=0.5, fixed_fraction_pct=15.0)):
         d = _decide(sqlite_db)
     assert d.method == "KELLY" and d.kelly_multiplier == 0.5
     assert d.applied_fraction == pytest.approx(0.125)

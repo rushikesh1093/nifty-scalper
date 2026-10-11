@@ -187,7 +187,7 @@ async def fraction_decision(db, strategy: str) -> FractionDecision:
                                 avg_win=avg_win, avg_loss=avg_loss, b=b, kelly_full=kelly,
                                 kelly_multiplier=p_.kelly_multiplier, decided_r=w + l,
                                 reject=ReasonCode.KELLY_NO_EDGE)
-    cap = p_.kelly_fraction_cap_pct / 100.0
+    cap = p_.kelly_cap_effective_pct / 100.0       # never above the fixed fraction
     scaled = p_.kelly_multiplier * kelly
     clamps = ["fraction_cap"] if scaled > cap else []
     applied = min(scaled, cap)
