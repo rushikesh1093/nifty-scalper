@@ -15,8 +15,9 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from app.core import trading_params
 from app.core.config_reconcile import overlay_from_row
-from app.core.trading_params import MAX_FIXED_FRACTION_PCT, TradingParams, validate_overrides
+from app.core.trading_params import TradingParams, validate_overrides
 from app.db.models.paper_trade import PaperPosition, StrategyPerf
 from app.db.models.risk import NoTradeDecision
 from app.runtime.context import using
@@ -79,13 +80,17 @@ def _decide(Session, strategy="VWAP_PULLBACK") -> FractionDecision:
 
 # ── the bound ────────────────────────────────────────────────────────────────
 
+BOUND_TEXT = "(0, 40]"     # validate()'s fixed_fraction_pct message names the bound
+
+
 def test_the_bound_is_40_and_lives_in_one_place():
-    assert MAX_FIXED_FRACTION_PCT == 40.0
+    # looked up at test time so this file still collects against pre-40% code
+    assert getattr(trading_params, "MAX_FIXED_FRACTION_PCT", None) == 40.0
     assert TradingParams(fixed_fraction_pct=40.0).validate() == []
     for bad in (40.01, 0.0, -1.0):
         v = TradingParams(fixed_fraction_pct=bad).validate()
         assert v and all("fixed_fraction_pct" in x for x in v), v
-        assert "(0, 40]" in v[0]
+        assert BOUND_TEXT in v[0]
 
 
 @pytest.mark.parametrize("cap", [15.0, 25.0])
@@ -130,6 +135,8 @@ def test_pre_update_live_row_still_validates():
 def test_fraction_above_40_on_the_live_row_names_the_field():
     v = validate_overrides(overlay_from_row(dict(LIVE_ROW_40, fixed_fraction_pct=40.01)))
     assert v and all("fixed_fraction_pct" in x for x in v)
+    # the bound itself, not just any message mentioning the field
+    assert any("fixed_fraction_pct" in x and BOUND_TEXT in x for x in v), v
 
 
 # ── base, ceiling ────────────────────────────────────────────────────────────

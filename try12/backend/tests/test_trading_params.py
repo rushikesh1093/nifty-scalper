@@ -111,7 +111,10 @@ def test_kelly_cap_below_fraction_is_valid_and_bounds_kelly():
 
 @pytest.mark.parametrize("value", [0.0, 40.01, 100.0])
 def test_fixed_fraction_bounds(value):
-    _assert_one_naming(_violations(fixed_fraction_pct=value), "fixed_fraction_pct")
+    v = _violations(fixed_fraction_pct=value)
+    _assert_one_naming(v, "fixed_fraction_pct")
+    # the message must state the 40% bound, not merely mention the field
+    assert any("fixed_fraction_pct" in x and "(0, 40]" in x for x in v), v
 
 
 @pytest.mark.parametrize("value", [0.0, 0.6])

@@ -211,7 +211,8 @@ def test_trade_amount_converts_to_fixed_fraction_and_keeps_its_keys(api):
     bad = _call("PUT", "/api/v1/trading/capital/trade-amount",
                 json={"trade_amount": 90000, "capital": 200000})     # 45% > the 40% ceiling
     assert bad.status_code == 400
-    assert any("fixed_fraction_pct" in v for v in bad.json()["detail"]["violations"])
+    assert any("fixed_fraction_pct" in v and "(0, 40]" in v
+               for v in bad.json()["detail"]["violations"])
 
 
 def test_capital_set_is_pending_until_restart(api, runtime_ctx):
