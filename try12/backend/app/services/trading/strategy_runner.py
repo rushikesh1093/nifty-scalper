@@ -76,6 +76,23 @@ def _as_float(v) -> float:
         return 0.0
 
 
+def _candle_ist_datetime(timestamp) -> Optional[datetime]:
+    """Parse feed timestamps and normalize aware values to the exchange timezone.
+
+    Naive feed timestamps are legacy IST values; aware timestamps may be UTC or
+    offset-based. Returning None keeps malformed rows out of the session filter
+    instead of silently classifying them by a raw date prefix.
+    """
+    try:
+        value = str(timestamp or "").strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return parsed.replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        return parsed.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 class StrategyRunner:
 
     def __init__(self):
@@ -378,32 +395,20 @@ class StrategyRunner:
                                    f"No ONE_MINUTE candles in the cache for {underlying}")
             return False
 
-        today_str = str(self._ist_now().date())
-        # Filter to today's candles AND ensure they are within the official
-        # market session (≥ 09:15 IST).  Pre-9:15 ticks that sneak into Redis
-        # (e.g. from pre-open / historical seed edge-cases) would corrupt both
-        # the intraday VWAP (which must reset at session open) and the ORB
-        # levels (which are defined as the first 15 candles from 9:15 onward).
+        today = self._ist_now().date()
+        # Normalize every feed timestamp to IST before applying the session date
+        # and open-time filters. Raw date-prefix matching misclassifies UTC rows
+        # around the session boundary and can make a live session look empty.
         candles = []
         for c in all_candles:
-            ts_str = str(c.get("timestamp", ""))
-            if not ts_str.startswith(today_str):
+            candle_dt = _candle_ist_datetime(c.get("timestamp"))
+            if candle_dt is None or candle_dt.date() != today:
                 continue
-            # Parse time component and drop anything before 09:15 IST.
-            # Timestamps may be naive IST strings ("2024-01-02 09:15:00") or
-            # ISO-8601 with offset.  We extract HH:MM directly from the string
-            # to avoid a heavyweight datetime parse on every candle.
-            try:
-                # Support both "YYYY-MM-DD HH:MM:SS" and "YYYY-MM-DDTHH:MM:SS..."
-                time_part = ts_str[11:16].replace("T", "")  # "HH:MM"
-                h, m = int(time_part[:2]), int(time_part[3:5])
-                # per-candle today filter, not the session gate — deliberately not tied to SESSION_START_IST
-                if h * 60 + m < 9 * 60 + 15:   # before 09:15 → skip
-                    continue
-            except Exception:
-                pass  # If we can't parse, keep the candle (safe default)
+            if candle_dt.time().replace(tzinfo=None) < dtime(9, 15):
+                continue
             candles.append(c)
 
+        today_str = str(today)
         if not candles:
             self._queue_cycle_gate(tally, underlying, today_str, ReasonCode.FEED_UNAVAILABLE,
                                    f"No candles for today ({today_str}) in the cache for "
@@ -472,7 +477,7 @@ class StrategyRunner:
                                    atr=float(atr_v), floor=atr_min)
             return True
 
-        # ── Gate 2: VIX filter ────────────────────────────────────────────────
+        # ── Gate 2: VIX filter ──────────────────────────────────────────────���─
         vix_ltp = await market().get_ltp(VIX_TOKEN)
         if vix_ltp is not None:
             if vix_ltp > VIX_MAX:

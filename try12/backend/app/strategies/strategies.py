@@ -24,20 +24,28 @@ def _c(candles, key, idx=-1):
 def _is_between(t: dtime, s: dtime, e: dtime) -> bool:
     return s <= t <= e
 
-def _market_time(candles) -> dtime:
-    ts = candles[-1].get("timestamp", "")
+def _parse_ist_timestamp(timestamp):
     try:
-        dt = datetime.fromisoformat(str(ts))
-        # If naive, assume it's already in IST
-        # If aware, convert to IST
         from datetime import timezone, timedelta as td
-        IST = timezone(td(hours=5, minutes=30))
-        if dt.tzinfo is not None:
-            dt = dt.astimezone(IST)
-        return dt.time().replace(tzinfo=None)
-    except Exception:
-        # Fallback: current IST time (ctx clock)
-        return now_ist().time().replace(tzinfo=None)
+        value = str(timestamp or "").strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(value)
+        ist = timezone(td(hours=5, minutes=30))
+        if dt.tzinfo is None or dt.utcoffset() is None:
+            return dt.replace(tzinfo=ist)
+        return dt.astimezone(ist)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _is_today_ist(candle) -> bool:
+    dt = _parse_ist_timestamp(candle.get("timestamp"))
+    return dt is not None and dt.date() == trading_day()
+
+
+def _market_time(candles) -> dtime:
+    dt = _parse_ist_timestamp(candles[-1].get("timestamp", ""))
+    return (dt.time().replace(tzinfo=None) if dt else
+            now_ist().time().replace(tzinfo=None))
 
 def _avg_volume(candles, n=10) -> float:
     vols = [float(c.get("volume", 0)) for c in candles[-n-1:-1]]
@@ -139,11 +147,7 @@ class VWAPPullbackStrategy(BaseStrategy):
         # Candles are filtered to today at the strategy_runner level, but the
         # guard here is a safety net in case the fallback path supplies
         # multi-day data (e.g. during pre-market startup).
-        today_str = str(trading_day())
-        today_window = [
-            c for c in candles[-7:-1]
-            if str(c.get("timestamp", "")).startswith(today_str)
-        ]
+        today_window = [c for c in candles[-7:-1] if _is_today_ist(c)]
         # Need at least 4 today-candles in the window to establish a trend
         if len(today_window) < 4:
             return None
@@ -626,7 +630,7 @@ class IVCrushStrategy(BaseStrategy):
         return None
 
 
-# ─── 11. CPR + VWAP ──────────────────────────────────────────────────────────
+# ─── 11. CPR + VWAP ───────��──────────────────────────────────────────────────
 
 class CPRVWAPStrategy(BaseStrategy):
     """
@@ -718,8 +722,7 @@ class GapVWAPFillStrategy(BaseStrategy):
         # If the list contains yesterday's candles (fallback path in strategy_runner),
         # candles[0] is not today's open and gap_pct would be wrong.
         # Use the ctx clock's IST trading day — server may run UTC.
-        today_str = str(trading_day())
-        if not str(candles[0].get("timestamp", "")).startswith(today_str):
+        if not _is_today_ist(candles[0]):
             return None
 
         # Sort by timestamp so candles[0] is the earliest candle of the day
