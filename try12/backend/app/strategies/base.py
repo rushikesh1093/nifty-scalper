@@ -206,10 +206,15 @@ class BaseStrategy(ABC):
             return
         signal = await self.evaluate(candles, indicators)
         if signal:
-            self._last_signal_time = signal.signal_time
             logger.info("[%s] Signal: %s %s @ %.2f",
                         self.name, signal.direction, self.underlying, signal.spot_price)
-            await SignalBus.publish(signal)
+            position_opened = await SignalBus.publish(signal)
+            # A strategy cooldown represents a successfully accepted trade, not
+            # an evaluated or rejected signal.  Keep the timestamp unset when
+            # downstream gates reject the signal so the next valid candle can
+            # still be considered.
+            if position_opened:
+                self._last_signal_time = signal.signal_time
 
     @abstractmethod
     async def evaluate(self, candles: list[dict], indicators: dict) -> Optional[SignalEvent]:
