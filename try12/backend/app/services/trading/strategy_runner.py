@@ -399,14 +399,19 @@ class StrategyRunner:
         # Normalize every feed timestamp to IST before applying the session date
         # and open-time filters. Raw date-prefix matching misclassifies UTC rows
         # around the session boundary and can make a live session look empty.
-        candles = []
+        normalized_candles = []
         for c in all_candles:
             candle_dt = _candle_ist_datetime(c.get("timestamp"))
             if candle_dt is None or candle_dt.date() != today:
                 continue
             if candle_dt.time().replace(tzinfo=None) < dtime(9, 15):
                 continue
-            candles.append(c)
+            # Redis/feed order is not a contract. Keep indicators, ORB, VWAP,
+            # and the latest-candle signal aligned even when the provider sends
+            # UTC/offset timestamps out of order.
+            normalized_candles.append((candle_dt, c))
+
+        candles = [c for _, c in sorted(normalized_candles, key=lambda item: item[0])]
 
         today_str = str(today)
         if not candles:
