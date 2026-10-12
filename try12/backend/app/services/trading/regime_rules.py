@@ -267,8 +267,13 @@ def classify_regime(
         matched.append("HIGH_VOL_CHOP")
 
     # ── Priority 4 & 5: BREAKOUT_EVENT ───────────────────────────────────────
-    # Volume-surge condition (requires avg_volume > 0)
-    volume_surge = (
+    # NSE index spot candles commonly have volume=0.  In that case volume is
+    # unavailable, not evidence that the breakout is weak; option_selector
+    # applies the real liquidity checks on the selected contract.  Treat the
+    # condition as unknown/pass so the regime detector agrees with the strategy
+    # layer instead of disabling every breakout regime on index feeds.
+    volume_unavailable = volume <= 0 and avg_volume <= 0
+    volume_surge = volume_unavailable or (
         avg_volume > 0
         and volume >= avg_volume * config.VOLUME_SURGE_MULTIPLIER
     )
