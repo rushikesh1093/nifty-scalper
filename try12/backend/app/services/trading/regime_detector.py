@@ -74,6 +74,10 @@ class RegimeDetector:
 
         # Tracks the last time we emitted a "regime unchanged" heartbeat log
         self._last_log_time: dict[str, datetime] = {}
+        # Require two consecutive observations before treating a new stable
+        # regime as a real flip. This filters one-bar indicator glitches.
+        self._candidate_regime: dict[str, str] = {}
+        self._candidate_streak: dict[str, int] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -162,9 +166,19 @@ class RegimeDetector:
                     previous_regime, config
                 )
 
-                # Check whether a rapid regime flip just occurred (Req 9.1)
-                transition_detected = self.check_regime_transition(
-                    candidate_regime, history, config.REGIME_TRANSITION_WINDOW
+                # Confirm a candidate across two observations before allowing a
+                # transition. A single-bar indicator spike must not repeatedly
+                # lock the runner in REGIME_TRANSITION.
+                if self._candidate_regime.get(underlying) == candidate_regime:
+                    self._candidate_streak[underlying] = self._candidate_streak.get(underlying, 0) + 1
+                else:
+                    self._candidate_regime[underlying] = candidate_regime
+                    self._candidate_streak[underlying] = 1
+                transition_detected = (
+                    self._candidate_streak[underlying] >= 2
+                    and self.check_regime_transition(
+                        candidate_regime, history, config.REGIME_TRANSITION_WINDOW
+                    )
                 )
 
                 if transition_detected and candidate_regime not in (

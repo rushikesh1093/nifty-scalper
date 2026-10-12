@@ -9,7 +9,7 @@ Also handles:
 import asyncio
 import logging
 import time as _time
-from datetime import datetime, date, time as dtime, timezone, timedelta
+from datetime import datetime, date, time as dtime
 from typing import Optional
 
 from app.strategies.strategies import build_strategies, OISpikeStrategy, IVCrushStrategy, PDHPDLStrategy, CPRVWAPStrategy, GapVWAPFillStrategy
@@ -25,6 +25,7 @@ from app.services.trading.session_times import entry_cutoff, parse_square_off
 from app.services.trading.wiring import wire_signal_handlers
 from app.services.trading import no_trade
 from app.services.trading.no_trade import ReasonCode, Stage
+from app.services.market_data.timestamps import try_normalize_candle_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -74,23 +75,6 @@ def _as_float(v) -> float:
         return float(v or 0)
     except (TypeError, ValueError):
         return 0.0
-
-
-def _candle_ist_datetime(timestamp) -> Optional[datetime]:
-    """Parse feed timestamps and normalize aware values to the exchange timezone.
-
-    Naive feed timestamps are legacy IST values; aware timestamps may be UTC or
-    offset-based. Returning None keeps malformed rows out of the session filter
-    instead of silently classifying them by a raw date prefix.
-    """
-    try:
-        value = str(timestamp or "").strip().replace("Z", "+00:00")
-        parsed = datetime.fromisoformat(value)
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            return parsed.replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
-        return parsed.astimezone(timezone(timedelta(hours=5, minutes=30)))
-    except (TypeError, ValueError, OverflowError):
-        return None
 
 
 class StrategyRunner:
@@ -400,11 +384,30 @@ class StrategyRunner:
         # and open-time filters. Raw date-prefix matching misclassifies UTC rows
         # around the session boundary and can make a live session look empty.
         normalized_candles = []
+        from collections import Counter
+        rejected = Counter()
+        rejected_examples = []
         for c in all_candles:
-            candle_dt = _candle_ist_datetime(c.get("timestamp"))
-            if candle_dt is None or candle_dt.date() != today:
+            candle_dt = try_normalize_candle_timestamp(c.get("timestamp"))
+            if candle_dt is None:
+                rejected["invalid_timestamp"] += 1
+                rejected_examples.append(str(c.get("timestamp")))
+                continue
+            if candle_dt.date() != today:
+                rejected["wrong_session_date"] += 1
                 continue
             if candle_dt.time().replace(tzinfo=None) < dtime(9, 15):
+                rejected["before_session_open"] += 1
+                continue
+            if candle_dt >= self._ist_now().replace(second=0, microsecond=0):
+                rejected["incomplete_current_candle"] += 1
+                continue
+            try:
+                values = [float(c[k]) for k in ("open", "high", "low", "close")]
+                if not all(map(__import__("math").isfinite, values)) or values[2] > values[1]:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                rejected["invalid_ohlc"] += 1
                 continue
             # Redis/feed order is not a contract. Keep indicators, ORB, VWAP,
             # and the latest-candle signal aligned even when the provider sends
@@ -414,6 +417,10 @@ class StrategyRunner:
         candles = [c for _, c in sorted(normalized_candles, key=lambda item: item[0])]
 
         today_str = str(today)
+        logger.info(
+            "[%s] candle session filter: actual=%d expected_min=%d rejected=%s examples=%s",
+            underlying, len(candles), MIN_TODAY_CANDLES, dict(rejected), rejected_examples[:5],
+        )
         if not candles:
             self._queue_cycle_gate(tally, underlying, today_str, ReasonCode.FEED_UNAVAILABLE,
                                    f"No candles for today ({today_str}) in the cache for "
