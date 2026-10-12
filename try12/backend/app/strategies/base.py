@@ -125,6 +125,7 @@ class SignalBus:
     Routes: Strategy → SignalAggregator → PaperEngine
     """
     _handlers: list[SignalHandler] = []
+    _publish_lock = asyncio.Lock()
 
     @classmethod
     def subscribe(cls, handler: SignalHandler):
@@ -148,30 +149,24 @@ class SignalBus:
             )
             return False
 
-        # Record the cooldown BEFORE calling handlers (optimistic lock).
-        # This prevents two strategies firing the same underlying+direction
-        # in the same candle cycle from both reaching PaperEngine concurrently,
-        # causing the second to fail with "capital reserved by another trade".
-        # If the position ultimately fails to open, we clear the record so the
-        # next genuine signal for this direction is not suppressed.
-        signal_aggregator.record_acted(signal)
+        # Serialize the check/handler/record sequence. Without this, two signals
+        # can both pass should_act while the first is awaiting database work.
+        async with cls._publish_lock:
+            position_opened = False
+            for handler in cls._handlers:
+                try:
+                    result = await handler(signal)
+                    if result is True:
+                        position_opened = True
+                except Exception as e:
+                    logger.error("SignalBus handler error: %s", e, exc_info=True)
 
-        position_opened = False
-        for handler in cls._handlers:
-            try:
-                result = await handler(signal)
-                if result is True:
-                    position_opened = True
-            except Exception as e:
-                logger.error("SignalBus handler error: %s", e, exc_info=True)
+            # A rejected signal must never consume the cooldown. Record only
+            # after a handler confirms that a position was opened.
+            if position_opened:
+                signal_aggregator.record_acted(signal)
 
-        # If nothing opened (no option, capital exhausted, ATR fail, etc.)
-        # clear the optimistic cooldown so the next valid signal for this
-        # underlying+direction is not suppressed for 90 seconds.
-        if not position_opened:
-            signal_aggregator.clear_acted(signal)
-
-        return position_opened
+            return position_opened
 
 
 class BaseStrategy(ABC):
@@ -206,10 +201,15 @@ class BaseStrategy(ABC):
             return
         signal = await self.evaluate(candles, indicators)
         if signal:
-            self._last_signal_time = signal.signal_time
             logger.info("[%s] Signal: %s %s @ %.2f",
                         self.name, signal.direction, self.underlying, signal.spot_price)
-            await SignalBus.publish(signal)
+            position_opened = await SignalBus.publish(signal)
+            # A strategy cooldown represents a successfully accepted trade, not
+            # an evaluated or rejected signal.  Keep the timestamp unset when
+            # downstream gates reject the signal so the next valid candle can
+            # still be considered.
+            if position_opened:
+                self._last_signal_time = signal.signal_time
 
     @abstractmethod
     async def evaluate(self, candles: list[dict], indicators: dict) -> Optional[SignalEvent]:
