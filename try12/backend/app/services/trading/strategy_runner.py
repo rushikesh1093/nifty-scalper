@@ -11,6 +11,8 @@ import logging
 from datetime import datetime, date, time as dtime, timezone, timedelta
 from typing import Optional
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
 from app.strategies.strategies import build_strategies, OISpikeStrategy, IVCrushStrategy, PDHPDLStrategy, CPRVWAPStrategy, GapVWAPFillStrategy
 from app.strategies.indicators import compute_all, cpr as calc_cpr
 from app.strategies.base import SignalBus
@@ -191,7 +193,31 @@ class StrategyRunner:
     @staticmethod
     def _ist_now() -> datetime:
         """Return current datetime in IST (UTC+5:30), timezone-aware."""
-        return datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        return datetime.now(IST)
+
+    @staticmethod
+    def _candle_timestamp(value) -> Optional[datetime]:
+        """Parse feed timestamps and return a timezone-aware datetime in IST."""
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            text = str(value or "").strip()
+            if not text:
+                return None
+            try:
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                    try:
+                        parsed = datetime.strptime(text, fmt)
+                        break
+                    except ValueError:
+                        parsed = None
+                if parsed is None:
+                    return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=IST)
+        return parsed.astimezone(IST)
 
     async def _run_underlying(self, underlying: str, flags: dict):
         spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
@@ -202,31 +228,20 @@ class StrategyRunner:
         if not all_candles:
             return
 
-        today_str = str(self._ist_now().date())
-        # Filter to today's candles AND ensure they are within the official
-        # market session (≥ 09:15 IST).  Pre-9:15 ticks that sneak into Redis
-        # (e.g. from pre-open / historical seed edge-cases) would corrupt both
-        # the intraday VWAP (which must reset at session open) and the ORB
-        # levels (which are defined as the first 15 candles from 9:15 onward).
+        today = self._ist_now().date()
+        session_open = datetime.combine(today, dtime(9, 15), tzinfo=IST)
+        # Normalize every feed timestamp to IST before filtering. Redis may contain
+        # naive IST strings, UTC strings, or ISO-8601 strings with an offset; a
+        # string-prefix/date check misclassifies UTC candles near midnight and can
+        # leave the strategy with no valid candles.
         candles = []
         for c in all_candles:
-            ts_str = str(c.get("timestamp", ""))
-            if not ts_str.startswith(today_str):
+            ts = self._candle_timestamp(c.get("timestamp"))
+            if ts is None or ts.date() != today or ts < session_open:
                 continue
-            # Parse time component and drop anything before 09:15 IST.
-            # Timestamps may be naive IST strings ("2024-01-02 09:15:00") or
-            # ISO-8601 with offset.  We extract HH:MM directly from the string
-            # to avoid a heavyweight datetime parse on every candle.
-            try:
-                # Support both "YYYY-MM-DD HH:MM:SS" and "YYYY-MM-DDTHH:MM:SS..."
-                time_part = ts_str[11:16].replace("T", "")  # "HH:MM"
-                h, m = int(time_part[:2]), int(time_part[3:5])
-                # per-candle today filter, not the session gate — deliberately not tied to SESSION_START_IST
-                if h * 60 + m < 9 * 60 + 15:   # before 09:15 → skip
-                    continue
-            except Exception:
-                pass  # If we can't parse, keep the candle (safe default)
             candles.append(c)
+
+        candles.sort(key=lambda candle: self._candle_timestamp(candle.get("timestamp")) or session_open)
 
         if len(candles) < MIN_TODAY_CANDLES:
             # Not enough today-only candles yet — market just opened or no data.
