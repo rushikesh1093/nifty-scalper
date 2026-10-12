@@ -59,6 +59,12 @@ _SELL = frozenset({"SELL"})
 _BOTH = frozenset({"BUY", "SELL"})
 _NONE: frozenset = frozenset()
 
+# Explicit no-trade policy for safety-critical regimes. Keep these entries
+# centralized so the runner and API cannot drift into different eligibility.
+SAFETY_BLOCKED_REGIMES = frozenset({
+    "UNCLASSIFIED", "REGIME_TRANSITION", "HIGH_VOL_CHOP", "DETECTOR_ERROR", "UNKNOWN",
+})
+
 _TREND = frozenset({S.VWAP_PULLBACK.value, S.EMA_VWAP.value, S.SUPERTREND_VWAP.value,
                     S.CPR_VWAP.value, S.OI_SPIKE.value})
 _BREAKOUT = frozenset({S.ORB_VWAP.value, S.PDH_PDL.value, S.BOLLINGER_BREAKOUT.value,

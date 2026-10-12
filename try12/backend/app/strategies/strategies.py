@@ -4,13 +4,14 @@ Each inherits BaseStrategy and emits BUY (buy CE) or SELL (buy PE) signals.
 """
 import logging
 from typing import Optional
-from datetime import datetime, time as dtime
+from datetime import time as dtime
 import numpy as np
 
 from app.strategies.base import BaseStrategy, Direction, SignalEvent
 from app.strategies.indicators import ema, rsi, bollinger, supertrend, atr
 from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
 from app.runtime.context import now_ist, trading_day
+from app.services.market_data.timestamps import try_normalize_candle_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -24,26 +25,13 @@ def _c(candles, key, idx=-1):
 def _is_between(t: dtime, s: dtime, e: dtime) -> bool:
     return s <= t <= e
 
-def _parse_ist_timestamp(timestamp):
-    try:
-        from datetime import timezone, timedelta as td
-        value = str(timestamp or "").strip().replace("Z", "+00:00")
-        dt = datetime.fromisoformat(value)
-        ist = timezone(td(hours=5, minutes=30))
-        if dt.tzinfo is None or dt.utcoffset() is None:
-            return dt.replace(tzinfo=ist)
-        return dt.astimezone(ist)
-    except (TypeError, ValueError, OverflowError):
-        return None
-
-
 def _is_today_ist(candle) -> bool:
-    dt = _parse_ist_timestamp(candle.get("timestamp"))
+    dt = try_normalize_candle_timestamp(candle.get("timestamp"))
     return dt is not None and dt.date() == trading_day()
 
 
 def _market_time(candles) -> dtime:
-    dt = _parse_ist_timestamp(candles[-1].get("timestamp", ""))
+    dt = try_normalize_candle_timestamp(candles[-1].get("timestamp", ""))
     return (dt.time().replace(tzinfo=None) if dt else
             now_ist().time().replace(tzinfo=None))
 
