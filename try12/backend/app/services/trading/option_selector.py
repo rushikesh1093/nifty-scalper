@@ -293,12 +293,35 @@ def _band_label(i: int) -> str:
     return "PREFERRED" if i == 0 else f"FALLBACK_{i}"
 
 
+def _expiry_date(value) -> Optional[date]:
+    """Normalize DB/feed expiry values before doing calendar-day arithmetic.
+
+    Instrument masters may return a ``date``, a timezone-aware ``datetime``, or
+    an ISO string. Comparing those forms directly can make a valid expiry look
+    absent, especially around the UTC/IST day boundary.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
 def choose_expiry(expiries: list[date], *, today: date, now_t: dtime, underlying: str,
                   tp: TradingParams) -> ExpiryChoice:
     """Walk ``tp.dte_bands[underlying]`` in order and return the first expiry whose
     DTE falls in a band. DTE 0 is never traded; DTE 1 only before
     ``dte1_cutoff_ist`` and only when no banded expiry exists. Pure."""
-    distinct = sorted(set(expiries))
+    normalized = [e for raw in expiries if (e := _expiry_date(raw)) is not None]
+    distinct = sorted(set(normalized))
     observed = tuple((e.isoformat(), (e - today).days) for e in distinct)
     if not distinct:
         return ExpiryChoice(None, None, None,
@@ -326,7 +349,7 @@ def choose_expiry(expiries: list[date], *, today: date, now_t: dtime, underlying
         cause="NO_BANDED_EXPIRY", observed=observed)
 
 
-# ── Black-Scholes delta approximation ─────────────────────────────────────────
+# ── Black-Scholes delta approximation ─────────────────────────���───────────────
 
 def _estimate_delta(spot: float, strike: float, option_type: str,
                     dte: int, iv: float = 0.20) -> float:
