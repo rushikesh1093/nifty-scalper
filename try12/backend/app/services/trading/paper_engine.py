@@ -782,7 +782,10 @@ class PaperEngine:
                 entry_utc = entry_utc.replace(tzinfo=timezone.utc)
             hold_mins = (now_utc() - entry_utc).total_seconds() / 60
             floor = entry * (1 + p.timeout_exit_min_gain_pct / 100)
-            if hold_mins > hold_limit and ltp < floor:
+            # A timeout must never crystallize a losing trade. Let the hard SL
+            # or EOD handle losses; timeout is only a profitable/at-least-flat exit.
+            timeout_floor = max(entry, floor)
+            if hold_mins > hold_limit and ltp >= timeout_floor:
                 logger.info(
                     "[PaperEngine] MAX-HOLD-TIME exit pos %d (%s) — held %.0f min "
                     "(limit %d), LTP=%.2f < %.2f",
