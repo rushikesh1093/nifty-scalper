@@ -724,6 +724,29 @@ def _score_row(c: ScoredCandidate) -> dict:
     }
 
 
+def _candidate_sort_key(candidate: ScoredCandidate) -> tuple:
+    """Rank equal-score contracts by execution quality, not strike order.
+
+    Instruments are loaded in strike order, so sorting only by composite score
+    silently preferred the lowest strike whenever two candidates rounded to the
+    same score.  The tie-breakers preserve the primary score while preferring
+    tighter execution, stronger liquidity, and delta nearer the scalping band.
+    """
+    delta_distance = min(abs(abs(candidate.delta_est) - 0.50),
+                         abs(abs(candidate.delta_est) - 0.65))
+    return (
+        candidate.score,
+        candidate.score_spread,
+        candidate.score_liquidity,
+        candidate.score_delta,
+        -delta_distance,
+        candidate.oi,
+        candidate.volume,
+        -candidate.spread_pct,
+        -candidate.strike,
+    )
+
+
 class OptionSelector:
     """
     Evaluates all CE/PE candidates for a given signal and selects the best.
@@ -795,7 +818,7 @@ class OptionSelector:
             )
             return SelectionResult(None, rejections, evaluated, expiry_choice, n_fallback, [])
 
-        candidates.sort(key=lambda c: c.score, reverse=True)
+        candidates.sort(key=_candidate_sort_key, reverse=True)
         self._log_table(candidates, underlying, sum(rejections.values()))
 
         best = candidates[0]
