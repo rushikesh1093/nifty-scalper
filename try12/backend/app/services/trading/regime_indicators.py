@@ -223,6 +223,15 @@ def build_regime_indicators(
     Returns:
         Populated ``RegimeIndicators`` dataclass.
     """
+    # Empty feeds are common during startup. Return a fail-closed snapshot
+    # rather than indexing closes[-1] or letting downstream code crash.
+    if not candles:
+        return RegimeIndicators(
+            adx=None, atr=0.0, atr_percentile=50.0, vwap=0.0, price=0.0,
+            vwap_cross_count=0, volume=0.0, avg_volume=0.0,
+            orb_high=None, orb_low=None, pdh=None, pdl=None,
+        )
+
     # Extract arrays from candles
     highs = np.array([cd["high"] for cd in candles], dtype=np.float64)
     lows = np.array([cd["low"] for cd in candles], dtype=np.float64)
