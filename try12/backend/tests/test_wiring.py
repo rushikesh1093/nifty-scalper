@@ -40,3 +40,13 @@ def test_step_functions_take_no_time_or_flags_parameter():
     from app.services.trading.paper_engine import PaperEngine
     assert list(inspect.signature(StrategyRunner.run_cycle).parameters) == ["self", "underlying"]
     assert list(inspect.signature(PaperEngine.monitor_once).parameters) == ["self"]
+
+
+def test_candle_loop_uses_configured_underlyings():
+    import inspect
+    from app.services.trading.strategy_runner import StrategyRunner
+
+    source = inspect.getsource(StrategyRunner._candle_loop)
+    assert "for underlying in ctx().cfg.underlyings:" in source
+    assert "run_cycle(underlying)" in source
+    assert 'for underlying in ["NIFTY", "BANKNIFTY"]' not in source
