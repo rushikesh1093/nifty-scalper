@@ -390,6 +390,8 @@ class PaperEngine:
                     db, run_id=ctx().run_id, trading_day=trading_day(),
                     capital_used=capital_used,
                     advisory_used=float(sized.context.get("open_capital_used", 0.0)),
+                    duplicate_token=selected.token,
+                    duplicate_symbol=selected.symbol,
                     insert=_insert)
         except Exception as exc:
             # The transaction rolled back: no row exists and nothing is held.
