@@ -32,7 +32,7 @@ from typing import Any, Awaitable, Callable, Optional
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
-from app.db.models.paper_trade import StrategyPerf
+from app.db.models.paper_trade import PaperPosition, StrategyPerf
 from app.runtime.context import ctx, now_ist, params, trading_day
 from app.services.trading import fills, no_trade, risk_state
 from app.services.trading.no_trade import ReasonCode, Stage
@@ -445,6 +445,8 @@ def _is_postgres(db) -> bool:
 
 async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                 advisory_used: float, insert: Callable[[Any], Awaitable[Any]],
+                duplicate_token: Optional[str] = None,
+                duplicate_symbol: Optional[str] = None,
                 lock_timeout_s: float = LOCK_TIMEOUT_S) -> GateDecision:
     """One transaction: lock → 13a (derived count) → 13b (derived capital) →
     insert → commit. Every early return happens before the insert, with nothing
@@ -471,6 +473,23 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
             except asyncio.TimeoutError:
                 sqlite_lock = None
                 return _lock_timeout(started, None)
+
+        duplicate_query = select(PaperPosition.id).where(
+            PaperPosition.run_id == run_id,
+            PaperPosition.is_open.is_(True),
+        )
+        if duplicate_token is not None:
+            duplicate_query = duplicate_query.where(PaperPosition.token == duplicate_token)
+        elif duplicate_symbol:
+            duplicate_query = duplicate_query.where(PaperPosition.symbol == duplicate_symbol)
+        duplicate_exists = (await db.execute(duplicate_query.limit(1))).scalar_one_or_none()
+        if duplicate_exists is not None:
+            await db.rollback()
+            return _no(
+                Stage.ENTRY, ReasonCode.DUPLICATE_OPEN_POSITION,
+                f"Open position already exists for {duplicate_symbol or duplicate_token}; duplicate entry blocked.",
+                duplicate_position_id=duplicate_exists,
+            )
 
         count = await risk_state.derived_trade_count(db, run_id, trading_day)          # 13a
         if count >= cfg.max_trades_per_day:
