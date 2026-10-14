@@ -64,11 +64,12 @@ class TradingParams:
     fixed_fraction_pct: float = 10.0
     trade_amount: Optional[float] = None          # demoted display cache (§9.5)
     open_exposure_cap_pct: float = 40.0
-    max_open_positions: int = 3
-    max_lots_per_trade: int = 3
-    max_trades_per_day: int = 6
-    max_daily_loss: float = 6_000.0
-    max_daily_loss_pct: float = 3.0
+    # Conservative paper-trading defaults: one position and one lot at a time.
+    max_open_positions: int = 1
+    max_lots_per_trade: int = 1
+    max_trades_per_day: int = 5
+    max_daily_loss: float = 4_000.0
+    max_daily_loss_pct: float = 2.0
 
     # ── halts (trading_config) ───────────────────────────────────────────────
     losing_streak_halt_n: int = 3
@@ -94,7 +95,8 @@ class TradingParams:
 
     # ── exit ladder (§8.1, §8.2) ─────────────────────────────────────────────
     trail_tiers: tuple[TrailTier, ...] = DEFAULT_TRAIL_TIERS
-    partial_exit_enabled: bool = True
+    # Partial exits require multiple lots; paper mode starts with ONE_LOT.
+    partial_exit_enabled: bool = False
     partial_exit_reward_frac: float = PARTIAL_EXIT_REWARD_FRAC
     partial_exit_fraction: float = PARTIAL_EXIT_FRACTION
     max_hold_minutes: dict[str, int] = field(default_factory=_default_max_hold)

@@ -41,7 +41,11 @@ VIX_MAX           = 25.0   # above → extreme fear/erratic, hard SLs get blown
                             #  on normal volatile days, 20 was blocking good sessions)
 ATR_MIN_NIFTY     = 1.5    # Nifty 1-min ATR below this = dead chop (was 2.5 — blocked ORB window)
 ATR_MIN_BANKNIFTY = 5.0    # BankNifty moves ~3× Nifty (was 8.0)
-MIN_TODAY_CANDLES = 25     # today-only 1m candles required before strategies run
+# The opening range needs 15 completed one-minute candles. Requiring 25
+# delayed every strategy until 09:40 and made the early-session ORB window
+# unreachable on short/replayed sessions. Session filtering remains strict;
+# this is not a fallback to prior-day candles.
+MIN_TODAY_CANDLES = 15
 EXPIRY_MIN_SL_PCT = 0.15   # on expiry day skip ALL strategies with sl_pct < 15%
                             # Raised from 0.08 — a 10% SL on a cheap OTM option
                             # (e.g. ₹23 LTP → SL at ₹20.70) is blown by a single
