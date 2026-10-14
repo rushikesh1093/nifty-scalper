@@ -236,7 +236,9 @@ class StrategyRunner:
         while self._running:
             try:
                 await asyncio.sleep(CANDLE_CHECK_INTERVAL)
-                for underlying in ["NIFTY", "BANKNIFTY"]:
+                # Respect the active run configuration so replay and paper runs
+                # evaluate only the underlyings they were configured to trade.
+                for underlying in ctx().cfg.underlyings:
                     await self.run_cycle(underlying)
                 await self._refresh_display_caches()
             except asyncio.CancelledError:
