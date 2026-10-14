@@ -123,8 +123,14 @@ class PaperEngine:
 
     async def stop(self):
         self._running = False
-        if self._monitor_task:
-            self._monitor_task.cancel()
+        task = self._monitor_task
+        self._monitor_task = None
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     # ── Signal handler ────────────────────────────────────────────────────────
 
@@ -658,7 +664,9 @@ class PaperEngine:
         except Exception:
             tick = None
         age = _tick_age_seconds(tick)
-        stale = not ltp or (age is not None and age > p.stale_tick_seconds)
+        # A price without a timestamp cannot be proven fresh. Treat it as stale
+        # so targets, trailing, partials, and timeouts never act on an unknown-age quote.
+        stale = not ltp or age is None or age > p.stale_tick_seconds
         in_session = is_market_hours(now_ist)
 
         if not ltp:
