@@ -248,6 +248,17 @@ def classify_regime(
     vwap = indicators.vwap
     volume = indicators.volume
     avg_volume = indicators.avg_volume
+
+    # Invalid market data must never accidentally satisfy a comparison and
+    # produce a tradeable regime. Fail closed until the next valid candle.
+    import math
+    numeric_values = (atr_pct, price, vwap, indicators.vwap_cross_count,
+                      volume, avg_volume)
+    if (adx is not None and not math.isfinite(float(adx))) or any(
+        not math.isfinite(float(value)) for value in numeric_values
+    ):
+        logger.warning("[classify_regime] invalid indicator values for %s", underlying)
+        return "DETECTOR_ERROR"
     orb_high = indicators.orb_high
     orb_low = indicators.orb_low
     pdh = indicators.pdh

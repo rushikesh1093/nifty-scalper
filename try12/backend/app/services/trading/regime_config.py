@@ -12,7 +12,8 @@ and two helpers:
       — Module-level TTL cache around load_config.
 """
 import logging
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -47,10 +48,19 @@ _DEFAULTS = RegimeConfig()
 
 
 def _positive(value, default):
-    """Return *value* if it is a positive number, else *default*."""
+    """Return *value* if it is a finite positive number, else *default*."""
     try:
         v = float(value)
-        return v if v > 0 else default
+        return v if math.isfinite(v) and v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _percentile(value, default):
+    """Return a finite percentile in [0, 100], else *default*."""
+    try:
+        v = float(value)
+        return v if math.isfinite(v) and 0 <= v <= 100 else default
     except (TypeError, ValueError):
         return default
 
@@ -142,10 +152,10 @@ def load_config(underlying: str, db_session=None) -> "RegimeConfig":
             ADX_RANGE_THRESHOLD=_positive(
                 row.adx_range_threshold, _DEFAULTS.ADX_RANGE_THRESHOLD
             ),
-            ATR_LOW_PERCENTILE=_positive(
+            ATR_LOW_PERCENTILE=_percentile(
                 row.atr_low_percentile, _DEFAULTS.ATR_LOW_PERCENTILE
             ),
-            ATR_HIGH_PERCENTILE=_positive(
+            ATR_HIGH_PERCENTILE=_percentile(
                 row.atr_high_percentile, _DEFAULTS.ATR_HIGH_PERCENTILE
             ),
             VWAP_PROXIMITY_PERCENT=_positive(
@@ -164,6 +174,15 @@ def load_config(underlying: str, db_session=None) -> "RegimeConfig":
                 row.transition_cooldown_candles, _DEFAULTS.TRANSITION_COOLDOWN_CANDLES
             ),
         )
+
+        # A reversed or touching ATR band makes the classifier ambiguous.
+        # Restore the safe default ordering instead of emitting an invalid config.
+        if cfg.ATR_LOW_PERCENTILE >= cfg.ATR_HIGH_PERCENTILE:
+            cfg.ATR_LOW_PERCENTILE = _DEFAULTS.ATR_LOW_PERCENTILE
+            cfg.ATR_HIGH_PERCENTILE = _DEFAULTS.ATR_HIGH_PERCENTILE
+        if cfg.ADX_RANGE_THRESHOLD >= cfg.ADX_TREND_THRESHOLD:
+            cfg.ADX_RANGE_THRESHOLD = _DEFAULTS.ADX_RANGE_THRESHOLD
+            cfg.ADX_TREND_THRESHOLD = _DEFAULTS.ADX_TREND_THRESHOLD
 
         scope = underlying if row.underlying else "GLOBAL"
         logger.info(
