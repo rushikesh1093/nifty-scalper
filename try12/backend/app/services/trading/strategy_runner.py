@@ -121,9 +121,22 @@ class StrategyRunner:
 
     async def stop(self):
         self._running = False
-        await paper_engine.stop()
-        for t in [self._run_task, self._eod_task]:
-            if t: t.cancel()
+        # Close positions before cancelling the monitor so a manual shutdown
+        # cannot leave an open paper position stranded until EOD.
+        try:
+            await paper_engine.square_off_all("SHUTDOWN")
+        finally:
+            await paper_engine.stop()
+            tasks = [t for t in (self._run_task, self._eod_task) if t]
+            self._run_task = None
+            self._eod_task = None
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     # ── Strategy enable/disable runtime ──────────────────────────────────────
 
