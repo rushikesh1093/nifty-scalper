@@ -106,8 +106,9 @@ def _reject(code: ReasonCode, reason: str) -> FilterResult:
 
 def _quote_usable(bid, ask) -> bool:
     try:
-        return bid is not None and ask is not None and float(bid) > 0 \
-            and float(ask) > 0 and float(ask) >= float(bid)
+        return bid is not None and ask is not None \
+            and math.isfinite(float(bid)) and math.isfinite(float(ask)) \
+            and float(bid) > 0 and float(ask) >= float(bid)
     except (TypeError, ValueError):
         return False
 
@@ -144,7 +145,9 @@ def _hard_filter(
     # ── Filter 0: R:R on the UN-stretched setup ───────────────────────────────
     # The old gate stretched the target to the floor before testing it, which
     # made it identically true. A setup below 1:2 is rejected as it stands.
-    if sl_pct is None or sl_pct <= 0 or target_pct is None:
+    if (sl_pct is None or target_pct is None
+            or not all(math.isfinite(v) for v in (sl_pct, target_pct, min_rr))
+            or not 0 < sl_pct < 1 or target_pct <= 0 or min_rr <= 0):
         return _reject(ReasonCode.RR_INSUFFICIENT,
                        f"R:R undefined: sl_pct={sl_pct} target_pct={target_pct}")
     rr = target_pct / sl_pct
@@ -154,6 +157,8 @@ def _hard_filter(
                        f"target_pct={target_pct}); the target is never stretched to fit")
 
     # ── Filter 1: Contract suitability (premium band) and affordability ───────
+    if not math.isfinite(ltp) or ltp <= 0:
+        return _reject(ReasonCode.TICK_UNAVAILABLE, f"Invalid LTP: {ltp}")
     lo, hi = tp.premium_band.get((underlying or "NIFTY").upper(), tp.premium_band["NIFTY"])
     if ltp < lo:
         return _reject(ReasonCode.CONTRACT_UNSUITABLE,
@@ -175,7 +180,8 @@ def _hard_filter(
                        f"no usable bid/ask (bid={bid} ask={ask}) — entries fill off the "
                        f"ask, so a quote-less contract is refused")
     if (has_quote or tick_age_s is not None) and \
-            (tick_age_s is None or tick_age_s > tp.stale_tick_seconds):
+            (tick_age_s is None or not math.isfinite(tick_age_s)
+             or tick_age_s < 0 or tick_age_s > tp.stale_tick_seconds):
         age = "unknown" if tick_age_s is None else f"{tick_age_s:.0f}s"
         return _reject(ReasonCode.QUOTE_STALE,
                        f"quote age {age} > {tp.stale_tick_seconds}s")
@@ -579,10 +585,10 @@ def _score_price_behavior(ltp: float, ltp_history: list[float]) -> float:
     elif pct_change >= -1.0:
         return 50.0 + pct_change * 30.0
     else:
-        return max(0.0, 50.0 + pct_change * 20.0)
+        return max(0.0, 50.0 + pct_change * 30.0)
 
 
-# ── Main scorer ────────────────────────────────────────────────────────────────
+# ── Main scorer ─────────────────────────��──────────────────────────────────────
 
 def score_candidate(
     inst:        Instrument,
@@ -592,7 +598,7 @@ def score_candidate(
     direction:   Direction,
     step:        int,
     ltp_history: list[float] = None,
-    prev_oi:     int = 0,
+    prev_oi:     Optional[int] = None,
     avg_volume:  float = 0.0,   # rolling average volume from Redis; 0 = unknown
     *,
     sl_pct:      float,
@@ -644,14 +650,15 @@ def score_candidate(
     dte        = max((expiry - trading_day()).days, 0)
     oi_score   = oi        # both are real, non-negative values past the hard filter
     vol_score  = volume
-    oi_change  = oi_score - prev_oi
+    has_previous_oi = prev_oi is not None and prev_oi > 0
+    oi_change  = oi_score - prev_oi if has_previous_oi else 0
 
     # ── Compute all 8 factor scores ─────────────────────────────────────────
     s_liq    = _score_liquidity(oi_score, vol_score)
     s_spread = _score_spread(bid, ask, ltp)
     s_delta, delta_val = _score_delta(spot, inst.strike, opt_type_str, dte, iv_decimal)
     s_money  = _score_moneyness(inst.strike, spot, step, opt_type_str)
-    s_oi_chg = _score_oi_change(oi_score, oi_change)
+    s_oi_chg = _score_oi_change(oi_score, oi_change) if has_previous_oi else 50.0
     s_voltrd = _score_volume_trend(vol_score, avg_volume)
     s_expiry = _score_expiry(expiry)
     s_pbehav = _score_price_behavior(ltp, ltp_history or [])
@@ -985,7 +992,7 @@ class OptionSelector:
                 direction   = direction,
                 step        = step,
                 ltp_history = [],
-                prev_oi     = prev_oi_map.get(inst.token, 0),
+                prev_oi     = prev_oi_map.get(inst.token),
                 avg_volume  = avg_vol_map.get(inst.token, 0.0),
                 sl_pct      = sl_pct,
                 target_pct  = target_pct,
@@ -1003,8 +1010,9 @@ class OptionSelector:
 
         # Save current OI snapshot for next cycle's OI-change scoring and update the
         # rolling average volume (EMA α=0.3) — from the ticks already read above.
-        new_snap: dict[str, int] = {}
-        new_avg_vol: dict[str, float] = {}
+        # CE and PE scans share these keys; retain the side not scanned this cycle.
+        new_snap: dict[str, int] = dict(prev_oi_map)
+        new_avg_vol: dict[str, float] = dict(avg_vol_map)
         for token, tick in ticks.items():
             new_snap[token] = int(tick.get("oi") or 0)
             prev_avg = avg_vol_map.get(token, 0.0)
