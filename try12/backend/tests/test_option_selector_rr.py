@@ -34,6 +34,62 @@ def hf(**over) -> FilterResult:
     return _hard_filter(**kw)
 
 
+@pytest.mark.parametrize("field, value, code", [
+    ("ltp", float("nan"), "TICK_UNAVAILABLE"),
+    ("ltp", float("inf"), "TICK_UNAVAILABLE"),
+    ("ask", float("inf"), "QUOTE_UNAVAILABLE"),
+    ("bid", float("nan"), "QUOTE_UNAVAILABLE"),
+    ("tick_age_s", float("nan"), "QUOTE_STALE"),
+    ("tick_age_s", -1.0, "QUOTE_STALE"),
+    ("sl_pct", float("nan"), "RR_INSUFFICIENT"),
+    ("sl_pct", 1.0, "RR_INSUFFICIENT"),
+    ("target_pct", float("inf"), "RR_INSUFFICIENT"),
+    ("min_rr", float("nan"), "RR_INSUFFICIENT"),
+])
+def test_nonfinite_market_and_risk_inputs_fail_closed(field, value, code):
+    result = hf(**{field: value})
+    assert not result.passed and result.filter == code
+
+
+def test_price_behavior_never_rewards_a_larger_drop():
+    from app.services.trading.option_selector import _score_price_behavior
+
+    prices = [95.0, 98.0, 98.99, 99.0, 99.5, 100.0, 100.5, 101.1]
+    scores = [_score_price_behavior(price, [100.0, price]) for price in prices]
+    assert scores == sorted(scores)
+    assert all(0 <= score <= 100 for score in scores)
+
+
+@pytest.mark.parametrize("previous_oi", [None, 0, -1])
+def test_unknown_oi_baseline_does_not_invent_fresh_positioning(runtime_ctx, fake_redis, previous_oi):
+    from app.services.trading.option_selector import score_candidate
+
+    row = _chain(runtime_ctx, strikes=(22600,))[0]
+    _tick(fake_redis, row.token, 100.0)
+    candidate, result = score_candidate(
+        row, 22600.0, run(fake_redis.get_tick(row.token)), row.expiry,
+        Direction.BUY, 50, prev_oi=previous_oi, sl_pct=0.15, target_pct=0.30, tp=P,
+    )
+    assert result.passed
+    assert candidate.oi_change == 0
+    assert candidate.score_oi_change == 50.0
+
+
+def test_call_scan_preserves_put_history(runtime_ctx, fake_redis):
+    rows = _chain(runtime_ctx, strikes=(22600,))
+    expiry = rows[0].expiry
+    oi_key = f"prev_oi:NIFTY:{expiry}"
+    vol_key = f"avg_vol:NIFTY:{expiry}"
+    run(fake_redis.set(oi_key, {"put-token": 200_000}))
+    run(fake_redis.set(vol_key, {"put-token": 10_000.0}))
+    _tick(fake_redis, rows[0].token, 100.0)
+    with using(with_instruments(runtime_ctx, rows)):
+        run(option_selector.select(None, Direction.BUY, "NIFTY", 22600.0, **KW))
+    assert run(fake_redis.get(oi_key))["put-token"] == 200_000
+    assert run(fake_redis.get(vol_key))["put-token"] == 10_000.0
+    assert run(fake_redis.get(oi_key))[rows[0].token] == 300_000
+
+
 # ── the R:R gate is real ─────────────────────────────────────────────────────
 
 def test_a_one_to_one_point_five_setup_is_rejected_where_the_stretch_used_to_pass_it():
