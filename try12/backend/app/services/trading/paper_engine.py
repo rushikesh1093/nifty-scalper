@@ -590,7 +590,10 @@ class PaperEngine:
             except Exception:
                 tick = None
             age = _tick_age_seconds(tick)
-            return float(ltp), (age is not None and age > params().stale_tick_seconds)
+            # An LTP without a verifiable timestamp is not fresh. Treat it as
+            # stale so it cannot trigger target, trailing, partial, or timeout
+            # logic as though it were a current market quote.
+            return float(ltp), (age is None or age > params().stale_tick_seconds)
 
         known = self._last_known.get(pos.id)
         if known:
