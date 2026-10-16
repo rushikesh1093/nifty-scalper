@@ -34,8 +34,12 @@ function LivePnl({ pos }: { pos: Position }) {
   if (ltp === null || entry === null) {
     return <span className="text-table text-text-2">awaiting tick</span>;
   }
-  // Long option: (ltp − entry) × remaining qty, plus any partial-exit gross already realised.
-  const est = (ltp - entry) * (num(pos.qty) ?? 0) + (num(pos.gross_pnl) ?? 0);
+  // Long positions profit when the option rises; short positions profit when it falls.
+  // Use remaining_qty when available so a partial close is not counted twice.
+  const direction = pos.direction.toUpperCase();
+  const priceChange = direction === "SELL" ? entry - ltp : ltp - entry;
+  const remainingQty = num(pos.remaining_qty) ?? num(pos.qty) ?? 0;
+  const est = priceChange * remainingQty + (num(pos.gross_pnl) ?? 0);
   return (
     <span className="inline-flex flex-col items-end">
       <DeltaText value={est} prefix="₹" decimals={0} />
