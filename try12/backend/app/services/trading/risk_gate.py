@@ -506,6 +506,14 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                        f"₹{cfg.capital:.0f}",
                        advisory_used=advisory_used, locked_used=locked_used,
                        amount=capital_used, capital=cfg.capital)
+        exposure_cap = cfg.open_exposure_cap_pct / 100.0 * cfg.capital
+        if locked_used + capital_used > exposure_cap:
+            await db.rollback()
+            return _no(Stage.ENTRY, ReasonCode.EXPOSURE_CAP,
+                       f"open exposure ₹{locked_used:.0f} + ₹{capital_used:.0f} exceeds "
+                       f"cap ₹{exposure_cap:.0f}",
+                       advisory_used=advisory_used, locked_used=locked_used,
+                       amount=capital_used, exposure_cap=exposure_cap)
         result = await insert(db)
         await db.commit()                         # releases the advisory lock
         return GateDecision(allowed=True, stage=Stage.ENTRY, code=None, reason="", result=result)
