@@ -168,10 +168,14 @@ def _hard_filter(
         return _reject(ReasonCode.CONTRACT_UNSUITABLE,
                        f"LTP ₹{ltp:.2f} > maximum ₹{hi} — too expensive, "
                        f"can't achieve 2× target within reasonable move")
-    if max_premium is not None and ltp > max_premium:
+    # Sizing executes at the ask when a usable quote exists. Compare the same
+    # executable price here, otherwise selection can pass on LTP and sizing
+    # later rejects the contract because ask × lot_size exceeds the budget.
+    executable_premium = float(ask) if _quote_usable(bid, ask) else ltp
+    if max_premium is not None and executable_premium > max_premium:
         return _reject(ReasonCode.PREMIUM_ABOVE_AFFORDABLE,
-                       f"LTP ₹{ltp:.2f} > affordable ceiling ₹{max_premium:.2f} "
-                       f"(budget cannot buy one lot)")
+                       f"entry premium ₹{executable_premium:.2f} > affordable ceiling "
+                       f"₹{max_premium:.2f} (budget cannot buy one lot)")
 
     # ── Filter 2: quote presence and freshness ────────────────────────────────
     has_quote = _quote_usable(bid, ask)
