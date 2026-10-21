@@ -159,6 +159,25 @@ def test_timeout_uses_max_hold_minutes(runtime_ctx, sqlite_db, fake_redis):
     assert pos.hold_minutes == pytest.approx(11.0)
 
 
+def test_timeout_does_not_close_a_losing_position(runtime_ctx, sqlite_db, fake_redis):
+    from dataclasses import replace
+
+    from app.core.trading_params import TradingParams
+    from app.runtime.context import using
+    from app.runtime.live import StaticParams
+    from tests.helpers import add_position, run, seed_config
+
+    run(seed_config(sqlite_db, used_capital=6500.0))
+    entry_time = runtime_ctx.clock.now_utc()
+    pid = run(add_position(sqlite_db, strategy_name="ORB_VWAP", entry_time=entry_time,
+                           initial_risk=15.0, r_source="ENTRY", original_quantity=65))
+    p = replace(TradingParams(), max_hold_minutes={"DEFAULT": 1}, timeout_exit_min_gain_pct=0.0)
+    with using(replace(runtime_ctx, params=StaticParams(p))):
+        runtime_ctx.clock.advance(minutes=2)
+        pos = _tick(runtime_ctx, fake_redis, sqlite_db, pid, 99.0)
+    assert pos.is_open
+
+
 def test_missing_target_writes_data_gap_and_leaves_the_stop(runtime_ctx, sqlite_db, fake_redis):
     from sqlalchemy import select
 
