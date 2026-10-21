@@ -30,7 +30,9 @@ from app.services.backtest import jobs as backtest_jobs
 setup_logging("DEBUG" if settings.DEBUG else "INFO")
 logger = logging.getLogger(__name__)
 
-MARKET_RETRY_INTERVAL_S = 60
+# Retry quickly after a feedless start: waiting a full minute before the first
+# retry made transient AngelOne/network failures look like a hung backend.
+MARKET_RETRY_INTERVAL_S = 10
 MARKET_RETRY_MAX_ATTEMPTS = 60
 
 
@@ -38,8 +40,11 @@ async def _retry_market_startup() -> None:
     """Retry MarketManager.startup until the live feed is up. One-time steps that
     already succeeded (instrument sync, tick handler) are not repeated."""
     import asyncio as _asyncio
-    for _ in range(MARKET_RETRY_MAX_ATTEMPTS):
-        await _asyncio.sleep(MARKET_RETRY_INTERVAL_S)
+    for attempt in range(MARKET_RETRY_MAX_ATTEMPTS):
+        # The first retry is immediate; later retries are spaced out so a
+        # transient broker outage does not delay the API becoming usable.
+        if attempt:
+            await _asyncio.sleep(MARKET_RETRY_INTERVAL_S)
         try:
             await market_manager.startup()
             logger.info("MarketManager startup succeeded on attempt %d — live feed starting",
