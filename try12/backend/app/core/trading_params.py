@@ -34,11 +34,16 @@ FORBIDDEN_KEYS: dict[str, str] = {
 
 TRADE_AMOUNT_TOLERANCE = 500.0     # ₹ — display cache vs fixed_fraction × capital
 MAX_HOLD_MINUTES_MAX = 374         # one session is 375 one-minute candles
-MAX_FIXED_FRACTION_PCT = 40.0      # % of capital one trade may be sized on (the only bound)
+MAX_FIXED_FRACTION_PCT = 100.0     # % of capital one trade may be sized on (the only bound)
+MAX_OPEN_EXPOSURE_CAP_PCT = 100.0  # % of capital all open positions together may use
 
 
 def _default_max_hold() -> dict[str, int]:
-    return {"VWAP_REVERSAL": 25, "RSI_VWAP": 25, "VWAP_PULLBACK": 25, "DEFAULT": 45}
+    return {"VWAP_REVERSAL": 25, "RSI_VWAP": 25, "VWAP_PULLBACK": 25, "TREND_ENGINE": 60,
+            "DEFAULT": 45}
+
+
+DECISION_ENGINES = ("UNIFIED", "LEGACY")
 
 
 def _default_dte_bands() -> dict[str, tuple[tuple[int, int], ...]]:
@@ -59,6 +64,11 @@ class TradingParamsError(ValueError):
 
 @dataclass(frozen=True)
 class TradingParams:
+    # ── which strategies trade ───────────────────────────────────────────────
+    # UNIFIED: only TREND_ENGINE trades (the 12 legacy strategies are its
+    # evidence). LEGACY: the 12 independent strategies trade, TREND_ENGINE idle.
+    decision_engine: str = "UNIFIED"
+
     # ── capital and caps (trading_config) ────────────────────────────────────
     capital: float = 200_000.0
     fixed_fraction_pct: float = 10.0
@@ -69,6 +79,10 @@ class TradingParams:
     max_trades_per_day: int = 6
     max_daily_loss: float = 6_000.0
     max_daily_loss_pct: float = 3.0
+    # Lots are capped so that (entry − stop) × quantity ≤ this % of capital,
+    # using the ACTUAL premium stop of the selected contract (never increased
+    # to recover losses). 0 disables the cap.
+    max_risk_per_trade_pct: float = 5.0
 
     # ── halts (trading_config) ───────────────────────────────────────────────
     losing_streak_halt_n: int = 3
@@ -76,6 +90,10 @@ class TradingParams:
     post_loss_cooldown_minutes: int = 15
 
     # ── Kelly (trading_config) ───────────────────────────────────────────────
+    # Off by default: every trade is sized on fixed_fraction_pct × capital.
+    # When True, after kelly_min_trades decided trades Kelly may size DOWN (or
+    # skip a no-edge strategy), never above the fixed fraction.
+    kelly_enabled: bool = False
     kelly_multiplier: float = 0.25
     kelly_fraction_cap_pct: float = 15.0
     kelly_min_trades: int = 30
@@ -176,6 +194,11 @@ class TradingParams:
         v += validate_ladder(self.trail_tiers, self.partial_exit_reward_frac,
                              self.partial_exit_fraction, self.sl_pct, self.target_pct)
 
+        if self.decision_engine not in DECISION_ENGINES:
+            v.append(f"decision_engine={self.decision_engine!r} must be one of {DECISION_ENGINES}")
+        if not (0.0 <= self.max_risk_per_trade_pct <= 100.0):
+            v.append(f"max_risk_per_trade_pct={self.max_risk_per_trade_pct} must be in [0, 100]")
+
         if self.min_rr < 2.0:
             v.append(f"min_rr={self.min_rr} must be >= 2.0")
 
@@ -189,6 +212,9 @@ class TradingParams:
         if not (0 < self.fixed_fraction_pct <= MAX_FIXED_FRACTION_PCT):
             v.append(f"fixed_fraction_pct={self.fixed_fraction_pct} must be in "
                      f"(0, {MAX_FIXED_FRACTION_PCT:g}]")
+        if not (0 < self.open_exposure_cap_pct <= MAX_OPEN_EXPOSURE_CAP_PCT):
+            v.append(f"open_exposure_cap_pct={self.open_exposure_cap_pct} must be in "
+                     f"(0, {MAX_OPEN_EXPOSURE_CAP_PCT:g}]")
         # kelly_fraction_cap_pct may sit below fixed_fraction_pct: Kelly is capped at
         # kelly_cap_effective_pct = min(both), so it can only size down.
         if not (0 < self.kelly_multiplier <= 0.5):

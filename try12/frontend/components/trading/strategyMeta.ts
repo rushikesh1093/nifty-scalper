@@ -11,4 +11,5 @@ export const STRATEGY_META = [
   { key: "IV_CRUSH",           label: "IV Crush Play",          edge: "Volatility expansion" },
   { key: "CPR_VWAP",           label: "CPR + VWAP",             edge: "Central pivot confluence" },
   { key: "GAP_VWAP_FILL",      label: "Gap + VWAP Fill",        edge: "Gap fill tendency" },
+  { key: "TREND_ENGINE",       label: "Unified Trend Engine",   edge: "One BUY CE / BUY PE / NO TRADE per index (default mode)" },
 ];

@@ -324,3 +324,22 @@ def test_an_unexpected_insert_error_in_handle_signal_leaves_no_row(day, sqlite_d
     assert _positions(sqlite_db) == []
     codes = [r.code for r in _decisions(sqlite_db, include_degradation=True)]
     assert "UNEXPECTED_ENTRY_ERROR" in codes
+
+
+def test_sizing_judges_costs_on_the_real_engine_target(day, sqlite_db):
+    """TREND_ENGINE signals carry placeholder 15%/30% levels; the cost-vs-edge
+    check must use the delta-converted premium target the position will carry.
+    Here the real target (2 premium pts) is too small for the costs, while the
+    30% placeholder (30 pts) would have passed."""
+    cand = fake_candidate(ltp=100.0, lot_size=65)
+    assert _phase2(sqlite_db, cand).allowed is True                    # placeholder levels
+    real = lambda fill: (1.0 / fill, 2.0 / fill)                       # stop 1 pt, target 2 pts
+    fraction = risk_gate.FractionDecision(method="FIXED_FRACTION", applied_fraction=0.1,
+                                          base_amount=20_000.0)
+
+    async def _go():
+        async with sqlite_db() as db:
+            return await risk_gate.evaluate_sizing(db, make_signal(), cand, fraction=fraction,
+                                                   regime_multiplier=1.0, levels=real)
+    d = run(_go())
+    assert d.allowed is False and d.code.value == "COSTS_EXCEED_EDGE"

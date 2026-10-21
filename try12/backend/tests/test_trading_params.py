@@ -44,8 +44,9 @@ def test_section_19_1_defaults():
     assert p.min_rr == 2.0
     assert p.stale_tick_seconds == 60
     assert p.entry_cutoff_buffer_min == 10
+    # break-even moved to 60% of the reward and locks 5% (covers round-trip costs)
     assert [(t.trigger_reward_frac, t.lock_reward_frac) for t in p.trail_tiers] == [
-        (0.90, 0.60), (0.75, 0.40), (0.50, 0.00)]
+        (0.90, 0.60), (0.75, 0.40), (0.60, 0.05)]
     assert (p.partial_exit_reward_frac, p.partial_exit_fraction) == (0.75, 0.50)
     assert p.dte_bands == {"NIFTY": ((2, 7), (8, 14)), "BANKNIFTY": ((2, 7), (8, 14), (15, 30))}
     assert p.dte1_cutoff_ist == "12:00"
@@ -53,7 +54,10 @@ def test_section_19_1_defaults():
         3.0, 50_000, 1_000, 2.0, 40.0)
     assert p.premium_band == {"NIFTY": (10.0, 700.0), "BANKNIFTY": (10.0, 1500.0)}
     assert (p.slippage_pct, p.quote_slippage_pct) == (0.2, 0.05)
-    assert p.max_hold_minutes == {"VWAP_REVERSAL": 25, "RSI_VWAP": 25, "VWAP_PULLBACK": 25, "DEFAULT": 45}
+    assert p.max_hold_minutes == {"VWAP_REVERSAL": 25, "RSI_VWAP": 25, "VWAP_PULLBACK": 25,
+                                  "TREND_ENGINE": 60, "DEFAULT": 45}
+    assert p.decision_engine == "UNIFIED"
+    assert p.max_risk_per_trade_pct == 5.0
     assert p.timeout_exit_min_gain_pct == 5.0
     assert p.r_flat_epsilon == 0.01
     assert p.brokerage_per_lot_per_leg == 20.0
@@ -109,12 +113,27 @@ def test_kelly_cap_below_fraction_is_valid_and_bounds_kelly():
     assert TradingParams().kelly_cap_effective_pct == 10.0      # defaults 10 / 15
 
 
-@pytest.mark.parametrize("value", [0.0, 40.01, 100.0])
+@pytest.mark.parametrize("value", [0.0, -5.0, 100.01, 150.0])
 def test_fixed_fraction_bounds(value):
     v = _violations(fixed_fraction_pct=value)
     _assert_one_naming(v, "fixed_fraction_pct")
-    # the message must state the 40% bound, not merely mention the field
-    assert any("fixed_fraction_pct" in x and "(0, 40]" in x for x in v), v
+    # the message must state the 100% bound, not merely mention the field
+    assert any("fixed_fraction_pct" in x and "(0, 100]" in x for x in v), v
+
+
+@pytest.mark.parametrize("value", [40.01, 100.0])
+def test_fixed_fraction_up_to_all_capital_is_valid(value):
+    """A trade may be sized on the whole capital (operator's choice)."""
+    assert _violations(fixed_fraction_pct=value, trade_amount=None) == []
+
+
+@pytest.mark.parametrize("value", [0.0, 100.01])
+def test_open_exposure_cap_bounds(value):
+    _assert_one_naming(_violations(open_exposure_cap_pct=value), "open_exposure_cap_pct")
+
+
+def test_kelly_is_off_by_default():
+    assert TradingParams().kelly_enabled is False
 
 
 @pytest.mark.parametrize("value", [0.0, 0.6])

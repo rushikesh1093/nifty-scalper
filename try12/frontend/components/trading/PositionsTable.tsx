@@ -48,6 +48,16 @@ function LivePnl({ pos }: { pos: Position }) {
   );
 }
 
+/** Under a premium level: the INDEX points it came from (trend engine: premium = index × delta). */
+function IndexPts({ pts, delta }: { pts: number; delta: number }) {
+  if (!Number.isFinite(pts)) return null;
+  return (
+    <div className="whitespace-nowrap font-mono text-micro text-text-3" title={`index points × delta ${delta.toFixed(2)} = premium points`}>
+      idx {pts > 0 ? "+" : "−"}{Math.abs(pts).toFixed(1)} · δ{delta.toFixed(2)}
+    </div>
+  );
+}
+
 function PositionRow({ p, closed, onClose, closing }: { p: Position; closed: boolean; onClose: (id: number) => void; closing: boolean }) {
   return (
     <tr data-position-id={p.id} className="odd:bg-surface-2">
@@ -57,9 +67,15 @@ function PositionRow({ p, closed, onClose, closing }: { p: Position; closed: boo
         {num(p.capital_used) !== null && <div className="font-mono text-micro text-text-2">₹{Math.round(p.capital_used as number).toLocaleString("en-IN")}</div>}
       </td>
       <td className="num text-text-1"><PriceText value={num(p.entry)} /></td>
-      <td className="num text-red"><PriceText value={num(p.sl)} /></td>
+      <td className="num text-red">
+        <PriceText value={num(p.sl)} />
+        {p.engine_levels && <IndexPts pts={-p.engine_levels.index_stop_pts} delta={p.engine_levels.delta} />}
+      </td>
       <td className="num text-yellow"><PriceText value={num(p.trailing_sl)} /></td>
-      <td className="num text-green"><PriceText value={num(p.target)} /></td>
+      <td className="num text-green">
+        <PriceText value={num(p.target)} />
+        {p.engine_levels && <IndexPts pts={p.engine_levels.index_target_pts} delta={p.engine_levels.delta} />}
+      </td>
       {closed && <td className="num"><PriceText value={num(p.exit)} /></td>}
       {closed && (
         <td>

@@ -22,10 +22,11 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 
 # The expected set is written out here on purpose rather than imported, so the
 # test cannot pass by both sides reading the same wrong source.
+# The 12 legacy strategies plus the unified TREND_ENGINE (13 canonical names).
 CANONICAL_12 = {
     "ORB_VWAP", "VWAP_PULLBACK", "EMA_VWAP", "SUPERTREND_VWAP", "PDH_PDL",
     "VWAP_REVERSAL", "BOLLINGER_BREAKOUT", "RSI_VWAP", "OI_SPIKE", "IV_CRUSH",
-    "CPR_VWAP", "GAP_VWAP_FILL",
+    "CPR_VWAP", "GAP_VWAP_FILL", "TREND_ENGINE",
 }
 PHANTOM = re.compile(r"\b(PCR_SIGNAL|GAP_FILL)\b")
 
@@ -52,7 +53,7 @@ def test_orchestrator_universe_equals_the_12_canonical_names():
 def test_strategy_name_enum_matches_canonical_12():
     from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
     assert set(ALL_STRATEGY_NAMES) == CANONICAL_12
-    assert len(ALL_STRATEGY_NAMES) == 12
+    assert len(ALL_STRATEGY_NAMES) == 13
     assert {m.value for m in StrategyName} == CANONICAL_12
 
 

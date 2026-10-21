@@ -127,6 +127,7 @@ def sqlite_db(tmp_path, monkeypatch):
     from app.db.models.regime import RegimePerformanceModel, RegimeStateModel
     from app.db.models.replay import ReplayRun
     from app.db.models.risk import CycleStats, NoTradeDecision, PositionEvent, RiskHalt
+    from app.db.models.research import TrendDecisionRecord
 
     db_file = tmp_path / "t.db"
     sync_engine = create_engine(f"sqlite:///{db_file}")
@@ -136,7 +137,7 @@ def sqlite_db(tmp_path, monkeypatch):
             TradingConfig, PaperPosition, StrategySignal, DailyPnLSummary,
             StrategyPerf, RegimeStateModel, RegimePerformanceModel,
             NoTradeDecision, RiskHalt, PositionEvent, CycleStats, ReplayRun,
-            OptionChainSnapshot,
+            OptionChainSnapshot, TrendDecisionRecord,
         )],
     )
     sync_engine.dispose()

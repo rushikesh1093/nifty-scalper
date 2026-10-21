@@ -169,6 +169,17 @@ def add_rows(Session, *rows) -> None:
     run(_go())
 
 
+# The scripted replay days were hand-computed for the LEGACY 12-strategy mode,
+# the original trailing ladder (break-even at 50% of the reward) and no
+# per-trade risk cap. Pinning those keeps these tests a check of the replay
+# machinery itself; TREND_ENGINE has its own tests (tests/test_trend_engine.py).
+LEGACY_COMPAT = {
+    "decision_engine": "LEGACY",
+    "max_risk_per_trade_pct": 0.0,
+    "trail_tiers": [(0.90, 0.60, "LOCK_60"), (0.75, 0.40, "LOCK_40"), (0.50, 0.00, "BREAKEVEN")],
+}
+
+
 def replay(Session, date_from: date, date_to: date, factory: Callable, *,
            overrides: Optional[dict] = None, label: str = "test", out_dir=None,
            iterations: int = 400, seed: int = 20260901, report: bool = False):
@@ -177,7 +188,8 @@ def replay(Session, date_from: date, date_to: date, factory: Callable, *,
     if report:
         from app.services.replay.report import build_and_write
     args = ReplayArgs(date_from=date_from, date_to=date_to, underlyings=("NIFTY",),
-                      params_overrides=dict(overrides or {}), seed=seed, label=label,
+                      params_overrides={**LEGACY_COMPAT, **dict(overrides or {})},
+                      seed=seed, label=label,
                       bootstrap_iterations=iterations, out_dir=out_dir)
     eng = ReplayEngine(Session, strategy_factory=factory, report_builder=build_and_write)
     return run(eng.run(args))

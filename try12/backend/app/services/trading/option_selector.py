@@ -42,7 +42,7 @@ Scoring factors (weights sum to 1.0):
   Liquidity         0.20    OI + Volume — clean entry/exit
   Spread            0.18    Bid-ask % — execution cost
   Delta             0.18    0.50–0.65 ideal for scalping (ATM/1 OTM)
-  Moneyness         0.15    1–2 strikes OTM preferred
+  Moneyness         0.15    nearest-to-money strike preferred
   OI change         0.12    Rising OI = fresh positioning = conviction
   Volume trend      0.08    vs recent average
   Expiry            0.06    2–7 DTE sweet spot
@@ -446,20 +446,26 @@ def _score_delta(spot: float, strike: float, option_type: str,
         # Further decay for deep ITM
         score = max(0.0, 60.0 - ((delta - 0.75) / 0.25) * 60.0)
     else:
-        # delta < 0.35: steep penalty for deeply OTM
-        score = max(0.0, (delta / 0.35) * 50.0)
+        # delta < 0.35: deep OTM scores 0. (It used to climb back to 50 as delta
+        # fell — 0.31 outscored 0.36 — rewarding further-OTM lottery tickets.)
+        score = 0.0
     return round(score, 2), round(delta, 4)
 
 
 def _score_moneyness(strike: float, spot: float, step: int,
                      option_type: str = "CE") -> float:
     """
-    For scalping we want strikes that are:
-      • 1 strike OTM:  100  (sweet spot — good delta + leverage)
-      • ATM:           85   (too expensive, lower leverage)
-      • 2 strikes OTM: 80
-      • 3 strikes OTM: 55
-      • 4+ strikes OTM: decaying rapidly
+    Distance from the money, consistent with the 0.50–0.65 delta sweet spot:
+      • ATM (the strike nearest spot, within ½ step):   100
+      • 1 strike OTM:                                    85
+      • 1 strike ITM:                                    75
+      • 2 strikes OTM:                                   60
+      • 2 strikes ITM:                                   45
+      • further: −15 per strike
+
+    "ATM" used to mean strike == spot exactly, which almost never happens, so
+    the nearest strike was scored as ITM (54) while 1-OTM scored 100: selection
+    leaned to cheaper, lower-delta contracts, against the delta factor.
 
     OTM direction depends on option type:
       CE: strike > spot is OTM  (higher strike = more OTM)
@@ -470,23 +476,16 @@ def _score_moneyness(strike: float, spot: float, step: int,
     else:
         strikes_otm = (spot - strike) / step   # positive = OTM for PE
 
-    strikes_otm_abs = abs(strikes_otm)
-    # ITM (strikes_otm < 0): penalise — expensive, low leverage
-    if strikes_otm < 0:
-        return max(0.0, 60.0 + strikes_otm * 15.0)   # deeper ITM → lower score
-
-    if strikes_otm_abs == 0:         # ATM
-        return 85.0
-    elif strikes_otm_abs <= 1:
+    n = abs(strikes_otm)
+    if n <= 0.5:
         return 100.0
-    elif strikes_otm_abs <= 2:
-        return 80.0
-    elif strikes_otm_abs <= 3:
-        return 55.0
-    elif strikes_otm_abs <= 4:
-        return 30.0
-    else:
-        return max(0.0, 30.0 - (strikes_otm_abs - 4) * 10)
+    otm = strikes_otm > 0
+    if n <= 1.5:
+        return 85.0 if otm else 75.0
+    if n <= 2.5:
+        return 60.0 if otm else 45.0
+    base = 60.0 if otm else 45.0
+    return max(0.0, base - (n - 2.5) * 15.0)
 
 
 def _score_oi_change(oi: int, oi_change: int) -> float:

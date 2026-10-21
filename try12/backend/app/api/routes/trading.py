@@ -80,6 +80,10 @@ class ConfigUpdate(BaseModel):
     # ── new capital/trade-sizing fields ──
     trade_amount:         Optional[float]   = None   # ₹ per trade
     max_trades_per_day:   Optional[int]     = None
+    # % of capital: one trade's budget, and all open positions together.
+    # 100 / 100 = every trade may use the whole capital.
+    fixed_fraction_pct:    Optional[float]  = None
+    open_exposure_cap_pct: Optional[float]  = None
     study_phase:          Optional[bool]    = None   # flip to False to start paper trading
 
 class StrategyFlagUpdate(BaseModel):
@@ -244,6 +248,46 @@ async def update_strategy_flag(body: StrategyFlagUpdate):
     await mode_manager.update_strategy_flag(body.strategy_name, body.enabled)
     return {"status": "updated", "strategy": body.strategy_name, "enabled": body.enabled,
             "effective_within_s": _params().params_cache_ttl_s}
+
+
+# ── Unified trend engine decisions ────────────────────────────────────────────
+
+@router.get("/trend-decisions")
+async def trend_decisions(
+    underlying: Optional[str] = Query(None, pattern="^(NIFTY|BANKNIFTY)$"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """TREND_ENGINE decisions, newest last: UPTREND/DOWNTREND/SIDEWAYS, strength,
+    BUY CE / BUY PE / NO TRADE with an explicit reason code. Levels are INDEX
+    points; the premium stop/target of an opened trade is on the position.
+    In-memory: the log restarts empty with the process."""
+    from app.runtime.context import params as _params
+    from app.strategies.trend_engine import decision_log
+    from collections import Counter
+    from app.runtime.context import trading_day
+    today = str(trading_day())
+    latest, summary = {}, {}
+    for u in ("NIFTY", "BANKNIFTY"):
+        d = decision_log.latest(u)
+        latest[u] = d.as_dict() if d else None
+        todays = [x for x in decision_log.recent(u, 10_000)
+                  if str(x.candle_time or "").startswith(today)]
+        decisions = Counter(x.decision for x in todays)
+        reasons = Counter(x.reason_code for x in todays if x.decision == "NO TRADE" and x.reason_code)
+        summary[u] = {
+            "evaluated": len(todays),
+            "buy_ce": decisions.get("BUY CE", 0),
+            "buy_pe": decisions.get("BUY PE", 0),
+            "no_trade": decisions.get("NO TRADE", 0),
+            "top_reasons": [[code, n] for code, n in reasons.most_common(5)],
+        }
+    return {
+        "decision_engine": _params().decision_engine,
+        "trading_day": today,
+        "latest": latest,
+        "summary": summary,
+        "items": [d.as_dict() for d in decision_log.recent(underlying, limit)],
+    }
 
 
 # ── Capital endpoints ─────────────────────────────────────────────────────────
@@ -508,6 +552,13 @@ async def get_signal_diagnostics():
         feed["session_valid"] = bool(_session.is_valid())
     except Exception as exc:
         _probe_failed("SESSION_PROBE", exc)
+    try:
+        from app.services.market_data.market_manager import market_manager
+        if not feed.get("connected") and market_manager.startup_error:
+            feed["startup_error"] = (f"{market_manager.startup_error} "
+                                     f"(attempt {market_manager.startup_attempts})")
+    except Exception:
+        pass
 
     # Config (mode, study phase, strategy flags)
     mode = study_phase = None
@@ -590,7 +641,7 @@ async def get_signal_diagnostics():
         info: dict = {
             "underlying": u, "spot": None, "candles_today": None,
             "candles_required": _sr.MIN_TODAY_CANDLES,
-            "atr": None, "atr_min": _sr.ATR_MIN_NIFTY if u == "NIFTY" else _sr.ATR_MIN_BANKNIFTY,
+            "atr": None, "atr_min": None,
             "last_candle_at": None, "regime": None, "regime_allows_trading": None,
         }
         extra: dict = {}
@@ -598,6 +649,7 @@ async def get_signal_diagnostics():
             if not redis_ok:
                 raise _SkipProbe
             info["spot"] = await redis_cache.get_ltp(token)
+            info["atr_min"] = round(_sr.atr_floor(info["spot"]), 2) if info["spot"] else None
             all_c = await redis_cache.get_candles(token, "ONE_MINUTE", 500)
             today_c = []
             for c in all_c:
@@ -763,15 +815,23 @@ async def get_positions(
             "remaining_qty":      r.remaining_quantity,
             "entry_time":   r.entry_time.isoformat() if r.entry_time else None,
             "exit_time":    r.exit_time.isoformat() if r.exit_time else None,
+            # TREND_ENGINE: the index-point stop/target behind the premium levels
+            # above, and the delta that converted them (null for other strategies)
+            "engine_levels": ((r.entry_indicators or {}).get("engine_premium_levels")
+                              if r.strategy_name == "TREND_ENGINE" else None),
         }
         for r in rows
     ]
 
 @router.post("/positions/{pos_id}/close")
 async def close_position(pos_id: int):
-    ok = await paper_engine.manual_close(pos_id)
-    if not ok:
+    res = await paper_engine.manual_close(pos_id)
+    if res == "not_found":
         raise HTTPException(status_code=404, detail="Position not found or already closed")
+    if res == "no_price":
+        raise HTTPException(status_code=409, detail="No price available for this option yet; "
+                                                    "the position stays open (stop-loss and "
+                                                    "EOD square-off still apply)")
     return {"status": "closed", "id": pos_id}
 
 

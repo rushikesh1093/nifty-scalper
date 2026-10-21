@@ -15,6 +15,7 @@ NEW_REVISIONS = (
     ("0011", "0011_run_id_and_r_accounting.py"),
     ("0012", "0012_risk_and_replay_tables.py"),
     ("0013", "0013_config_params_and_renames.py"),
+    ("0014", "0014_trend_decisions.py"),
 )
 
 
@@ -62,7 +63,7 @@ def test_migration_0010_chain():
 
 # ── 0011-0013: chain ─────────────────────────────────────────────────────────
 
-def test_migration_chain_0010_to_0013():
+def test_migration_chain_0010_to_0014():
     prev = "0010"
     for rev, filename in NEW_REVISIONS:
         mod = _load(filename)
@@ -71,7 +72,7 @@ def test_migration_chain_0010_to_0013():
         assert callable(mod.upgrade) and callable(mod.downgrade)
         prev = rev
     heads = sorted(p.name for p in VERSIONS.glob("*.py"))
-    assert heads[-1] == "0013_config_params_and_renames.py"
+    assert heads[-1] == "0014_trend_decisions.py"
 
 
 # ── §11 column contract on the ORM ───────────────────────────────────────────
@@ -434,7 +435,7 @@ def test_downgrade_to_0010_then_upgrade_to_head_on_sqlite(tmp_path):
     md.create_all(eng, tables=[md.tables[t] for t in (
         "trading_config", "paper_positions", "strategy_signals", "daily_pnl_summary",
         "strategy_perf", "regime_states", "regime_performance", "no_trade_decisions",
-        "risk_halts", "position_events", "cycle_stats", "replay_runs",
+        "risk_halts", "position_events", "cycle_stats", "replay_runs", "trend_decisions",
     )])
     head = _reflect(eng)
     mods = [_load(f) for _, f in NEW_REVISIONS]
@@ -450,7 +451,8 @@ def test_downgrade_to_0010_then_upgrade_to_head_on_sqlite(tmp_path):
         for m in reversed(mods):
             _run_ops(conn, m.downgrade)
     base = _reflect(eng)
-    for t in ("no_trade_decisions", "risk_halts", "position_events", "cycle_stats", "replay_runs"):
+    for t in ("no_trade_decisions", "risk_halts", "position_events", "cycle_stats", "replay_runs",
+              "trend_decisions"):
         assert t not in base
     assert "run_id" not in base["paper_positions"][0]
     assert "max_drawdown" in base["daily_pnl_summary"][0]

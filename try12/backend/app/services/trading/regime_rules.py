@@ -69,21 +69,25 @@ _TREND = frozenset({S.VWAP_PULLBACK.value, S.EMA_VWAP.value, S.SUPERTREND_VWAP.v
                     S.CPR_VWAP.value, S.OI_SPIKE.value})
 _BREAKOUT = frozenset({S.ORB_VWAP.value, S.PDH_PDL.value, S.BOLLINGER_BREAKOUT.value,
                        S.OI_SPIKE.value, S.IV_CRUSH.value})
+# TREND_ENGINE trades only where the detector sees a trend or a breakout; range,
+# compression and every no-trade regime keep it idle (its own classifier must
+# ALSO find a confirmed UPTREND/DOWNTREND — two independent checks agree).
+_ENGINE = frozenset({S.TREND_ENGINE.value})
 
 REGIME_RULES: dict[str, RegimeRule] = {
     # ── Trend regimes ────────────────────────────────────────────────────────
     "BULL_TREND_NORMAL_VOL": RegimeRule(
-        enabled_strategies=_TREND, allowed_directions=_BUY, position_multiplier=1.0,
+        enabled_strategies=_TREND | _ENGINE, allowed_directions=_BUY, position_multiplier=1.0,
         notes="Directional continuation with tradeable volatility — pullback and "
               "trend-confirmation edges, CE only",
     ),
     "BEAR_TREND_NORMAL_VOL": RegimeRule(
-        enabled_strategies=_TREND, allowed_directions=_SELL, position_multiplier=1.0,
+        enabled_strategies=_TREND | _ENGINE, allowed_directions=_SELL, position_multiplier=1.0,
         notes="Mirror of BULL_TREND_NORMAL_VOL — PE only",
     ),
     "TREND_HIGH_VOL": RegimeRule(
         enabled_strategies=frozenset({S.VWAP_PULLBACK.value, S.SUPERTREND_VWAP.value,
-                                      S.IV_CRUSH.value}),
+                                      S.IV_CRUSH.value}) | _ENGINE,
         # Both directions here; should_allow_signal narrows by price vs VWAP
         allowed_directions=_BOTH, position_multiplier=0.5,
         notes="Trend intact but ATR elevated: the two widest-stop trend entries plus "
@@ -91,12 +95,12 @@ REGIME_RULES: dict[str, RegimeRule] = {
     ),
     # ── Breakout regimes ─────────────────────────────────────────────────────
     "BREAKOUT_EVENT_BULLISH": RegimeRule(
-        enabled_strategies=_BREAKOUT, allowed_directions=_BUY,
+        enabled_strategies=_BREAKOUT | _ENGINE, allowed_directions=_BUY,
         position_multiplier=1.0,          # 0.5 when ATR_percentile > 70 (get_regime_rule)
         notes="Level broken on volume — range/level breakout edges",
     ),
     "BREAKOUT_EVENT_BEARISH": RegimeRule(
-        enabled_strategies=_BREAKOUT, allowed_directions=_SELL,
+        enabled_strategies=_BREAKOUT | _ENGINE, allowed_directions=_SELL,
         position_multiplier=1.0,          # 0.5 when ATR_percentile > 70 (get_regime_rule)
         notes="Mirror of BREAKOUT_EVENT_BULLISH",
     ),
@@ -184,7 +188,7 @@ def classify_regime(
     indicators: "RegimeIndicators",
     underlying: str,
     is_expiry_day: bool,
-    previous_regime: Optional[str],  # noqa: F841  — transition handled externally
+    previous_regime: Optional[str],
     config: "RegimeConfig",
 ) -> str:
     """
@@ -216,6 +220,19 @@ def classify_regime(
         Not used directly; regime transition is detected externally.
     config:
         ``RegimeConfig`` holding all detection thresholds.
+
+    Hysteresis (previous_regime = the last STABLE regime)
+    -----------------------------------------------------
+    Readings that hover on a threshold must not flip the regime every minute.
+    Staying in a regime needs a weaker reading than entering it:
+      * in a trend regime, the trend holds while ADX > ADX_RANGE_THRESHOLD
+        (enter needs ADX > ADX_TREND_THRESHOLD);
+      * in a range regime, the range holds while ADX < ADX_TREND_THRESHOLD
+        (enter needs ADX < ADX_RANGE_THRESHOLD) — this also closes the
+        18–22 ADX "UNCLASSIFIED" gap for an established range;
+      * LOW_VOL_COMPRESSION holds while ATR%ile < ATR_LOW + 15 and the price is
+        within 1.5× the VWAP-proximity band;
+      * high volatility holds while ATR%ile > ATR_HIGH − 15.
 
     Returns
     -------
@@ -267,6 +284,17 @@ def classify_regime(
     # Track which conditions are satisfied for priority-resolution logging
     matched: list[str] = []
 
+    # ── Hysteresis bands (see docstring) ─────────────────────────────────────
+    prev = previous_regime or ""
+    in_trend = prev in ("BULL_TREND_NORMAL_VOL", "BEAR_TREND_NORMAL_VOL", "TREND_HIGH_VOL")
+    in_range = prev in ("RANGE_NORMAL_VOL", "LOW_VOL_COMPRESSION")
+    trend_thr = config.ADX_RANGE_THRESHOLD if in_trend else config.ADX_TREND_THRESHOLD
+    range_thr = config.ADX_TREND_THRESHOLD if in_range else config.ADX_RANGE_THRESHOLD
+    low_pct = config.ATR_LOW_PERCENTILE + (15.0 if prev == "LOW_VOL_COMPRESSION" else 0.0)
+    high_pct = config.ATR_HIGH_PERCENTILE - (
+        15.0 if prev in ("TREND_HIGH_VOL", "HIGH_VOL_CHOP") else 0.0)
+    prox_pct = config.VWAP_PROXIMITY_PERCENT * (1.5 if prev == "LOW_VOL_COMPRESSION" else 1.0)
+
     # ── Priority 1: EXPIRY_DAY ────────────────────────────────────────────────
     if is_expiry_day:
         logger.debug(
@@ -277,20 +305,18 @@ def classify_regime(
 
     # ── Priority 3: HIGH_VOL_CHOP ─────────────────────────────────────────────
     high_vol_chop = (
-        atr_pct > config.ATR_HIGH_PERCENTILE
+        atr_pct > high_pct
         and indicators.vwap_cross_count >= config.VWAP_CROSS_CHOP_THRESHOLD
     )
     if high_vol_chop:
         matched.append("HIGH_VOL_CHOP")
 
     # ── Priority 4 & 5: BREAKOUT_EVENT ───────────────────────────────────────
-    # NSE index spot candles commonly have volume=0.  In that case volume is
-    # unavailable, not evidence that the breakout is weak; option_selector
-    # applies the real liquidity checks on the selected contract.  Treat the
-    # condition as unknown/pass so the regime detector agrees with the strategy
-    # layer instead of disabling every breakout regime on index feeds.
-    volume_unavailable = volume <= 0 and avg_volume <= 0
-    volume_surge = volume_unavailable or (
+    # Volume is the near-month index FUTURE's (strategy_runner merges it into
+    # the spot candles; NSE index spot itself reports volume=0). With no volume
+    # a breakout is unconfirmed, so it is NOT a breakout regime — the same rule
+    # the strategies' _vol_surge applies, so the two layers agree.
+    volume_surge = (
         avg_volume > 0
         and volume >= avg_volume * config.VOLUME_SURGE_MULTIPLIER
     )
@@ -318,34 +344,39 @@ def classify_regime(
 
     # ── Priority 6 & 7: BULL/BEAR_TREND_NORMAL_VOL ───────────────────────────
     normal_vol_band = (
-        config.ATR_LOW_PERCENTILE <= atr_pct <= config.ATR_HIGH_PERCENTILE
+        config.ATR_LOW_PERCENTILE <= atr_pct <= high_pct
     )
-    trend_adx = adx is not None and adx > config.ADX_TREND_THRESHOLD
+    trend_adx = adx is not None and adx > trend_thr
 
-    bull_trend_normal = trend_adx and price > vwap and normal_vol_band
-    bear_trend_normal = trend_adx and price < vwap and normal_vol_band
+    # A quiet trend is still a trend: the ATR band only separates the HIGH-vol
+    # trend regime; a low ATR%ile no longer knocks an ADX-confirmed trend out
+    # into LOW_VOL_COMPRESSION / UNCLASSIFIED.
+    trend_vol_ok = atr_pct <= high_pct
+    bull_trend_normal = trend_adx and price > vwap and trend_vol_ok
+    bear_trend_normal = trend_adx and price < vwap and trend_vol_ok
     if bull_trend_normal:
         matched.append("BULL_TREND_NORMAL_VOL")
     if bear_trend_normal:
         matched.append("BEAR_TREND_NORMAL_VOL")
 
     # ── Priority 8: TREND_HIGH_VOL ────────────────────────────────────────────
-    trend_high_vol = trend_adx and atr_pct > config.ATR_HIGH_PERCENTILE
+    trend_high_vol = trend_adx and atr_pct > high_pct
     if trend_high_vol:
         matched.append("TREND_HIGH_VOL")
 
     # ── Priority 9: LOW_VOL_COMPRESSION ──────────────────────────────────────
     vwap_proximity_pct = (abs(price - vwap) / vwap * 100) if vwap > 0 else float("inf")
     low_vol_compression = (
-        atr_pct < config.ATR_LOW_PERCENTILE
-        and vwap_proximity_pct < config.VWAP_PROXIMITY_PERCENT
+        atr_pct < low_pct
+        and vwap_proximity_pct < prox_pct
     )
     if low_vol_compression:
         matched.append("LOW_VOL_COMPRESSION")
 
     # ── Priority 10: RANGE_NORMAL_VOL ─────────────────────────────────────────
-    range_adx = adx is not None and adx < config.ADX_RANGE_THRESHOLD
-    range_normal_vol = range_adx and normal_vol_band
+    range_adx = adx is not None and adx < range_thr
+    range_normal_vol = range_adx and (normal_vol_band or (
+        prev == "RANGE_NORMAL_VOL" and atr_pct < config.ATR_LOW_PERCENTILE))
     if range_normal_vol:
         matched.append("RANGE_NORMAL_VOL")
 

@@ -8,7 +8,9 @@ Header reference (from official SmartAPI docs):
                      X-ClientCode:  <client_id>
                      X-FeedToken:   <feed_token>   (market data calls)
 """
+import asyncio
 import logging
+import time
 import pyotp
 import httpx
 from datetime import datetime
@@ -19,6 +21,31 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://apiconnect.angelbroking.com"
+
+# AngelOne allows ~3 getCandleData requests per second per account; a burst
+# above that is refused with HTTP 403 "Access denied because of exceeding
+# access rate" (the startup seed used to fire ~90 at 10-way concurrency, so
+# the index / futures / research calls behind it were all refused). Every
+# historical call goes through one lock and is spaced by CANDLE_MIN_GAP_S;
+# a rate refusal is retried after a short back-off.
+CANDLE_MIN_GAP_S = 0.4
+CANDLE_RATE_RETRIES = 3
+CANDLE_RATE_BACKOFF_S = 1.5
+INSTRUMENT_DUMP_ATTEMPTS = 3
+INSTRUMENT_DUMP_READ_TIMEOUT_S = 180.0
+_candle_lock: Optional[asyncio.Lock] = None
+_last_candle_call = 0.0
+
+
+def _is_rate_refusal(resp: "httpx.Response") -> bool:
+    if resp.status_code == 429:
+        return True
+    if resp.status_code != 403:
+        return False
+    try:
+        return "rate" in resp.text.lower()
+    except Exception:
+        return False
 
 # Common headers sent on every request
 _BASE = {
@@ -279,11 +306,24 @@ class AngelClient:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def get_instrument_dump(self) -> list[dict]:
-        """Download full AngelOne scrip master (~100k instruments). No auth needed."""
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(settings.INSTRUMENT_DUMP_URL)
-            resp.raise_for_status()
-            return resp.json()
+        """Download full AngelOne scrip master (~100k instruments, ~36 MB). No auth
+        needed. The server sometimes closes the connection mid-body; retried
+        INSTRUMENT_DUMP_ATTEMPTS times with a generous read timeout."""
+        last: Optional[Exception] = None
+        for attempt in range(1, INSTRUMENT_DUMP_ATTEMPTS + 1):
+            try:
+                async with httpx.AsyncClient(
+                        timeout=httpx.Timeout(30.0, read=INSTRUMENT_DUMP_READ_TIMEOUT_S)) as client:
+                    resp = await client.get(settings.INSTRUMENT_DUMP_URL)
+                    resp.raise_for_status()
+                    return resp.json()
+            except (httpx.TransportError, httpx.HTTPStatusError, ValueError) as exc:
+                last = exc
+                logger.warning("Scrip master download attempt %d/%d failed: %s: %s",
+                               attempt, INSTRUMENT_DUMP_ATTEMPTS, type(exc).__name__, exc)
+                if attempt < INSTRUMENT_DUMP_ATTEMPTS:
+                    await asyncio.sleep(3 * attempt)
+        raise last
 
     async def search_scrip(self, exchange: str, search_text: str) -> list[dict]:
         await self.ensure_logged_in()
@@ -315,19 +355,35 @@ class AngelClient:
         from_date / to_date: "YYYY-MM-DD HH:MM"
         Returns: [[timestamp, open, high, low, close, volume], ...]
         """
+        global _candle_lock, _last_candle_call
         await self.ensure_logged_in()
         http = await self._client()
-        resp = await http.post(
-            "/rest/secure/angelbroking/historical/v1/getCandleData",
-            json={
-                "exchange":    exchange,
-                "symboltoken": symbol_token,
-                "interval":    interval,
-                "fromdate":    from_date,
-                "todate":      to_date,
-            },
-            headers=_session.auth_headers,
-        )
+        if _candle_lock is None:
+            _candle_lock = asyncio.Lock()
+        for attempt in range(CANDLE_RATE_RETRIES):
+            async with _candle_lock:
+                wait = CANDLE_MIN_GAP_S - (time.monotonic() - _last_candle_call)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                try:
+                    resp = await http.post(
+                        "/rest/secure/angelbroking/historical/v1/getCandleData",
+                        json={
+                            "exchange":    exchange,
+                            "symboltoken": symbol_token,
+                            "interval":    interval,
+                            "fromdate":    from_date,
+                            "todate":      to_date,
+                        },
+                        headers=_session.auth_headers,
+                    )
+                finally:
+                    _last_candle_call = time.monotonic()
+            if not _is_rate_refusal(resp) or attempt == CANDLE_RATE_RETRIES - 1:
+                break
+            logger.info("getCandleData rate-limited (%s %s) — retry %d after %.1fs",
+                        exchange, symbol_token, attempt + 1, CANDLE_RATE_BACKOFF_S * (attempt + 1))
+            await asyncio.sleep(CANDLE_RATE_BACKOFF_S * (attempt + 1))
         resp.raise_for_status()
         data = resp.json()
         if not data.get("status"):

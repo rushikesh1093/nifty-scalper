@@ -122,13 +122,18 @@ def compute_adx(
 
 # ── ATR Percentile ────────────────────────────────────────────────────────────
 
+ATR_PERCENTILE_WINDOW = 60   # one hour of 1-min ATRs (was 20: the rank swung 15→90 in minutes)
+
+
 def compute_atr_percentile(
     atr_current: float,
     candles: list[dict],
-    period: int = 20,
+    period: int = ATR_PERCENTILE_WINDOW,
 ) -> float:
     """
     Calculate ATR percentile rank within the last ``period`` candles.
+    Before ``period`` ATR values exist, the rank uses every ATR value the
+    session has so far (at least 20), instead of returning a flat 50.
 
     Returns 50.0 when fewer than ``period + 14`` candles are available
     (14 is the minimum warm-up needed for a 14-period ATR).
@@ -142,7 +147,7 @@ def compute_atr_percentile(
     Returns:
         Percentile in range [0, 100].
     """
-    min_candles = period + 14  # ATR needs 14-bar warm-up
+    min_candles = 20 + 14  # ATR needs a 14-bar warm-up, then ≥ 20 values to rank
     if len(candles) < min_candles:
         return 50.0
 
@@ -155,7 +160,7 @@ def compute_atr_percentile(
 
     # Take the last ``period`` valid ATR values
     valid_atrs = atr_series[~np.isnan(atr_series)]
-    if len(valid_atrs) < period:
+    if len(valid_atrs) < 20:
         return 50.0
 
     window_atrs = valid_atrs[-period:]

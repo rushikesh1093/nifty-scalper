@@ -51,12 +51,25 @@ LIVE_ROW_BEFORE = dict(LIVE_ROW_40, fixed_fraction_pct=6.666667, trade_amount=10
 LOT_NIFTY, LOT_BANKNIFTY = 65, 30
 
 
+
+@pytest.fixture
+def runtime_ctx(runtime_ctx):
+    """These tests exercise Kelly sizing, which is opt-in (kelly_enabled=False
+    by default since sizing became fixed-fraction only): turn it on here."""
+    from app.runtime.context import using
+    from tests.helpers import with_params as _wp
+    rc = _wp(runtime_ctx, kelly_enabled=True)
+    with using(rc):
+        yield rc
+
 def _ctx40(rc, **param_over):
     """*rc* with the live RunConfig and the post-update live TradingParams."""
     cfg = with_cfg(rc, capital=15500.0, max_open_positions=2, max_lots_per_trade=3,
                    max_trades_per_day=6, max_daily_loss=500.0, max_daily_loss_pct=3.0,
                    open_exposure_cap_pct=40.0)
-    return with_params(cfg, **dict(overlay_from_row(LIVE_ROW_40), **param_over))
+    # hand-computed before the per-trade risk cap existed: pin it off here
+    over = dict(overlay_from_row(LIVE_ROW_40), max_risk_per_trade_pct=0.0)
+    return with_params(cfg, **dict(over, **param_over))
 
 
 def _seed_live_row(Session):
@@ -80,14 +93,15 @@ def _decide(Session, strategy="VWAP_PULLBACK") -> FractionDecision:
 
 # ── the bound ────────────────────────────────────────────────────────────────
 
-BOUND_TEXT = "(0, 40]"     # validate()'s fixed_fraction_pct message names the bound
+BOUND_TEXT = "(0, 100]"     # validate()'s fixed_fraction_pct message names the bound
 
 
-def test_the_bound_is_40_and_lives_in_one_place():
-    # looked up at test time so this file still collects against pre-40% code
-    assert getattr(trading_params, "MAX_FIXED_FRACTION_PCT", None) == 40.0
+def test_the_bound_is_100_and_lives_in_one_place():
+    # raised from 40% to 100%: the operator may size a trade on all capital
+    assert getattr(trading_params, "MAX_FIXED_FRACTION_PCT", None) == 100.0
     assert TradingParams(fixed_fraction_pct=40.0).validate() == []
-    for bad in (40.01, 0.0, -1.0):
+    assert TradingParams(fixed_fraction_pct=100.0).validate() == []
+    for bad in (100.01, 0.0, -1.0):
         v = TradingParams(fixed_fraction_pct=bad).validate()
         assert v and all("fixed_fraction_pct" in x for x in v), v
         assert BOUND_TEXT in v[0]
@@ -132,8 +146,8 @@ def test_pre_update_live_row_still_validates():
     assert validate_overrides(overlay_from_row(LIVE_ROW_BEFORE)) == []
 
 
-def test_fraction_above_40_on_the_live_row_names_the_field():
-    v = validate_overrides(overlay_from_row(dict(LIVE_ROW_40, fixed_fraction_pct=40.01)))
+def test_fraction_above_100_on_the_live_row_names_the_field():
+    v = validate_overrides(overlay_from_row(dict(LIVE_ROW_40, fixed_fraction_pct=100.01)))
     assert v and all("fixed_fraction_pct" in x for x in v)
     # the bound itself, not just any message mentioning the field
     assert any("fixed_fraction_pct" in x and BOUND_TEXT in x for x in v), v
@@ -209,7 +223,7 @@ def test_startup_summary_logs_the_ceiling_sizing_applies(runtime_ctx, caplog):
 def test_capital_warning_reads_correctly_at_40pct():
     tp = TradingParams(**overlay_from_row(LIVE_ROW_40))
     (nifty,) = [w for w in capital_sufficiency_warnings(15500, tp, {"NIFTY": 65}) if "NIFTY" in w]
-    assert "fixed_fraction_pct 40% (max 40%)" in nifty
+    assert "fixed_fraction_pct 40% (max 100%)" in nifty
     assert "base ₹6,000" in nifty and "92.31" in nifty
     assert "1 ATM lot needs ≈ ₹16,500" in nifty
 

@@ -33,6 +33,21 @@ class CandleBuilder:
     def __init__(self):
         # token → {open, high, low, close, volume, oi, bucket_start}
         self._candles: dict[str, dict] = {}
+        # token → last cumulative day volume seen. AngelOne QUOTE/SNAP_QUOTE
+        # ticks carry the volume traded FOR THE DAY, so a candle's own volume
+        # is the difference between the cumulative figure at its last tick and
+        # the figure at the end of the previous candle.
+        self._last_cum_vol: dict[str, int] = {}
+
+    def _candle_volume(self, c: dict, tick: TickData) -> None:
+        cum = int(tick.volume or 0)
+        if cum <= 0:
+            return                                  # index spot / LTP mode: no volume
+        base = c.get("_vol_base")
+        if base is None or cum < base:              # first tick seen, or a feed reset
+            c["_vol_base"] = base = cum
+        c["volume"] = max(cum - base, 0)
+        self._last_cum_vol[tick.token] = cum
 
     def update(self, tick: TickData) -> Optional[dict]:
         """
@@ -50,14 +65,16 @@ class CandleBuilder:
             if now > c["bucket_start"]:
                 # Minute rolled — emit completed candle
                 completed = dict(c)
-                # Start fresh candle
+                completed.pop("_vol_base", None)
+                # Start fresh candle; its volume counts from the cumulative
+                # figure the previous candle ended on.
                 self._candles[token] = self._new_candle(tick, now)
             else:
                 # Update running candle
                 c["high"]   = max(c["high"],  tick.ltp)
                 c["low"]    = min(c["low"],   tick.ltp)
                 c["close"]  = tick.ltp
-                c["volume"] = tick.volume or c["volume"]
+                self._candle_volume(c, tick)
                 c["oi"]     = tick.oi or c["oi"]
         else:
             self._candles[token] = self._new_candle(tick, now)
@@ -65,6 +82,11 @@ class CandleBuilder:
         return completed
 
     def _new_candle(self, tick: TickData, bucket: datetime) -> dict:
+        c = self._new_candle_fields(tick, bucket)
+        self._candle_volume(c, tick)
+        return c
+
+    def _new_candle_fields(self, tick: TickData, bucket: datetime) -> dict:
         # Store bucket_start in IST so strategy time-window checks work correctly.
         # bucket is already UTC with tzinfo; convert to IST (UTC+5:30).
         ist_bucket = bucket.astimezone(timezone(timedelta(hours=5, minutes=30)))
@@ -77,9 +99,11 @@ class CandleBuilder:
             "high":         tick.ltp,
             "low":          tick.ltp,
             "close":        tick.ltp,
-            "volume":       tick.volume or 0,
+            "volume":       0,
             "oi":           tick.oi or 0,
             "bucket_start": bucket,                   # UTC datetime for DB write
+            # cumulative day volume this candle counts from (None until known)
+            "_vol_base":    self._last_cum_vol.get(tick.token),
         }
 
 

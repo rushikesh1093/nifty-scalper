@@ -208,10 +208,14 @@ def test_trade_amount_converts_to_fixed_fraction_and_keeps_its_keys(api):
     assert isinstance(b["preview"], list) and b["trade_amount"] == 20000.0
     assert b["fixed_fraction_pct"] == pytest.approx(10.0)
     assert run(get_config_row(api)).fixed_fraction_pct == pytest.approx(10.0)
+    full = _call("PUT", "/api/v1/trading/capital/trade-amount",
+                 json={"trade_amount": 200000, "capital": 200000})   # all capital: allowed
+    assert full.status_code == 200, full.text
+    assert full.json()["fixed_fraction_pct"] == pytest.approx(100.0)
     bad = _call("PUT", "/api/v1/trading/capital/trade-amount",
-                json={"trade_amount": 90000, "capital": 200000})     # 45% > the 40% ceiling
+                json={"trade_amount": 210000, "capital": 200000})    # 105% > the 100% ceiling
     assert bad.status_code == 400
-    assert any("fixed_fraction_pct" in v and "(0, 40]" in v
+    assert any("fixed_fraction_pct" in v and "(0, 100]" in v
                for v in bad.json()["detail"]["violations"])
 
 

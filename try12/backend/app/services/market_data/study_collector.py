@@ -21,6 +21,27 @@ from app.core.config import settings
 from app.runtime.context import now_utc, trading_day
 from app.services.market_data import chain_snapshots as cs
 from app.services.trading import session_times
+from app.services.trading import market_calendar
+from app.services.market_data.timestamps import try_normalize_candle_timestamp
+
+# A daily snapshot needs a real session behind it (a full day is 375 candles).
+MIN_SNAPSHOT_SESSION_CANDLES = 60
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def session_candles_for_day(candles: list, day: date) -> list:
+    """The candles of ``day``'s 09:15–15:29 IST session, one per minute, in time
+    order (the last copy of a duplicated minute wins)."""
+    by_minute: dict = {}
+    for c in candles or []:
+        ts = try_normalize_candle_timestamp(c.get("timestamp"))
+        if ts is None:
+            continue
+        ts = ts.astimezone(_IST)
+        if ts.date() != day or not ((9, 15) <= (ts.hour, ts.minute) <= (15, 29)):
+            continue
+        by_minute[ts.replace(second=0, microsecond=0)] = c
+    return [by_minute[k] for k in sorted(by_minute)]
 
 logger = logging.getLogger(__name__)
 
@@ -487,11 +508,23 @@ class StudyCollector:
     async def _save_daily_summary(self, underlying: str):
         try:
             today = date.today()
+            closed = market_calendar.closed_reason(today)
+            if closed:
+                logger.info("EOD summary skipped for %s: exchange closed (%s)", underlying, closed)
+                return
             spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
 
-            # Today's candles for OHLC
-            candles = await redis_cache.get_candles(spot_token, "ONE_MINUTE", 500)
-            if not candles:
+            # Today's SESSION candles only. The cache holds the last 500 one-minute
+            # candles, which span the previous session (and stray off-hours
+            # snapshot candles); using them all put yesterday's open / high / low
+            # / ORB into today's snapshot, which becomes tomorrow's PDH/PDL/CPR.
+            raw = await redis_cache.get_candles(spot_token, "ONE_MINUTE", 500)
+            candles = session_candles_for_day(raw, today)
+            if len(candles) < MIN_SNAPSHOT_SESSION_CANDLES:
+                logger.warning(
+                    "EOD summary skipped for %s: only %d session candles on %s "
+                    "(holiday, feed down or late start) — no snapshot written",
+                    underlying, len(candles), today)
                 return
 
             opens  = [float(c.get("open",  0)) for c in candles if c.get("open")]
@@ -500,7 +533,9 @@ class StudyCollector:
             closes = [float(c.get("close", 0)) for c in candles if c.get("close")]
             volumes= [float(c.get("volume",0)) for c in candles if c.get("volume")]
 
-            if not closes: return
+            if not closes or max(highs) <= min(lows):
+                logger.warning("EOD summary skipped for %s: degenerate OHLC", underlying)
+                return
 
             day_open  = opens[0]  if opens  else closes[0]
             day_high  = max(highs)  if highs  else closes[-1]

@@ -44,6 +44,8 @@ export const queryKeys = {
   pnlHistoryAll: ["pnl-history"] as const,
   pnlHistory:   (days: number) => ["pnl-history", days] as const,
   mode:         ["mode"] as const,
+  riskState:    ["risk-state"] as const,
+  trendDecisions: ["trend-decisions"] as const,
 
   // Market
   optionChain:  (underlying: string, expiry: string | null) => ["option-chain", underlying, expiry] as const,

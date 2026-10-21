@@ -12,6 +12,7 @@ from app.db.models.paper_trade import (
 from app.db.models.regime import RegimeStateModel, RegimePerformanceModel, RegimeConfigModel
 from app.db.models.risk import NoTradeDecision, RiskHalt, PositionEvent, CycleStats
 from app.db.models.replay import ReplayRun
+from app.db.models.research import TrendDecisionRecord
 
 __all__ = [
     "Instrument", "InstrumentType", "OptionType",
@@ -25,4 +26,5 @@ __all__ = [
     "RegimeStateModel", "RegimePerformanceModel", "RegimeConfigModel",
     "NoTradeDecision", "RiskHalt", "PositionEvent", "CycleStats",
     "ReplayRun",
+    "TrendDecisionRecord",
 ]

@@ -223,10 +223,14 @@ class BaseStrategy(ABC):
             return
         signal = await self.evaluate(candles, indicators)
         if signal:
-            self._last_signal_time = signal.signal_time
             logger.info("[%s] Signal: %s %s @ %.2f",
                         self.name, signal.direction, self.underlying, signal.spot_price)
-            await SignalBus.publish(signal)
+            opened = await SignalBus.publish(signal)
+            # The post-signal cooldown starts only when a position actually
+            # opened. A signal refused downstream (no option, capital, risk
+            # gate, aggregator) must not silence this strategy for N minutes.
+            if opened:
+                self._last_signal_time = signal.signal_time
 
     @abstractmethod
     async def evaluate(self, candles: list[dict], indicators: dict) -> Optional[SignalEvent]:

@@ -157,6 +157,15 @@ def test_third_regime_on_adoption_candle_is_adopted_without_new_cooldown(monkeyp
     assert regimes.count(T) == 3
 
 
+def test_one_candle_blip_ends_the_pause_immediately(monkeypatch):
+    # A → (one B candle) → A: the flip candle pauses entries, and the pause
+    # ends as soon as the tape is back in A — no 3-candle lock for a blip.
+    out = _drive(monkeypatch, [A] * 5 + [B] + [A] * 6)
+    regimes = [r for r, _, _ in out]
+    assert regimes == [A] * 5 + [T] + [A] * 6
+    assert regimes.count(T) == 1
+
+
 def test_first_candles_of_a_session_have_no_stable_regime(monkeypatch):
     out = _drive(monkeypatch, [B, A, A])
     assert [r for r, _, _ in out] == [B, T, T]   # a flip after one stable candle is a flip

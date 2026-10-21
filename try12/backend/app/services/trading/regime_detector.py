@@ -74,10 +74,6 @@ class RegimeDetector:
 
         # Tracks the last time we emitted a "regime unchanged" heartbeat log
         self._last_log_time: dict[str, datetime] = {}
-        # Require two consecutive observations before treating a new stable
-        # regime as a real flip. This filters one-bar indicator glitches.
-        self._candidate_regime: dict[str, str] = {}
-        self._candidate_streak: dict[str, int] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -140,12 +136,27 @@ class RegimeDetector:
                 history[-1].transition_cooldown_remaining if history else 0
             )
 
+            stable = [s.regime for s in history if s.regime != "REGIME_TRANSITION"]
+            last_stable: Optional[str] = stable[-1] if stable else None
+
             if current_cooldown > 0:
-                # Already in cooldown — decrement counter
+                # In a transition pause. Classify every candle so a one-candle
+                # blip that snaps straight back to the pre-flip regime ends the
+                # pause at once instead of blocking the full cooldown.
+                candidate_regime = classify_regime(
+                    regime_indicators, underlying, is_expiry_day,
+                    last_stable, config
+                )
                 new_cooldown = current_cooldown - 1
-                if new_cooldown > 0:
-                    # Still cooling down → keep REGIME_TRANSITION
-                    regime = "REGIME_TRANSITION"
+                if last_stable is not None and candidate_regime == last_stable:
+                    regime = candidate_regime            # blip over: resume the old regime
+                    transition_cooldown_remaining = 0
+                    logger.info(
+                        "[RegimeDetector] underlying=%s transition abandoned — "
+                        "back to %s", underlying, candidate_regime,
+                    )
+                elif new_cooldown > 0:
+                    regime = "REGIME_TRANSITION"         # still cooling down
                     transition_cooldown_remaining = new_cooldown
                     logger.debug(
                         "[RegimeDetector] underlying=%s cooldown active: "
@@ -153,44 +164,31 @@ class RegimeDetector:
                         underlying, new_cooldown,
                     )
                 else:
-                    # Cooldown expired → classify normally
-                    regime = classify_regime(
-                        regime_indicators, underlying, is_expiry_day,
-                        previous_regime, config
-                    )
+                    # Cooldown served → adopt whatever the tape says now
+                    regime = candidate_regime
                     transition_cooldown_remaining = 0
             else:
-                # Classify candidate regime first
                 candidate_regime = classify_regime(
                     regime_indicators, underlying, is_expiry_day,
-                    previous_regime, config
+                    last_stable, config
                 )
-
-                # Confirm a candidate across two observations before allowing a
-                # transition. A single-bar indicator spike must not repeatedly
-                # lock the runner in REGIME_TRANSITION.
-                if self._candidate_regime.get(underlying) == candidate_regime:
-                    self._candidate_streak[underlying] = self._candidate_streak.get(underlying, 0) + 1
-                else:
-                    self._candidate_regime[underlying] = candidate_regime
-                    self._candidate_streak[underlying] = 1
-                transition_detected = (
-                    self._candidate_streak[underlying] >= 2
-                    and self.check_regime_transition(
-                        candidate_regime, history, config.REGIME_TRANSITION_WINDOW
-                    )
+                # A flip pauses NEW entries on the flip candle itself (design
+                # §5): the new regime is only adopted after it survives the
+                # cooldown. (A previous "confirm on 2 observations" patch
+                # adopted the new regime on its FIRST observation, which removed
+                # all hysteresis — the regime changed on every 1-min wobble.)
+                transition_detected = self.check_regime_transition(
+                    candidate_regime, history, config.REGIME_TRANSITION_WINDOW
                 )
-
                 if transition_detected and candidate_regime not in (
                     "EXPIRY_DAY", "REGIME_TRANSITION"
                 ):
-                    # Enter transition cooldown (Req 9.1, 9.5)
                     regime = "REGIME_TRANSITION"
                     transition_cooldown_remaining = config.TRANSITION_COOLDOWN_CANDLES
                     logger.info(
                         "[RegimeDetector] underlying=%s REGIME_TRANSITION detected "
                         "(was %s → candidate %s); cooldown=%d candles",
-                        underlying, previous_regime, candidate_regime,
+                        underlying, last_stable, candidate_regime,
                         config.TRANSITION_COOLDOWN_CANDLES,
                     )
                 else:

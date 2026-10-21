@@ -33,7 +33,7 @@ SECTION12 = {
                   "ATR_VS_SL_DISTANCE"},
     "SIZING": {"KELLY_NO_EDGE", "SIZED_TO_ZERO", "LOT_UNAFFORDABLE", "INSUFFICIENT_CAPITAL",
                "INITIAL_RISK_NON_POSITIVE", "COSTS_EXCEED_EDGE"},
-    "ENTRY": {"CAPITAL_RACE_LOST", "DAILY_TRADE_CAP_RACE", "HALT_ENGAGED_MID_ENTRY",
+    "ENTRY": {"DUPLICATE_OPEN_POSITION", "CAPITAL_RACE_LOST", "DAILY_TRADE_CAP_RACE", "HALT_ENGAGED_MID_ENTRY",
               "UNEXPECTED_ENTRY_ERROR"},
     "DEGRADATION": {"PERF_WRITE_FAILED", "MTM_DEGRADED", "FALLBACK_FILL", "DATA_GAP",
                     "DETECTOR_ERROR", "REGIME_MULTIPLIER_ERROR"},
@@ -252,27 +252,32 @@ def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     from app.core.config import settings
     from app.runtime.context import using
     from app.services.trading import strategy_runner as sr
-    from app.strategies.names import ALL_STRATEGY_NAMES
+    from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
 
     run(seed_config(sqlite_db))
     monkeypatch.setattr(sr, "MIN_TODAY_CANDLES", 1)
-    monkeypatch.setattr(sr, "ATR_MIN_NIFTY", 0.0)
+    monkeypatch.setattr(sr, "atr_floor", lambda price: 0.0)
     runner = sr.StrategyRunner()
-    stubs = [_Stub(n) for n in ALL_STRATEGY_NAMES]
+    # the 12 legacy strategies; TREND_ENGINE only runs in UNIFIED mode
+    stubs = [_Stub(n) for n in ALL_STRATEGY_NAMES if n != StrategyName.TREND_ENGINE]
     runner._strategies["NIFTY"] = stubs
 
     async def _merge(underlying, candles, indicators, is_expiry_day, flags):
         return {n: flags.get(n, True) for n in ALL_STRATEGY_NAMES}, None
 
     monkeypatch.setattr(runner, "_detect_and_merge_regime", _merge)
-    rc = replace(runtime_ctx, instruments=_NoInstruments())
+    # 12 legacy-named stubs: their bookkeeping runs in LEGACY mode
+    from tests.helpers import with_params
+    rc = with_params(replace(runtime_ctx, instruments=_NoInstruments()), decision_engine="LEGACY")
     start = datetime(2026, 9, 1, 9, 15)           # naive IST, like the feed
 
     def _feed(i):
         """Put candles 0..i in Redis and move the clock to candle i's close."""
         fake_redis.kv[f"ohlc:{settings.NIFTY_TOKEN}:ONE_MINUTE"] = \
             [_candle(k, start) for k in range(i + 1)]
-        runtime_ctx.clock.set((start + timedelta(minutes=i)).replace(tzinfo=IST))
+        # candle i is complete only once its minute has closed: the runner drops
+        # the still-forming candle, so the cycle runs a few seconds after close
+        runtime_ctx.clock.set((start + timedelta(minutes=i + 1, seconds=3)).replace(tzinfo=IST))
 
     with using(rc):
         yield runner, stubs, _feed
@@ -281,7 +286,7 @@ def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
 def test_quiet_session_cycle_stats_is_positive_evidence(quiet_runner, sqlite_db):
     """R12.8b: nothing blocks and nothing emits — cycle_stats alone says so."""
     runner, stubs, feed = quiet_runner
-    n = 350                                        # 09:15 .. 15:04, the entry window
+    n = 349          # candles 09:15 .. 15:03; the 15:04 candle closes at the 15:05 cutoff
     for i in range(n):
         feed(i)
         run(runner.run_cycle("NIFTY"))
@@ -298,15 +303,16 @@ def test_quiet_session_cycle_stats_is_positive_evidence(quiet_runner, sqlite_db)
     assert rejections == []
     # no spot LTP in Redis: OI/IV context missing every candle, one DATA_GAP row per day
     assert cs.oi_iv_context_missing == n
+    # no index future published either: one futures_volume DATA_GAP per day
     gaps = run(_rows(sqlite_db, code="DATA_GAP"))
-    assert len(gaps) == 1 and gaps[0].context.get("what") == "oi_iv_context"
+    assert sorted(g.context.get("what") for g in gaps) == ["futures_volume", "oi_iv_context"]
 
 
 def test_cycle_gate_writes_one_row_per_candle_not_per_strategy(quiet_runner, sqlite_db, monkeypatch):
     from app.services.trading import strategy_runner as sr
 
     runner, stubs, feed = quiet_runner
-    monkeypatch.setattr(sr, "ATR_MIN_NIFTY", 1e9)       # ATR gate always fires
+    monkeypatch.setattr(sr, "atr_floor", lambda price: 1e9)   # ATR gate always fires
     feed(5)
     run(runner.run_cycle("NIFTY"))
     run(runner.run_cycle("NIFTY"))                       # same candle again: deduped
@@ -512,3 +518,28 @@ def test_r12_8a_every_gate_type_fires_and_the_rows_account_for_no_trades(
     signal_level = [r for r in rows
                     if r.stage in ("SIGNAL_GATE", "RISK_GATE", "SELECTION", "SIZING", "ENTRY")]
     assert cs.signals_emitted == len(signal_level) == 3
+
+
+def test_futures_volume_feeds_vwap_and_suppresses_the_data_gap(quiet_runner, sqlite_db, fake_redis):
+    """With the index future published, its per-minute volume reaches the
+    strategies (volume_source FUTURES, avg_volume set) and no futures DATA_GAP
+    is recorded."""
+    runner, stubs, feed = quiet_runner
+    seen = {}
+
+    async def _capture(candles, indicators):
+        seen["ind"] = dict(indicators)
+        seen["vols"] = [c["volume"] for c in candles]
+
+    stubs[0].on_candle = _capture
+    start = datetime(2026, 9, 1, 9, 15)
+    fake_redis.kv["futures_token:NIFTY"] = "FUT1"
+    fake_redis.kv["ohlc:FUT1:ONE_MINUTE"] = [
+        dict(_candle(k, start), volume=1000 + 10 * k) for k in range(30)]
+    feed(20)
+    run(runner.run_cycle("NIFTY"))
+    assert seen["ind"]["volume_source"] == "FUTURES"
+    assert seen["ind"]["avg_volume"] and seen["ind"]["avg_volume"] > 0
+    assert seen["vols"][-1] == 1000 + 10 * 20      # the last CLOSED candle's futures volume
+    gaps = run(_rows(sqlite_db, code="DATA_GAP"))
+    assert all(g.context.get("what") != "futures_volume" for g in gaps)

@@ -42,16 +42,18 @@ def _avg_volume(candles, n=10) -> float:
 
 def _vol_surge(vol: float, avg: float, multiplier: float = 1.5) -> bool:
     """
-    Return True if vol represents a genuine surge above average.
-    On NSE index spot tokens the WebSocket feed always delivers volume=0,
-    so avg will also be ~0.  In that case we skip the volume gate entirely
-    (return True) rather than blocking every signal.  The real liquidity
-    filter lives in option_selector's hard filters (OI + volume on the
-    option contract itself) so skipping the spot-volume gate is safe.
+    True only when *vol* is a genuine surge above *avg*.
+
+    Volume comes from the near-month index FUTURE (strategy_runner merges it
+    into the spot candles), because NSE index spot carries volume=0. When no
+    volume is available at all the check FAILS (returns False): an unconfirmed
+    breakout is not a breakout. strategy_runner records a DATA_GAP when the
+    futures volume is missing so this is visible, not silent.
     """
-    if avg <= 0:
-        return True   # no volume data (NSE index feed limitation) — don't block
+    if not avg or avg <= 0 or vol is None:
+        return False
     return vol > multiplier * avg
+
 
 def _arrays(candles):
     h = np.array([float(c.get("high",  0)) for c in candles])
@@ -62,30 +64,69 @@ def _arrays(candles):
     return h, l, c, o, v
 
 
+# 1-min ATR floor as a fraction of price. Measured on this feed (Oct 2026):
+# NIFTY's median 5-min range ≈ 21 pts, 25th percentile ≈ 13 pts, i.e. a 1-min
+# ATR of roughly 6–9 pts. 0.025% of price ≈ 5.8 pts on NIFTY 23,100 and
+# ≈ 13 pts on BANKNIFTY 52,000 — it blocks only the quietest quarter of the
+# session, where bought options bleed theta without reaching target.
+ATR_MIN_PCT_OF_PRICE = 0.00025
+
+
+def atr_floor(price: Optional[float]) -> float:
+    """Minimum 1-min ATR (points) for *price*; 0 when the price is unknown."""
+    try:
+        return float(price) * ATR_MIN_PCT_OF_PRICE if price and price > 0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _atr_ok(indicators: dict, underlying: str) -> bool:
-    """
-    Return True if the 1-min ATR is high enough to make directional
-    option trades worthwhile.
+    """True when the 1-min ATR clears ``atr_floor(close)``. One floor, shared
+    with the strategy_runner cycle gate, so the two can never disagree."""
+    atr_v = indicators.get("atr") or 0.0
+    floor = atr_floor(indicators.get("close"))
+    return floor > 0 and atr_v >= floor
 
-    Thresholds (points on the underlying):
-      NIFTY     : ATR ≥ 3.0   (below = dead chop, options go nowhere)
-      BANKNIFTY : ATR ≥ 10.0  (BN moves ~3× Nifty per point)
 
-    These are tighter than the global ATR gate in strategy_runner
-    (1.5 / 5.0) because here we want a MINIMUM bar for option entries,
-    not just "the market is moving at all".
-    """
-    atr = indicators.get("atr") or 0.0
-    if underlying == "BANKNIFTY":
-        return atr >= 5.0
-    return atr >= 1.5
+def _crossed_above(prev_close: Optional[float], close: Optional[float], level: Optional[float]) -> bool:
+    """A FRESH cross: the previous candle closed at/below *level*, this one above."""
+    return None not in (prev_close, close, level) and prev_close <= level < close
+
+
+def _crossed_below(prev_close: Optional[float], close: Optional[float], level: Optional[float]) -> bool:
+    return None not in (prev_close, close, level) and prev_close >= level > close
+
+
+class _OncePerDay:
+    """Remembers which (trading_day, key) breakouts already fired, so a level
+    is traded once per session instead of on every candle that stays beyond it."""
+
+    def __init__(self) -> None:
+        self._fired: set[tuple] = set()
+
+    def done(self, key: str) -> bool:
+        return (trading_day(), key) in self._fired
+
+    def mark(self, key: str) -> None:
+        today = trading_day()
+        self._fired = {k for k in self._fired if k[0] == today}
+        self._fired.add((today, key))
 
 
 # ─── 1. ORB + VWAP + Volume ──────────────────────────────────────────────────
 
 class ORBVWAPStrategy(BaseStrategy):
-    """9:15-9:30 opening range breakout + VWAP confirm + volume surge."""
+    """9:15-9:30 opening range breakout + VWAP confirm + volume surge.
+
+    Fires only on the FRESH cross of the opening-range high/low (previous close
+    inside the range, this close outside), and at most once per side per day —
+    not on every later candle that is still beyond the range.
+    """
     name = StrategyName.ORB_VWAP.value; sl_pct = 0.15; target_pct = 0.30
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._once = _OncePerDay()
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
         if len(candles) < 20: return None
@@ -97,11 +138,16 @@ class ORBVWAPStrategy(BaseStrategy):
         orb_h = indicators.get("orb_high"); orb_l = indicators.get("orb_low")
         if None in (close, vol, vwap_v, orb_h, orb_l): return None
 
+        prev = _c(candles, "close", -2)
         vol_surge = _vol_surge(vol, indicators.get("avg_volume") or _avg_volume(candles), 1.5)
-        if close > orb_h and close > vwap_v and vol_surge:
+        if (not self._once.done("UP") and _crossed_above(prev, close, orb_h)
+                and close > vwap_v and vol_surge):
+            self._once.mark("UP")
             return self._make_signal(Direction.BUY, close, indicators,
                 f"ORB UP close={close:.1f} orb_h={orb_h:.1f} vwap={vwap_v:.1f}")
-        if close < orb_l and close < vwap_v and vol_surge:
+        if (not self._once.done("DOWN") and _crossed_below(prev, close, orb_l)
+                and close < vwap_v and vol_surge):
+            self._once.mark("DOWN")
             return self._make_signal(Direction.SELL, close, indicators,
                 f"ORB DOWN close={close:.1f} orb_l={orb_l:.1f} vwap={vwap_v:.1f}")
         return None
@@ -242,13 +288,18 @@ class SupertrendVWAPStrategy(BaseStrategy):
 # ─── 5. Previous Day High/Low ─────────────────────────────────────────────────
 
 class PDHPDLStrategy(BaseStrategy):
-    """Clean breakout above PDH or below PDL with volume confirmation."""
+    """Clean breakout above PDH or below PDL with volume confirmation.
+
+    Two-candle confirmation of a FRESH break: the candle before the pair was
+    still on the near side of the level. Once per side per day.
+    """
     name = StrategyName.PDH_PDL.value; sl_pct = 0.15; target_pct = 0.30
 
     def __init__(self, underlying: str = "NIFTY"):
         super().__init__(underlying)
         self.pdh: Optional[float] = None
         self.pdl: Optional[float] = None
+        self._once = _OncePerDay()
 
     def set_levels(self, pdh: float, pdl: float):
         self.pdh = pdh; self.pdl = pdl
@@ -258,15 +309,17 @@ class PDHPDLStrategy(BaseStrategy):
         if not _is_between(_market_time(candles), dtime(9,30), dtime(13,0)): return None
         if not _atr_ok(indicators, self.underlying): return None
 
-        c1 = _c(candles,"close",-1); c2 = _c(candles,"close",-2)
+        c1 = _c(candles,"close",-1); c2 = _c(candles,"close",-2); c3 = _c(candles,"close",-3)
         v1 = _c(candles,"volume",-1)
-        if None in (c1, c2, v1): return None
+        if None in (c1, c2, c3, v1): return None
         vol_ok = _vol_surge(v1, indicators.get("avg_volume") or _avg_volume(candles), 1.2)
 
-        if c1 > self.pdh and c2 > self.pdh and vol_ok:
+        if (not self._once.done("PDH") and c3 <= self.pdh < c2 and c1 > self.pdh and vol_ok):
+            self._once.mark("PDH")
             return self._make_signal(Direction.BUY, c1, indicators,
                 f"PDH break {c1:.1f} > {self.pdh:.1f}")
-        if c1 < self.pdl and c2 < self.pdl and vol_ok:
+        if (not self._once.done("PDL") and c3 >= self.pdl > c2 and c1 < self.pdl and vol_ok):
+            self._once.mark("PDL")
             return self._make_signal(Direction.SELL, c1, indicators,
                 f"PDL break {c1:.1f} < {self.pdl:.1f}")
         return None
@@ -632,6 +685,7 @@ class CPRVWAPStrategy(BaseStrategy):
 
     def __init__(self, underlying: str = "NIFTY"):
         super().__init__(underlying)
+        self._once = _OncePerDay()
         self.pivot:     float = 0
         self.bc:        float = 0
         self.tc:        float = 0
@@ -657,17 +711,23 @@ class CPRVWAPStrategy(BaseStrategy):
         # Volume must be above average — no low-volume CPR breakouts
         vol_ok = _vol_surge(vol, indicators.get("avg_volume") or _avg_volume(candles), 1.2)
 
-        # Bullish: price above TC + VWAP above pivot + EMA9>EMA21 + volume surge
-        if (close > self.tc and vwap_v > self.pivot and close > open_
+        prev = _c(candles, "close", -2)
+
+        # Bullish: FRESH close above TC (once a day) + VWAP above pivot + EMA9>EMA21 + volume
+        if (not self._once.done("TC") and _crossed_above(prev, close, self.tc)
+                and vwap_v > self.pivot and close > open_
                 and (ema9 is None or ema21 is None or ema9 > ema21)
                 and vol_ok):
+            self._once.mark("TC")
             return self._make_signal(Direction.BUY, close, indicators,
                 f"CPR bull: above TC={self.tc:.1f} VWAP={vwap_v:.1f} narrow={narrow_cpr}")
 
-        # Bearish: price below BC + VWAP below pivot + EMA9<EMA21 + volume surge
-        if (close < self.bc and vwap_v < self.pivot and close < open_
+        # Bearish: FRESH close below BC (once a day) + VWAP below pivot + EMA9<EMA21 + volume
+        if (not self._once.done("BC") and _crossed_below(prev, close, self.bc)
+                and vwap_v < self.pivot and close < open_
                 and (ema9 is None or ema21 is None or ema9 < ema21)
                 and vol_ok):
+            self._once.mark("BC")
             return self._make_signal(Direction.SELL, close, indicators,
                 f"CPR bear: below BC={self.bc:.1f} VWAP={vwap_v:.1f} narrow={narrow_cpr}")
 
@@ -716,6 +776,12 @@ class GapVWAPFillStrategy(BaseStrategy):
         # Sort by timestamp so candles[0] is the earliest candle of the day
         # regardless of the order they were stored in Redis.
         sorted_candles = sorted(candles, key=lambda c: str(c.get("timestamp", "")))
+        # The gap is measured from the 09:15 open. After a late start or a
+        # partial seed the first cached candle is some later minute, whose open
+        # is not the day's open — then the gap is unknown and nothing fires.
+        first_dt = try_normalize_candle_timestamp(sorted_candles[0].get("timestamp"))
+        if first_dt is None or (first_dt.hour, first_dt.minute) > (9, 16):
+            return None
         day_open = _c(sorted_candles, "open", 0)   # first candle of day
         close = _c(candles,"close"); open_ = _c(candles,"open")
         vwap_v = indicators.get("vwap")
@@ -738,7 +804,10 @@ class GapVWAPFillStrategy(BaseStrategy):
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
 def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
-    """Instantiate all 12 strategies for a given underlying."""
+    """Instantiate every canonical strategy for a given underlying: the 12
+    legacy strategies plus the unified TREND_ENGINE. Which of them actually
+    trade is decided by TradingParams.decision_engine in the strategy runner."""
+    from app.strategies.trend_engine import TrendFollowingEngine
     return [
         ORBVWAPStrategy(underlying),
         VWAPPullbackStrategy(underlying),
@@ -752,6 +821,7 @@ def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
         IVCrushStrategy(underlying),
         CPRVWAPStrategy(underlying),
         GapVWAPFillStrategy(underlying),
+        TrendFollowingEngine(underlying),
     ]
 
 

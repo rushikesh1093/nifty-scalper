@@ -28,14 +28,17 @@ def _walk(entry, target, stop, tiers=DEFAULT_TRAIL_TIERS, step=0.25):
 def test_rising_path_fires_each_tier_once_in_order():
     fired = _walk(ENTRY, TARGET, STOP0)
     assert [(label, s) for _, s, label in fired] == [
-        ("BREAKEVEN", 100.0), ("LOCK_40", 112.0), ("LOCK_60", 118.0)]
-    assert [ltp for ltp, _, _ in fired] == [115.0, 122.5, 127.0]   # +15%, +22.5%, +27%
+        ("BREAKEVEN_PLUS_COSTS", 101.5), ("LOCK_40", 112.0), ("LOCK_60", 118.0)]
+    assert [ltp for ltp, _, _ in fired] == [118.0, 122.5, 127.0]   # +18%, +22.5%, +27%
     assert all(ltp < TARGET for ltp, _, _ in fired)                # every tier before target
 
 
-def test_breakeven_is_exactly_entry():
-    assert next_stop(ENTRY, TARGET, 115.0, STOP0) == (100.0, "BREAKEVEN")
-    assert next_stop(ENTRY, TARGET, 114.99, STOP0) is None
+def test_breakeven_waits_for_60pct_and_locks_costs():
+    # not at 50% of the reward any more (1-min noise stopped trades at entry);
+    # at 60% the stop goes to entry + 5% of the reward, covering round-trip costs
+    assert next_stop(ENTRY, TARGET, 115.0, STOP0) is None
+    assert next_stop(ENTRY, TARGET, 118.0, STOP0) == (101.5, "BREAKEVEN_PLUS_COSTS")
+    assert next_stop(ENTRY, TARGET, 117.99, STOP0) is None
 
 
 def test_next_stop_never_lowers_the_stop():

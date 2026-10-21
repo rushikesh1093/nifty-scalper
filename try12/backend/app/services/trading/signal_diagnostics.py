@@ -11,17 +11,18 @@ from datetime import datetime, time
 from typing import Optional
 
 from app.strategies.names import StrategyName
+from app.services.trading import market_calendar
 
 # Strategies that need the previous-day snapshot (PDH/PDL, CPR, gap).
 _PREV_DAY_STRATEGIES = (StrategyName.PDH_PDL, StrategyName.CPR_VWAP, StrategyName.GAP_VWAP_FILL)
 
-SESSION_WINDOW_NOTE = "clock-based; exchange holidays are not detected"
+SESSION_WINDOW_NOTE = "clock-based; weekends and listed NSE holidays are closed"
 EXCHANGE_CLOSE_IST = time(15, 30)
 
 
 def session_window_open(now_ist: datetime, start: time, end: time) -> bool:
     """IST weekday and start <= HH:MM <= end — the same inclusive minute test the candle loop uses."""
-    if now_ist.weekday() >= 5:
+    if not market_calendar.is_trading_day(now_ist.date()):
         return False
     mins = now_ist.hour * 60 + now_ist.minute
     return start.hour * 60 + start.minute <= mins <= end.hour * 60 + end.minute
@@ -41,6 +42,9 @@ def vix_gate(ltp: Optional[float], vix_min: float, vix_max: float) -> str:
 def _market_closed_detail(now_ist: datetime, start: time, end: time) -> str:
     if now_ist.weekday() >= 5:
         return f"signal generation runs on weekdays {format_session_window(start, end)}; today is a weekend"
+    holiday = market_calendar.holiday_name(now_ist.date())
+    if holiday:
+        return f"the exchange is closed today: NSE holiday ({holiday})"
     mins = now_ist.hour * 60 + now_ist.minute
     if mins < start.hour * 60 + start.minute:
         return f"signal generation starts at {start:%H:%M} IST"
@@ -90,7 +94,8 @@ def derive_blockers(state: dict) -> list[dict]:
         blockers.append(_b("RUNNER_STOPPED", "blocking", "Strategy runner is not running."))
 
     if (state.get("feed") or {}).get("connected") is False:
-        blockers.append(_b("FEED_DOWN", "blocking", "Market feed is not connected."))
+        blockers.append(_b("FEED_DOWN", "blocking", "Market feed is not connected.",
+                           detail=(state.get("feed") or {}).get("startup_error")))
 
     if state.get("study_phase") is True:
         blockers.append(_b("STUDY_PHASE", "blocking", "Study phase is active.",
@@ -112,7 +117,7 @@ def derive_blockers(state: dict) -> list[dict]:
             if candles_today == 0:
                 blockers.append(_b("NO_CANDLES_TODAY", "warning", f"No {name} candles today.",
                                    underlying=name,
-                                   detail="feed down or an exchange holiday (holidays are not detected)"))
+                                   detail="feed down, or a holiday missing from the calendar"))
             if candles_today < required:
                 blockers.append(_b("INSUFFICIENT_CANDLES", "blocking",
                                    f"{name} has {candles_today} of {required} candles needed today.",

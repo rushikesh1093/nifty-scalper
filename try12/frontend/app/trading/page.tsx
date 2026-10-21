@@ -13,6 +13,9 @@ import { SpotTicker } from "@/components/market/SpotTicker";
 import { ModeToggle } from "@/components/trading/ModeToggle";
 import { StrategyPanel } from "@/components/trading/StrategyPanel";
 import { SignalsPanel } from "@/components/trading/SignalsPanel";
+import { TrendDecisionPanel } from "@/components/trading/TrendDecisionPanel";
+import { DeskStatusStrip } from "@/components/trading/DeskStatusStrip";
+import { RiskBudget } from "@/components/trading/RiskBudget";
 import { SignalDiagnosticsPanel, type DeskSidebarTab } from "@/components/trading/SignalDiagnosticsPanel";
 import { PositionsTable } from "@/components/trading/PositionsTable";
 import { PnLChart } from "@/components/trading/PnLChart";
@@ -62,6 +65,7 @@ function DeskStats() {
                 hint={typeof s.trade_amount === "number" ? `per trade ₹${Math.round(s.trade_amount).toLocaleString("en-IN")}` : undefined}
               />
             </div>
+            <RiskBudget />
             {s.circuit_breaker_triggered && (
               <div role="alert" className="rounded-md border border-red/40 bg-red/10 px-3 py-2 text-table font-semibold text-red">
                 Circuit breaker tripped{s.circuit_reason ? ` — ${s.circuit_reason}` : ""}
@@ -102,6 +106,7 @@ export default function TradingPage() {
         title="Execution desk"
         description="Strategy signals, why they do or do not convert into trades, open risk and sizing."
       />
+      <DeskStatusStrip />
       <SpotTicker />
 
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_380px] 2xl:grid-cols-[minmax(0,1fr)_440px]">
@@ -109,6 +114,7 @@ export default function TradingPage() {
         <div className="min-w-0 space-y-4">
           <DeskStats />
           <PnLChart />
+          <TrendDecisionPanel />
           <SignalsPanel />
           <SignalDiagnosticsPanel onNavigate={openTab} />
           <PositionsTable />

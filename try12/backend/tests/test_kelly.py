@@ -27,6 +27,17 @@ from tests.helpers import (
 )
 
 
+
+@pytest.fixture
+def runtime_ctx(runtime_ctx):
+    """These tests exercise Kelly sizing, which is opt-in (kelly_enabled=False
+    by default since sizing became fixed-fraction only): turn it on here."""
+    from app.runtime.context import using
+    from tests.helpers import with_params as _wp
+    rc = _wp(runtime_ctx, kelly_enabled=True)
+    with using(rc):
+        yield rc
+
 def _seed_perf(Session, strategy="VWAP_PULLBACK", **cols):
     async def _go():
         async with Session() as db:

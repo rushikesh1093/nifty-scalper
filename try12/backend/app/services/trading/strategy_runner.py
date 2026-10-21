@@ -12,9 +12,10 @@ import time as _time
 from datetime import datetime, date, time as dtime
 from typing import Optional
 
-from app.strategies.strategies import build_strategies, OISpikeStrategy, IVCrushStrategy, PDHPDLStrategy, CPRVWAPStrategy, GapVWAPFillStrategy
+from app.strategies.strategies import build_strategies, OISpikeStrategy, IVCrushStrategy, PDHPDLStrategy, CPRVWAPStrategy, GapVWAPFillStrategy, atr_floor
 from app.strategies.indicators import compute_all, cpr as calc_cpr
-from app.runtime.context import ctx, market, now_ist, sessions, trading_day
+from app.strategies.trend_engine import ENGINE_NAME, TrendFollowingEngine
+from app.runtime.context import ctx, market, now_ist, params, sessions, trading_day
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.mode_manager import mode_manager
 from app.core.config import settings
@@ -23,6 +24,8 @@ from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from app.services.trading.regime_rules import get_regime_rule
 from app.services.trading.session_times import entry_cutoff, parse_square_off
 from app.services.trading.wiring import wire_signal_handlers
+from app.services.trading import market_calendar
+from app.services.trading.decision_telemetry import decision_telemetry
 from app.services.trading import no_trade
 from app.services.trading.no_trade import ReasonCode, Stage
 from app.services.market_data.timestamps import try_normalize_candle_timestamp
@@ -39,14 +42,49 @@ VIX_MIN           = 10.0   # below → no movement, options go nowhere
 VIX_MAX           = 25.0   # above → extreme fear/erratic, hard SLs get blown
                             # (raised from 20 → 25: Nifty VIX regularly hits 18-22
                             #  on normal volatile days, 20 was blocking good sessions)
-ATR_MIN_NIFTY     = 1.5    # Nifty 1-min ATR below this = dead chop (was 2.5 — blocked ORB window)
-ATR_MIN_BANKNIFTY = 5.0    # BankNifty moves ~3× Nifty (was 8.0)
+# ATR floor: app.strategies.strategies.atr_floor (0.025% of price, one
+# definition shared with every strategy's own _atr_ok check).
+FUTURES_TOKEN_KEY = "futures_token:{underlying}"   # published by market_manager
+AVG_VOLUME_LOOKBACK = 10   # candles in the volume average (current candle excluded)
 MIN_TODAY_CANDLES = 25     # today-only 1m candles required before strategies run
 EXPIRY_MIN_SL_PCT = 0.15   # on expiry day skip ALL strategies with sl_pct < 15%
                             # Raised from 0.08 — a 10% SL on a cheap OTM option
                             # (e.g. ₹23 LTP → SL at ₹20.70) is blown by a single
                             # adverse spot tick on expiry day.
 OI_IV_WARN_INTERVAL_SECS = 600   # rate-limit the OI/IV injection WARNING per underlying
+
+
+def dedupe_session_candles(rows: list[tuple]) -> list[dict]:
+    """(minute_dt, candle) pairs → candles sorted by minute, ONE per minute.
+
+    The historical seed and the live candle builder can both write the same
+    minute into the cache; a repeated bar double-counts that minute in EMA,
+    RSI, ATR and VWAP. The LAST-written row for a minute wins (the live
+    builder writes after the seed)."""
+    by_minute: dict = {}
+    for dt, c in rows:
+        by_minute[dt.replace(second=0, microsecond=0)] = c
+    return [by_minute[k] for k in sorted(by_minute)]
+
+
+def merge_futures_volume(spot: list[dict], fut_volume: dict) -> tuple[list[dict], int]:
+    """Copies of *spot* candles whose ``volume`` is the index future's volume
+    for the same minute (0 when the future has no candle for it). Returns the
+    candles and how many minutes matched. Spot prices are untouched, so VWAP
+    becomes the spot price weighted by futures volume."""
+    out, matched = [], 0
+    for c in spot:
+        dt = try_normalize_candle_timestamp(c.get("timestamp"))
+        key = dt.replace(second=0, microsecond=0) if dt else None
+        v = fut_volume.get(key) if key is not None else None
+        nc = dict(c)
+        if v is not None and v > 0:
+            nc["volume"] = float(v)
+            matched += 1
+        else:
+            nc["volume"] = 0.0
+        out.append(nc)
+    return out, matched
 
 
 def _atm_pair(universe: list, expiry: date, atm_strike: float) -> tuple:
@@ -92,6 +130,9 @@ class StrategyRunner:
         self._seen_day: Optional[date] = None
         self._strategy_gate_last: dict[tuple, Optional[str]] = {}
         self._cache_warned_at: float = float("-inf")
+        # per-cycle research telemetry state, underlying → {candles, indicators,
+        # regime_state, gate}; written to trend_decisions after the cycle
+        self._tele: dict[str, dict] = {}
 
     async def start(self):
         self._running = True
@@ -175,6 +216,10 @@ class StrategyRunner:
                         .where(
                             MarketDailySnapshot.underlying == underlying,
                             MarketDailySnapshot.date < self._ist_now().date(),
+                            # a snapshot saved from a single price (open = high =
+                            # low = close) is not a session: skip it, never use
+                            # it as PDH = PDL
+                            MarketDailySnapshot.high > MarketDailySnapshot.low,
                         )
                         .order_by(desc(MarketDailySnapshot.date))
                         .limit(1)
@@ -212,6 +257,10 @@ class StrategyRunner:
                                 "will not fire today.",
                                 underlying,
                             )
+
+                    if isinstance(strat, TrendFollowingEngine):
+                        # previous-day high/low = breakout evidence and room-to-target levels
+                        strat.set_levels(prev.high if prev else None, prev.low if prev else None)
 
                     if isinstance(strat, GapVWAPFillStrategy):
                         if prev:
@@ -276,6 +325,17 @@ class StrategyRunner:
         # (live row / replay RunConfig), never the shared row in replay.
         start_t, end_t = settings.SESSION_START_IST, settings.SESSION_END_IST
         cutoff = entry_cutoff(await ctx().control.square_off_time())
+        closed = market_calendar.closed_reason(trading_day())
+        if closed:
+            await self._record_day_gate(
+                underlying, ReasonCode.OUTSIDE_SESSION_WINDOW,
+                f"exchange closed today: {closed}",
+            )
+            return
+        # Research telemetry: fill +15/+30/+60 min prices of earlier decisions.
+        # Runs before the window gates so decisions near the entry cutoff are
+        # completed through the close. Independent of trading; never raises.
+        await self._telemetry_fill(underlying, ist_t)
         if ist_t < start_t or ist_t > end_t:
             await self._record_day_gate(
                 underlying, ReasonCode.OUTSIDE_SESSION_WINDOW,
@@ -292,10 +352,45 @@ class StrategyRunner:
 
         with no_trade.cycle_tally() as tally:
             evaluated = False
+            self._tele[underlying] = {}
             try:
                 evaluated = await self._run_underlying(underlying, ctx().user_flags.current())
             finally:
                 await self._flush_cycle(underlying, tally, bool(evaluated))
+                await self._record_telemetry(underlying)
+
+    # ── research telemetry (trend_decisions; independent of execution) ───────
+
+    def _tele_gate(self, underlying: str, code: Optional[str]) -> None:
+        """Remember the first gate that stopped this cycle's live path."""
+        cyc = self._tele.get(underlying)
+        if cyc is not None and code and cyc.get("gate") is None:
+            cyc["gate"] = code
+
+    async def _record_telemetry(self, underlying: str) -> None:
+        cyc = self._tele.pop(underlying, None)
+        if not cyc or not cyc.get("candles"):
+            return
+        engine = next((s for s in self._strategies.get(underlying, [])
+                       if isinstance(s, TrendFollowingEngine)), None)
+        if engine is None:
+            return
+        await decision_telemetry.record(
+            underlying=underlying, engine=engine, candles=cyc["candles"],
+            indicators=cyc["indicators"], gate=cyc.get("gate"),
+            regime_state=cyc.get("regime_state"),
+        )
+
+    async def _telemetry_fill(self, underlying: str, ist_t: dtime) -> None:
+        if not (dtime(9, 16) <= ist_t <= dtime(16, 0)):
+            return
+        try:
+            spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
+            raw = await market().get_candles(spot_token, "ONE_MINUTE", 500)
+        except Exception as exc:
+            logger.debug("[%s] telemetry candles unavailable: %s", underlying, exc)
+            return
+        await decision_telemetry.fill_forward(underlying, raw or [], self._ist_now())
 
     # ── no-trade bookkeeping (design §12) ─────────────────────────────────────
 
@@ -334,6 +429,7 @@ class StrategyRunner:
 
     def _queue_cycle_gate(self, tally, underlying: str, candle_ts: str, code: ReasonCode,
                           reason: str, **context) -> None:
+        self._tele_gate(underlying, code.value)
         self._queue(tally, (underlying, candle_ts, code.value), stage=Stage.CYCLE, code=code,
                     reason=reason, underlying=underlying,
                     context=no_trade.as_context(candle_ts=candle_ts, **context))
@@ -342,6 +438,8 @@ class StrategyRunner:
                              code: Optional[ReasonCode], reason: str = "") -> None:
         """STRATEGY_GATE rows are written on a state change per strategy and
         day, not per candle: a strategy disabled all session is one row."""
+        if strategy == ENGINE_NAME and code is not None:
+            self._tele_gate(underlying, code.value)
         key = (ctx().run_id, underlying, strategy)
         self._roll_day()
         if self._strategy_gate_last.get(key) == (code.value if code else None):
@@ -427,7 +525,10 @@ class StrategyRunner:
             # UTC/offset timestamps out of order.
             normalized_candles.append((candle_dt, c))
 
-        candles = [c for _, c in sorted(normalized_candles, key=lambda item: item[0])]
+        n_raw = len(normalized_candles)
+        candles = dedupe_session_candles(normalized_candles)
+        if len(candles) < n_raw:
+            rejected["duplicate_minute"] += n_raw - len(candles)
 
         today_str = str(today)
         logger.info(
@@ -456,41 +557,41 @@ class StrategyRunner:
             )
             return True
 
+        # ── Volume from the near-month index future ──────────────────────────
+        # NSE index spot candles carry volume=0, which made VWAP collapse to the
+        # current candle's typical price and every volume check meaningless.
+        candles, vol_gap = await self._with_futures_volume(underlying, candles, today)
+        if vol_gap is not None:
+            self._queue(tally, (underlying, str(today), "futures_volume"),
+                        stage=Stage.DEGRADATION, code=ReasonCode.DATA_GAP,
+                        reason=f"No index-futures volume for {underlying}: {vol_gap} — "
+                               f"VWAP falls back to the session TWAP and volume-confirmed "
+                               f"breakouts cannot fire",
+                        underlying=underlying,
+                        context={"what": "futures_volume", "cause": vol_gap})
+
         # Compute indicators once, share with all strategies
         indicators = compute_all(candles)
+        indicators["volume_source"] = "NONE" if vol_gap is not None else "FUTURES"
 
-        # ── Spot volume EMA — inject BEFORE any gates or strategy calls ───────
-        # Rolling average of spot volume stored in Redis ("avg_vol:spot:{underlying}").
-        # EMA α=0.2 ≈ 5-candle memory.  Must be computed and injected here so
-        # that every downstream strategy sees indicators["avg_volume"] on the
-        # very first cycle.
-        # NOTE: NSE index tokens (NIFTY/BANKNIFTY spot) carry volume=0 in the
-        # AngelOne WebSocket feed. Skip the EMA update when volume is zero so we
-        # don't corrupt the running average with zeros.  Strategies that need
-        # vol_surge will fall back to _avg_volume(candles) which uses the candle
-        # list directly — also zero for spot — making vol_surge always True for
-        # spot-based signals (acceptable, never a blocker).
-        avg_vol_key = f"avg_vol:spot:{underlying}"
-        cur_volume  = indicators.get("volume") or 0.0
-        prev_avg    = await market().get(avg_vol_key) or 0.0
-        if isinstance(prev_avg, dict):   # guard: shouldn't happen but be safe
-            prev_avg = 0.0
-        prev_avg = float(prev_avg)
-        if cur_volume > 0:
-            # Only update EMA when we have real volume data
-            if prev_avg <= 0:
-                new_avg = cur_volume
-            else:
-                new_avg = round(0.2 * cur_volume + 0.8 * prev_avg, 2)   # α=0.2
-            await market().set(avg_vol_key, new_avg, ttl=28800)
-            indicators["avg_volume"] = new_avg
-        else:
-            # Volume=0 (NSE index feed limitation) — don't clobber the EMA.
-            # Keep whatever was stored from a prior cycle if available.
-            indicators["avg_volume"] = prev_avg if prev_avg > 0 else None
+        # Open TREND_ENGINE positions exit when their trend structure breaks.
+        # Runs before the entry gates: an exit must not wait for an ATR/VIX/regime gate.
+        await self._exit_invalidated_engine_positions(underlying, candles)
+
+        # ── Average volume — inject BEFORE any gates or strategy calls ────────
+        # Mean of the previous AVG_VOLUME_LOOKBACK candles' (futures) volume,
+        # EXCLUDING the current candle, so "volume > k × average" compares the
+        # signal candle against what came before it. Deterministic from the
+        # candle list (no cache state), so replay and live agree.
+        prior = [float(c.get("volume") or 0) for c in candles[-AVG_VOLUME_LOOKBACK - 1:-1]]
+        prior = [v for v in prior if v > 0]
+        indicators["avg_volume"] = (sum(prior) / len(prior)) if prior else None
+        cyc = self._tele.get(underlying)
+        if cyc is not None:
+            cyc["candles"], cyc["indicators"] = candles, indicators
 
         # ── Gate 1: ATR filter — skip if market is too choppy / dead ─────────
-        atr_min = ATR_MIN_NIFTY if underlying == "NIFTY" else ATR_MIN_BANKNIFTY
+        atr_min = atr_floor(indicators.get("close"))
         atr_v   = indicators.get("atr") or 0
         if atr_v < atr_min:
             logger.debug(
@@ -571,6 +672,8 @@ class StrategyRunner:
 
         # ── Observability only — isolated; cannot influence final_flags ───────
         if regime_state is not None:
+            if underlying in self._tele:
+                self._tele[underlying]["regime_state"] = regime_state
             await self._persist_regime_state(underlying, regime_state)
             if self._queue_no_trade_regime(tally, underlying, candle_ts, regime_state):
                 return True
@@ -578,7 +681,17 @@ class StrategyRunner:
         # ── Run strategies ────────────────────────────────────────────────────
         # The merged flags are the only gate (the detector-owned cooldown is
         # expressed through the REGIME_TRANSITION rule enabling nothing).
+        unified = params().decision_engine == "UNIFIED"
         for strat in self._strategies.get(underlying, []):
+            # UNIFIED: only TREND_ENGINE is evaluated and trades; the legacy 12 are
+            # skipped entirely (the engine computes the same indicators — VWAP,
+            # EMA9/21, Supertrend, ORB, PDH/PDL, volume — itself; it never sees the
+            # legacy strategies' signals). LEGACY: the 12 trade independently, first
+            # signal wins (SignalAggregator only de-duplicates), TREND_ENGINE idle.
+            if unified != (strat.name == ENGINE_NAME):
+                if strat.name == ENGINE_NAME:
+                    self._tele_gate(underlying, "LEGACY_MODE")
+                continue
             if not final_flags.get(strat.name, False):
                 if not flags.get(strat.name, True):
                     self._queue_strategy_gate(tally, underlying, strat.name,
@@ -618,6 +731,69 @@ class StrategyRunner:
             except Exception as e:
                 logger.error("[%s] Strategy error: %s", strat.name, e, exc_info=True)
         return True
+
+    async def _exit_invalidated_engine_positions(self, underlying: str,
+                                                 candles: list[dict]) -> None:
+        """Close open TREND_ENGINE positions on *underlying* whose trend is no
+        longer valid (CE: close below VWAP and EMA9 < EMA21; PE: mirrored).
+        Never raises; the stop-loss keeps protecting the position regardless."""
+        engine = next((s for s in self._strategies.get(underlying, [])
+                       if isinstance(s, TrendFollowingEngine)), None)
+        if engine is None:
+            return
+        try:
+            from sqlalchemy import select
+            from app.db.models.paper_trade import PaperPosition
+            async with sessions()() as db:
+                rows = (await db.execute(select(PaperPosition).where(
+                    PaperPosition.run_id == ctx().run_id,
+                    PaperPosition.is_open == True,  # noqa: E712
+                    PaperPosition.underlying == underlying,
+                    PaperPosition.strategy_name == ENGINE_NAME,
+                ))).scalars().all()
+            for pos in rows:
+                reason = engine.invalidation(pos.option_type, candles)
+                if not reason:
+                    continue
+                # Closes only on a fresh quote; otherwise the exit is recorded as
+                # pending and the position monitor executes it on the first fresh
+                # tick (never at the entry price as if it were a quote).
+                outcome = await paper_engine.exit_on_invalidation(pos, reason)
+                logger.info("[%s] TREND_ENGINE invalidation pos %d (%s): %s — %s",
+                            underlying, pos.id, pos.symbol, reason, outcome)
+        except Exception as exc:
+            logger.warning("[%s] invalidation check failed (non-fatal): %s", underlying, exc)
+
+    async def _with_futures_volume(self, underlying: str, candles: list[dict],
+                                   today) -> tuple[list[dict], Optional[str]]:
+        """(spot candles carrying futures volume, None) or (candles, cause) when
+        no usable futures volume exists. Never raises."""
+        try:
+            fut_token = await market().get(FUTURES_TOKEN_KEY.format(underlying=underlying))
+            if not fut_token:
+                return candles, "futures token not published (market_manager startup)"
+            raw = await market().get_candles(str(fut_token), "ONE_MINUTE", 500)
+            rows = []
+            for c in raw or []:
+                dt = try_normalize_candle_timestamp(c.get("timestamp"))
+                if dt is None or dt.date() != today:
+                    continue
+                rows.append((dt, c))
+            fut = dedupe_session_candles(rows)
+            vol_by_minute = {}
+            for c in fut:
+                dt = try_normalize_candle_timestamp(c.get("timestamp"))
+                try:
+                    vol_by_minute[dt.replace(second=0, microsecond=0)] = float(c.get("volume") or 0)
+                except (TypeError, ValueError):
+                    continue
+            merged, matched = merge_futures_volume(candles, vol_by_minute)
+            if matched == 0:
+                return candles, f"no futures candles with volume for today (token {fut_token})"
+            return merged, None
+        except Exception as exc:
+            logger.warning("[%s] futures volume unavailable: %s", underlying, exc)
+            return candles, f"{type(exc).__name__}: {exc}"
 
     async def _persist_regime_state(self, underlying: str, regime_state) -> None:
         """

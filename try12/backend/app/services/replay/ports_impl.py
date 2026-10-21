@@ -190,6 +190,11 @@ class ReplayMarketData:
                        for key, pairs in day_data.chains.items()}
         self.vix = day_data.vix
         self.overrides.clear()
+        # the strategy runner finds each underlying's volume-source future here
+        for k in [k for k in self.kv if k.startswith("futures_token:")]:
+            del self.kv[k]
+        for und, tok in (getattr(day_data, "futures_tokens", None) or {}).items():
+            self.kv[f"futures_token:{und}"] = tok
 
     # rendering ---------------------------------------------------------------
 

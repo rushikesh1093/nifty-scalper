@@ -21,19 +21,28 @@ def vwap(high: np.ndarray, low: np.ndarray, close: np.ndarray,
     """
     Volume-weighted average price.
     Resets at session start (call with intraday candles only).
+
+    Where no volume has traded yet (cumulative volume 0 — e.g. NSE index spot,
+    which always reports volume=0, when no futures volume was merged in), the
+    value is the session TWAP: the running mean of the typical price. It was
+    previously the CURRENT candle's typical price, which turned every
+    "price vs VWAP" check into "did this candle close in its upper third".
     """
     h, l, c, v = _ensure(high), _ensure(low), _ensure(close), _ensure(volume)
+    v = np.where(np.isfinite(v) & (v > 0), v, 0.0)
     typical = (h + l + c) / 3.0
     cumtpv  = np.cumsum(typical * v)
     cumvol  = np.cumsum(v)
+    twap    = np.cumsum(typical) / np.arange(1, len(typical) + 1)
     with np.errstate(invalid="ignore", divide="ignore"):
-        result = np.where(cumvol > 0, cumtpv / cumvol, typical)
+        result = np.where(cumvol > 0, cumtpv / np.where(cumvol > 0, cumvol, 1.0), twap)
     return result
 
 
 def vwap_bands(high, low, close, volume, multiplier: float = 1.0):
     """VWAP ± 1 std-dev band."""
     h, l, c, v = _ensure(high), _ensure(low), _ensure(close), _ensure(volume)
+    v = np.where(np.isfinite(v) & (v > 0), v, 0.0)
     typical = (h + l + c) / 3.0
     vw      = vwap(h, l, c, v)
     cumvol  = np.cumsum(v)
@@ -46,18 +55,45 @@ def vwap_bands(high, low, close, volume, multiplier: float = 1.0):
 
 # ── EMA ───────────────────────────────────────────────────────────────────────
 
+def _seed_index(c: np.ndarray, period: int) -> int:
+    """Index of the last bar of the first run of ``period`` finite values, or -1.
+    Leading NaNs (another indicator's warm-up, e.g. MACD's line) are skipped
+    instead of poisoning the whole series."""
+    finite = np.isfinite(c)
+    run = 0
+    for i, ok in enumerate(finite):
+        run = run + 1 if ok else 0
+        if run == period:
+            return i
+    return -1
+
+
 def ema(close: np.ndarray, period: int) -> np.ndarray:
+    """Exponential moving average, alpha = 2 / (period + 1), seeded with the SMA
+    of the first ``period`` finite values."""
     c   = _ensure(close)
     k   = 2.0 / (period + 1)
-    out = np.empty_like(c)
-    out[:] = np.nan
-    # Find first valid
-    start = period - 1
-    if start >= len(c):
+    out = np.full_like(c, np.nan)
+    start = _seed_index(c, period)
+    if start < 0:
         return out
-    out[start] = np.mean(c[:period])
+    out[start] = np.mean(c[start - period + 1: start + 1])
     for i in range(start + 1, len(c)):
-        out[i] = c[i] * k + out[i - 1] * (1 - k)
+        out[i] = c[i] * k + out[i - 1] * (1 - k) if np.isfinite(c[i]) else out[i - 1]
+    return out
+
+
+def rma(values: np.ndarray, period: int) -> np.ndarray:
+    """Wilder's moving average (RMA, alpha = 1 / period) — the smoothing that
+    defines RSI and ATR. Seeded with the SMA of the first ``period`` values."""
+    x   = _ensure(values)
+    out = np.full_like(x, np.nan)
+    start = _seed_index(x, period)
+    if start < 0:
+        return out
+    out[start] = np.mean(x[start - period + 1: start + 1])
+    for i in range(start + 1, len(x)):
+        out[i] = (out[i - 1] * (period - 1) + x[i]) / period if np.isfinite(x[i]) else out[i - 1]
     return out
 
 
@@ -72,23 +108,34 @@ def sma(close: np.ndarray, period: int) -> np.ndarray:
 # ── ATR ───────────────────────────────────────────────────────────────────────
 
 def atr(high, low, close, period: int = 14) -> np.ndarray:
+    """Average True Range with Wilder smoothing (the standard definition; it
+    was an EMA with alpha 2/(n+1), noticeably jumpier than ATR(14))."""
     h, l, c = _ensure(high), _ensure(low), _ensure(close)
     prev_c  = np.roll(c, 1)
     prev_c[0] = c[0]
     tr = np.maximum(h - l,
          np.maximum(np.abs(h - prev_c), np.abs(l - prev_c)))
-    return ema(tr, period)
+    return rma(tr, period)
 
 
 # ── RSI ───────────────────────────────────────────────────────────────────────
 
 def rsi(close: np.ndarray, period: int = 14) -> np.ndarray:
+    """Wilder's RSI. Index 0 has no price change and stays NaN; the first value
+    is at index ``period`` (the SMA of the first ``period`` changes).
+
+    It used an EMA with alpha 2/(n+1) instead of Wilder's 1/n, which made
+    RSI(14) behave like RSI(~7.5): on BANKNIFTY 1-min it read < 30 / > 70 on
+    6.1% / 8.3% of bars instead of 1.6% / 2.7%, so the "extreme" thresholds
+    of VWAP_REVERSAL and RSI_VWAP fired on ordinary moves."""
     c    = _ensure(close)
-    diff = np.diff(c, prepend=c[0])
+    if len(c) == 0:
+        return c.copy()
+    diff = np.diff(c)
     gain = np.where(diff > 0, diff, 0.0)
     loss = np.where(diff < 0, -diff, 0.0)
-    avg_gain = ema(gain, period)
-    avg_loss = ema(loss, period)
+    avg_gain = np.concatenate([[np.nan], rma(gain, period)])
+    avg_loss = np.concatenate([[np.nan], rma(loss, period)])
     with np.errstate(divide="ignore", invalid="ignore"):
         rs = np.divide(avg_gain, avg_loss, out=np.full_like(avg_gain, np.inf), where=avg_loss != 0)
     flat = (avg_gain == 0) & (avg_loss == 0)
@@ -109,8 +156,9 @@ class BollingerBands:
 def bollinger(close: np.ndarray, period: int = 20, std_dev: float = 2.0) -> BollingerBands:
     c   = _ensure(close)
     mid = sma(c, period)
+    # population standard deviation, as Bollinger defined the bands
     std = np.array([
-        np.std(c[max(0, i - period + 1): i + 1], ddof=1)
+        np.std(c[max(0, i - period + 1): i + 1], ddof=0)
         if i >= period - 1 else np.nan
         for i in range(len(c))
     ])
@@ -138,7 +186,7 @@ def supertrend(high, low, close, period: int = 10, multiplier: float = 3.0) -> S
 
     n    = len(c)
     st   = np.full(n, np.nan)
-    dir_ = np.ones(n, dtype=int)   # 1=UP, -1=DOWN
+    dir_ = np.zeros(n, dtype=int)  # 1=UP, -1=DOWN, 0 = not yet valid (warm-up)
 
     # Final bands (adjusted) — initialise with raw bands; NaN for warm-up bars
     final_upper = upper_band.copy()
@@ -153,7 +201,7 @@ def supertrend(high, low, close, period: int = 10, multiplier: float = 3.0) -> S
         first_valid += 1
 
     if first_valid >= n:
-        # Not enough data — return all-NaN supertrend, direction stays 1
+        # Not enough data — all-NaN supertrend, direction 0 (unknown)
         return SupertrendResult(supertrend=st, direction=dir_)
 
     # Seed the first valid bar
@@ -202,6 +250,47 @@ def orb(high: np.ndarray, low: np.ndarray, close: np.ndarray,
     orb_h = float(np.max(h[:orb_candles]))
     orb_l = float(np.min(l[:orb_candles]))
     last  = float(c[-1])
+    broken = "UP" if last > orb_h else ("DOWN" if last < orb_l else "NONE")
+    return ORBLevels(high=orb_h, low=orb_l, broken=broken)
+
+
+ORB_START_MIN = 9 * 60 + 15        # 09:15 IST
+ORB_END_MIN   = 9 * 60 + 30        # opening range = candles 09:15 .. 09:29
+
+
+def session_orb(candles: list[dict], highs, lows, closes) -> Optional[ORBLevels]:
+    """Opening range from the candles TIMESTAMPED 09:15–09:29 IST.
+
+    "The first 15 candles" is only the opening range when the session data
+    starts at 09:15; after a late start or a partial seed it is some later
+    15 minutes. Returns None until the range is complete (all 15 minutes
+    present and the 09:29 candle closed), or when the 09:15 candle is
+    missing. Candles without timestamps (synthetic tests) fall back to the
+    first 15 candles."""
+    from app.services.market_data.timestamps import try_normalize_candle_timestamp
+
+    stamps = [try_normalize_candle_timestamp(cd.get("timestamp")) for cd in candles]
+    if not any(stamps):
+        if len(highs) < 15:
+            return None
+        return orb(highs, lows, closes, 15)
+    idx = []
+    seen_after = False
+    for i, ts in enumerate(stamps):
+        if ts is None:
+            continue
+        mins = ts.hour * 60 + ts.minute
+        if ORB_START_MIN <= mins < ORB_END_MIN:
+            idx.append((mins, i))
+        elif mins >= ORB_END_MIN:
+            seen_after = True
+    minutes = {m for m, _ in idx}
+    if ORB_START_MIN not in minutes or len(minutes) < 15 or not seen_after:
+        return None
+    rows = [i for _, i in idx]
+    orb_h = float(np.max(_ensure(highs)[rows]))
+    orb_l = float(np.min(_ensure(lows)[rows]))
+    last  = float(_ensure(closes)[-1])
     broken = "UP" if last > orb_h else ("DOWN" if last < orb_l else "NONE")
     return ORBLevels(high=orb_h, low=orb_l, broken=broken)
 
@@ -280,7 +369,7 @@ def compute_all(candles: list[dict]) -> dict:
     bb   = bollinger(closes, 20, 2.0)
     vw   = vwap(highs, lows, closes, vols)
     st   = supertrend(highs, lows, closes, 10, 3.0)
-    orb_ = orb(highs, lows, closes, 15)
+    orb_ = session_orb(candles, highs, lows, closes)
 
     def last(arr):
         valid = arr[~np.isnan(arr)]
@@ -298,10 +387,10 @@ def compute_all(candles: list[dict]) -> dict:
         "bb_width":      last(bb.width),
         "vwap":          last(vw),
         "supertrend":    last(st.supertrend),
-        "supertrend_dir": int(st.direction[-1]),
-        "orb_high":      orb_.high,
-        "orb_low":       orb_.low,
-        "orb_broken":    orb_.broken,
+        "supertrend_dir": int(st.direction[-1]) if st.direction[-1] != 0 else None,
+        "orb_high":      orb_.high if orb_ else None,
+        "orb_low":       orb_.low if orb_ else None,
+        "orb_broken":    orb_.broken if orb_ else "NONE",
         "close":         float(closes[-1]),
         "high":          float(highs[-1]),
         "low":           float(lows[-1]),

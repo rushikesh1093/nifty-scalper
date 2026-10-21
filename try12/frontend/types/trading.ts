@@ -56,6 +56,92 @@ export interface Position {
   remaining_qty?:      number | null;
   entry_time:   string;
   exit_time?:   string;
+  /** TREND_ENGINE only: the index-point stop/target behind the premium sl/target. */
+  engine_levels?: EngineLevels | null;
+}
+
+/** How a TREND_ENGINE trade's INDEX-point stop/target became PREMIUM points (× delta). */
+export interface EngineLevels {
+  units?:              string;
+  delta:               number;
+  index_stop_pts:      number;
+  index_target_pts:    number;
+  premium_stop_pts:    number;
+  premium_target_pts:  number;
+  sl_pct_bounded?:     boolean;
+}
+
+/** GET /analytics/risk-state — today's risk budget (subset the desk uses). */
+export interface RiskState {
+  trading_day:        string;
+  capital:            number;
+  trade_count:        number;
+  max_trades_per_day: number;
+  entry_cutoff_ist:   string;
+  square_off_ist:     string;
+  daily_loss: {
+    combined:      number;
+    realised:      number;
+    unrealised:    number;
+    threshold_abs: number;
+    threshold_pct: number;
+    breached:      boolean;
+  };
+  streak: {
+    consecutive_losses:         number;
+    halt_n:                     number;
+    cooldown_minutes_remaining: number | null;
+    global_halt:                boolean;
+    halted_strategies:          string[];
+  };
+  kill_switch: { halted: boolean; reason: string | null };
+  halts:       unknown[];
+}
+
+export type TrendLabel = "UPTREND" | "DOWNTREND" | "SIDEWAYS";
+export type TrendStrength = "STRONG" | "MODERATE" | "WEAK";
+export type TrendDecisionValue = "BUY CE" | "BUY PE" | "NO TRADE";
+
+export interface TrendDecision {
+  underlying:     string;
+  candle_time:    string;
+  evaluated_at:   string;
+  trend:          TrendLabel;
+  strength:       TrendStrength;
+  decision:       TrendDecisionValue;
+  reason_code:    string | null;
+  reason:         string;
+  spot:           number | null;
+  entry_trigger:  string | null;
+  entry_zone:     [number, number] | null;
+  stop_level:     number | null;
+  stop_points:    number | null;
+  target1_level:  number | null;
+  target1_points: number | null;
+  target2_level:  number | null;
+  target2_points: number | null;
+  risk_reward:    number | null;
+  trailing_rule:  string | null;
+  confirmation:   string | null;
+  invalidation:   string | null;
+  evidence:       string[];
+  units:          string;
+}
+
+export interface TrendDaySummary {
+  evaluated:   number;
+  buy_ce:      number;
+  buy_pe:      number;
+  no_trade:    number;
+  top_reasons: [string, number][];
+}
+
+export interface TrendDecisionsResponse {
+  decision_engine: "UNIFIED" | "LEGACY" | (string & {});
+  trading_day?:    string;
+  latest:          Record<string, TrendDecision | null>;
+  summary?:        Record<string, TrendDaySummary>;
+  items:           TrendDecision[];
 }
 
 export interface DailyStats {
@@ -130,6 +216,8 @@ export interface TradingConfig {
   daily_trades_count:  number;
   /** Persisted kill-switch halt (GET /trading/kill-switch for the reason). */
   trading_halted?:     boolean;
+  /** Effective TradingParams (subset): which engine decides trades. */
+  params?: { resolved?: { decision_engine?: "UNIFIED" | "LEGACY" | (string & {}) } };
 }
 
 export interface CapitalSummary {

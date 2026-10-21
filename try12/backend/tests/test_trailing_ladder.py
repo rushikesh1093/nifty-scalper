@@ -36,7 +36,7 @@ def test_rising_path_through_check_position_hits_every_tier(pdb, monkeypatch):
             assert sl > stops[-1]                    # never moves down
             stops.append(sl)
         assert ltp <= 131, "position never closed"
-    assert stops[1:] == [100.0, 112.0, 118.0]        # BREAKEVEN, LOCK_40, LOCK_60
+    assert stops[1:] == [101.5, 112.0, 118.0]        # BREAKEVEN_PLUS_COSTS, LOCK_40, LOCK_60
     closed = portable.get_position(pdb, pid)
     assert closed.exit_reason == "TARGET"
 
@@ -77,10 +77,10 @@ def test_partial_then_lock_40_on_the_same_tick(runtime_ctx, sqlite_db, fake_redi
     from tests.helpers import run, seed_config
     run(seed_config(sqlite_db, used_capital=13000.0))
     pid = _two_lot(sqlite_db)
-    _tick(runtime_ctx, fake_redis, sqlite_db, pid, 116.0)          # BREAKEVEN
+    _tick(runtime_ctx, fake_redis, sqlite_db, pid, 118.0)          # BREAKEVEN_PLUS_COSTS
     pos = _tick(runtime_ctx, fake_redis, sqlite_db, pid, 122.5)    # 0.75: partial, then LOCK_40
     seq = [(e.event_type, e.tier_label) for e in _events(sqlite_db, pid)]
-    assert seq == [("TRAIL_ADVANCE", "BREAKEVEN"), ("PARTIAL_EXIT", None),
+    assert seq == [("TRAIL_ADVANCE", "BREAKEVEN_PLUS_COSTS"), ("PARTIAL_EXIT", None),
                    ("TRAIL_ADVANCE", "LOCK_40")]
     assert pos.stop_loss == 112.0                                  # LOCK_40, not breakeven
     assert pos.partial_closed and pos.quantity == 65 and pos.lots == 1

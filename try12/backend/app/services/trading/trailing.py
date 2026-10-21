@@ -31,10 +31,14 @@ class TrailTier:
     label:               str
 
 
+# Break-even is NOT moved at 50% of the reward any more: on 1-min noise that
+# stopped trades at entry before they could work (avg win 0.74R on live paper
+# trades). At 60% the stop goes to entry + 5% of the reward, which covers
+# round-trip brokerage and charges, so a "break-even" exit is not a net loss.
 DEFAULT_TRAIL_TIERS: tuple[TrailTier, ...] = (
     TrailTier(0.90, 0.60, "LOCK_60"),
     TrailTier(0.75, 0.40, "LOCK_40"),
-    TrailTier(0.50, 0.00, "BREAKEVEN"),
+    TrailTier(0.60, 0.05, "BREAKEVEN_PLUS_COSTS"),
 )
 PARTIAL_EXIT_REWARD_FRAC = 0.75
 PARTIAL_EXIT_FRACTION    = 0.50

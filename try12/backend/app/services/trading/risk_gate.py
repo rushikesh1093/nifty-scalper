@@ -172,8 +172,8 @@ async def fraction_decision(db, strategy: str) -> FractionDecision:
         return FractionDecision(method="FIXED_FRACTION", applied_fraction=fixed,
                                 base_amount=round_to_500(fixed * capital), decided_r=decided)
 
-    if perf is None:
-        return _fixed()
+    if perf is None or not p_.kelly_enabled:
+        return _fixed(int((perf.winning_trades_r or 0) + (perf.losing_trades_r or 0)) if perf else 0)
     w, l = int(perf.winning_trades_r or 0), int(perf.losing_trades_r or 0)
     res = kelly_from_stats(w, l, float(perf.sum_r_win or 0.0), float(perf.sum_r_loss or 0.0))
     if res == "FIXED_FRACTION":
@@ -335,6 +335,20 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
                    f"Wait for a position to close.",
                    open_positions=open_n, max_open_positions=cfg.max_open_positions)
 
+    # 9b. no simultaneous opposing positions on one underlying (CE vs PE)
+    want = "CE" if getattr(signal.direction, "value", signal.direction) == "BUY" else "PE"
+    opposite = "PE" if want == "CE" else "CE"
+    clash = (await db.execute(select(PaperPosition.id).where(
+        PaperPosition.run_id == rc.run_id, PaperPosition.is_open == True,  # noqa: E712
+        PaperPosition.underlying == signal.underlying,
+        PaperPosition.option_type == opposite,
+    ).limit(1))).scalar_one_or_none()
+    if clash is not None:
+        return _no(Stage.RISK_GATE, ReasonCode.AGGREGATOR_CONFLICT,
+                   f"CONFLICTING_SIGNALS: an open {opposite} position (id {clash}) exists on "
+                   f"{signal.underlying}; not opening an opposing {want}",
+                   open_position_id=clash, open_option_type=opposite)
+
     # 10. aggregate open exposure
     used = await risk_state.open_capital_used(db, rc.run_id)
     exposure_cap = cfg.open_exposure_cap_pct / 100.0 * cfg.capital
@@ -374,7 +388,12 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
 # ── phase two: check 12 ──────────────────────────────────────────────────────
 
 async def evaluate_sizing(db, signal, candidate, *, fraction: FractionDecision,
-                          regime_multiplier: float) -> GateDecision:
+                          regime_multiplier: float,
+                          levels: Optional[Callable[[float], tuple]] = None) -> GateDecision:
+    """Check 12. ``levels(fill) -> (sl_pct, target_pct)`` supplies the trade's REAL
+    premium levels when they differ from the signal's own percentages (TREND_ENGINE:
+    the index-point stop/target converted with the contract's delta), so the
+    initial-risk and cost-vs-edge checks judge the target the position will use."""
     p_ = params()
     rc = ctx()
     try:
@@ -389,9 +408,12 @@ async def evaluate_sizing(db, signal, candidate, *, fraction: FractionDecision,
         candidate.ltp, getattr(candidate, "bid", 0), getattr(candidate, "ask", 0), age, p_)
 
     # initial risk must be positive (R6.5), checked before any capital is touched
-    sl, tgt, rr, stretched = fills.entry_levels(fill, signal.sl_pct, signal.target_pct, p_.min_rr)
+    sl_pct, target_pct = signal.sl_pct, signal.target_pct
+    if levels is not None:
+        sl_pct, target_pct = levels(fill)[:2]
+    sl, tgt, rr, stretched = fills.entry_levels(fill, sl_pct, target_pct, p_.min_rr)
     initial_risk = round(fill - sl, 2)
-    if signal.sl_pct <= 0 or initial_risk <= 0:
+    if sl_pct <= 0 or initial_risk <= 0:
         return _no(Stage.SIZING, ReasonCode.INITIAL_RISK_NON_POSITIVE,
                    f"Initial risk {initial_risk:.2f} is not positive "
                    f"(actual_entry={fill} sl={sl})", actual_entry=fill, sl=sl)
@@ -474,15 +496,20 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                 sqlite_lock = None
                 return _lock_timeout(started, None)
 
-        duplicate_query = select(PaperPosition.id).where(
-            PaperPosition.run_id == run_id,
-            PaperPosition.is_open.is_(True),
-        )
-        if duplicate_token is not None:
-            duplicate_query = duplicate_query.where(PaperPosition.token == duplicate_token)
-        elif duplicate_symbol:
-            duplicate_query = duplicate_query.where(PaperPosition.symbol == duplicate_symbol)
-        duplicate_exists = (await db.execute(duplicate_query.limit(1))).scalar_one_or_none()
+        # Duplicate guard: only when the caller names the contract. With no token
+        # and no symbol the query used to match EVERY open position of the run,
+        # silently capping the run at one open position.
+        duplicate_exists = None
+        if duplicate_token is not None or duplicate_symbol:
+            duplicate_query = select(PaperPosition.id).where(
+                PaperPosition.run_id == run_id,
+                PaperPosition.is_open.is_(True),
+            )
+            if duplicate_token is not None:
+                duplicate_query = duplicate_query.where(PaperPosition.token == duplicate_token)
+            else:
+                duplicate_query = duplicate_query.where(PaperPosition.symbol == duplicate_symbol)
+            duplicate_exists = (await db.execute(duplicate_query.limit(1))).scalar_one_or_none()
         if duplicate_exists is not None:
             await db.rollback()
             return _no(

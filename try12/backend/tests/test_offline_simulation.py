@@ -56,7 +56,10 @@ def test_offline_signal_to_closed_position(sqlite_db, fake_redis, monkeypatch, c
                         regime_detector.get_current_regime)   # in-memory, no Redis
 
     # ── 1. Candles → detector → orchestrator, candle by candle ───────────────
-    candles = _synthetic_candles()
+    # 57 candles: with hysteresis + the 60-bar ATR rank, this synthetic uptrend
+    # holds BULL_TREND; at candles 58-60 its ATR rank stays > 89 and the tape
+    # genuinely moves to TREND_HIGH_VOL, so the pause would land on the last bar.
+    candles = _synthetic_candles(n=57)
     regimes, active = [], 0
     for n in range(25, len(candles) + 1):
         window = candles[:n]

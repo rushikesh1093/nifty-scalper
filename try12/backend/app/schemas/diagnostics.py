@@ -15,6 +15,7 @@ class FeedProbe(BaseModel):
     connected:     Optional[bool] = None
     subscriptions: Optional[int]  = None
     session_valid: Optional[bool] = None
+    startup_error: Optional[str]  = None   # why the market feed did not start
 
 
 class SignalsProbe(BaseModel):
@@ -35,7 +36,7 @@ class UnderlyingProbe(BaseModel):
     candles_today:         Optional[int]   = None
     candles_required:      int
     atr:                   Optional[float] = None
-    atr_min:               float
+    atr_min:               Optional[float] = None
     last_candle_at:        Optional[str]   = None
     regime:                Optional[str]   = None
     regime_allows_trading: Optional[bool]  = None

@@ -45,16 +45,27 @@ function StrategyList({ cfg }: { cfg: TradingConfig }) {
   });
 
   const known = new Set(STRATEGY_META.map((s) => s.key));
-  const items = [
+  const engine = cfg.params?.resolved?.decision_engine;
+  // UNIFIED: only the trend engine trades (listed first); LEGACY: only the 12 strategies.
+  const isIdle = (key: string) =>
+    engine === "UNIFIED" ? key !== "TREND_ENGINE" : engine === "LEGACY" ? key === "TREND_ENGINE" : false;
+  const all = [
     ...STRATEGY_META,
     ...Object.keys(flags).filter((k) => !known.has(k)).map((k) => ({ key: k, label: k.replace(/_/g, " "), edge: "" })),
   ];
+  const items = engine === "UNIFIED"
+    ? [...all.filter((s) => s.key === "TREND_ENGINE"), ...all.filter((s) => s.key !== "TREND_ENGINE")]
+    : all;
   const activeCount = items.filter((s) => flags[s.key] !== false).length;
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between text-table text-text-2">
-        <span>Enable or pause individual strategies. Regime rules may still block an enabled one.</span>
+        <span>
+          Enable or pause individual strategies. Regime rules may still block an enabled one.
+          {engine === "UNIFIED" && " Decision mode is UNIFIED: only the trend engine places trades; the others are idle."}
+          {engine === "LEGACY" && " Decision mode is LEGACY: the 12 strategies trade; the trend engine is idle."}
+        </span>
         <span className="shrink-0 pl-2 font-mono">
           <span className="font-bold text-green">{activeCount}</span>/{items.length} on
         </span>
@@ -62,19 +73,24 @@ function StrategyList({ cfg }: { cfg: TradingConfig }) {
       <ul className="space-y-1">
         {items.map((s, i) => {
           const enabled = flags[s.key] !== false;
+          const idle = isIdle(s.key);
           const labelId = `strategy-${s.key}-label`;
           return (
             <li
               key={s.key}
               className={cn(
                 "flex items-center justify-between gap-3 rounded-lg border px-3 py-2",
-                enabled ? "border-green/25 bg-green/5" : "border-border bg-transparent",
+                enabled && !idle ? "border-green/25 bg-green/5" : "border-border bg-transparent",
+                idle && "opacity-60",
               )}
             >
               <div className="flex min-w-0 items-center gap-2.5">
                 <span aria-hidden="true" className="w-4 shrink-0 text-right font-mono text-micro text-text-3">{i + 1}</span>
                 <div className="min-w-0">
-                  <div id={labelId} className={cn("truncate text-table font-medium", enabled ? "text-text-1" : "text-text-2")}>{s.label}</div>
+                  <div id={labelId} className={cn("flex items-center gap-1.5 truncate text-table font-medium", enabled ? "text-text-1" : "text-text-2")}>
+                    {s.label}
+                    {idle && <span className="rounded border border-border-2 px-1 text-micro font-normal text-text-3">idle</span>}
+                  </div>
                   {s.edge && <div className="truncate text-micro normal-case tracking-normal text-text-2">{s.edge}</div>}
                 </div>
               </div>

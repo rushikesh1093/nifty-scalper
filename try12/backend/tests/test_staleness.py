@@ -115,3 +115,28 @@ def test_square_off_all_uses_redis_last_ltp_after_restart(sqlite_db, fake_redis)
     assert result == {"closed": 1, "stale": [pid], "failed": []}
     pos = run(get_position(sqlite_db, pid))
     assert (pos.exit_reason, pos.exit_price) == ("EOD_STALE", 91.5)
+
+
+def test_position_from_an_earlier_day_closes_at_its_own_session_price(runtime_ctx, sqlite_db,
+                                                                       fake_redis):
+    """Missed square-off (process down at 15:15): next morning the position is
+    closed at once as EOD_STALE at yesterday's last price, not held into a
+    second session and not filled at today's quote."""
+    from datetime import timedelta
+    run(seed_config(sqlite_db, used_capital=6500.0))
+    yesterday = runtime_ctx.clock.now_utc() - timedelta(days=1)
+    pid = run(add_position(sqlite_db, entry_time=yesterday))
+    fake_redis.kv[f"pos:{pid}"] = {"id": pid, "last_ltp": 110.0}
+    fake_redis.put_tick("OPT1", 150.0, bid=149.9, ask=150.1, age_s=1)   # today's live quote
+    run(paper_engine._check_position(run(get_position(sqlite_db, pid)), dtime(9, 20), SQ))
+    closed = run(get_position(sqlite_db, pid))
+    assert not closed.is_open and closed.exit_reason == "EOD_STALE"
+    assert closed.exit_fill_source == "LAST_KNOWN" and closed.actual_exit == pytest.approx(109.89)
+
+
+def test_todays_position_is_not_a_carry_over(runtime_ctx, sqlite_db, fake_redis):
+    run(seed_config(sqlite_db, used_capital=6500.0))
+    pid = run(add_position(sqlite_db, entry_time=runtime_ctx.clock.now_utc()))
+    fake_redis.put_tick("OPT1", 104.0, bid=103.9, ask=104.1, age_s=1)
+    run(paper_engine._check_position(run(get_position(sqlite_db, pid)), dtime(11, 0), SQ))
+    assert run(get_position(sqlite_db, pid)).is_open

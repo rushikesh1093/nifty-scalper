@@ -57,6 +57,8 @@ def reset_singletons() -> None:
     paper_engine._last_persist.clear()
     paper_engine._stale_warned.clear()
     paper_engine._stale_deferred.clear()
+    paper_engine._pending_invalidation.clear()
+    paper_engine._invalidation_evented.clear()
     paper_engine._square_off_cache = None
     regime_detector._regime_history.clear()
     regime_detector._last_log_time.clear()
@@ -68,6 +70,12 @@ def reset_singletons() -> None:
     strategy_runner._seen.clear()
     strategy_runner._seen_day = None
     strategy_runner._strategy_gate_last.clear()
+    getattr(strategy_runner, "_tele", {}).clear()
+    try:
+        from app.services.trading.decision_telemetry import decision_telemetry
+        decision_telemetry.reset()
+    except ImportError:
+        pass
     signal_aggregator.reset()
     try:
         from app.services.trading import risk_gate

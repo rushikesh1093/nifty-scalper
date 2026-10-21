@@ -46,6 +46,7 @@ class DayData:
     chains: dict[tuple[str, str], list] = field(default_factory=dict)  # (und, expiry) -> [(ts, strikes)]
     vix: Optional[float] = None
     instruments: dict[str, list] = field(default_factory=dict)       # underlying -> Instrument rows
+    futures_tokens: dict[str, str] = field(default_factory=dict)     # underlying -> FUTIDX token
 
 
 async def replay_instruments(db, underlying: str, day: date) -> list[Instrument]:
@@ -70,6 +71,28 @@ async def spot_candles(db, underlying: str, day: date) -> list[dict]:
              "low": r.low, "close": r.close, "volume": r.volume, "oi": r.oi} for r in rows]
 
 
+async def futures_candles(db, underlying: str, day: date) -> tuple[Optional[str], list[dict]]:
+    """(token, candles) of the near-month index future that has 1-min candles
+    stored for *day* — the volume source for VWAP (spot volume is always 0).
+    (None, []) when no future was recorded that day."""
+    start, end = trading_day_bounds_utc(day)
+    futs = (await db.execute(select(Instrument).where(
+        Instrument.name == underlying.upper(),
+        Instrument.instrument_type == InstrumentType.FUTIDX,
+        Instrument.expiry >= day,
+    ).order_by(Instrument.expiry))).scalars().all()
+    for f in futs:
+        rows = (await db.execute(select(OHLC).where(
+            OHLC.token == f.token, OHLC.interval == "ONE_MINUTE",
+            OHLC.timestamp >= start, OHLC.timestamp < end,
+        ).order_by(OHLC.timestamp))).scalars().all()
+        if rows:
+            return f.token, [{"token": r.token, "timestamp": r.timestamp, "open": r.open,
+                              "high": r.high, "low": r.low, "close": r.close,
+                              "volume": r.volume, "oi": r.oi} for r in rows]
+    return None, []
+
+
 async def vix_for(db, day: date) -> Optional[float]:
     row = (await db.execute(select(VIXData).where(VIXData.date == day))).scalar_one_or_none()
     if row is not None and row.open:
@@ -85,6 +108,10 @@ async def load_day(db, day: date, underlyings) -> DayData:
     tokens: set[str] = set()
     for u in underlyings:
         data.candles[spot_token(u)] = await spot_candles(db, u, day)
+        fut_tok, fut_rows = await futures_candles(db, u, day)
+        if fut_tok:
+            data.candles[fut_tok] = fut_rows
+            data.futures_tokens[u.upper()] = fut_tok
         insts = await replay_instruments(db, u, day)
         for i in insts:
             db.expunge(i)

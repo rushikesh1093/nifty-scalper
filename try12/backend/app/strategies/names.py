@@ -22,6 +22,10 @@ class StrategyName(str, Enum):
     IV_CRUSH = "IV_CRUSH"
     CPR_VWAP = "CPR_VWAP"
     GAP_VWAP_FILL = "GAP_VWAP_FILL"
+    # The unified trend-following decision engine (app/strategies/trend_engine.py).
+    # It uses the 12 above as evidence and is the only strategy that trades when
+    # TradingParams.decision_engine == "UNIFIED" (the default).
+    TREND_ENGINE = "TREND_ENGINE"
 
 
 ALL_STRATEGY_NAMES: tuple[str, ...] = tuple(s.value for s in StrategyName)

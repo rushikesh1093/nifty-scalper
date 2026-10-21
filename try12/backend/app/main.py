@@ -24,10 +24,35 @@ from app.api.routes.report import router as report_router
 from app.api.routes.regime import router as regime_router
 from app.api.routes.analytics import router as analytics_router
 from app.api.routes.backtest import router as backtest_router
+from app.api.routes.research import router as research_router
 from app.services.backtest import jobs as backtest_jobs
 
 setup_logging("DEBUG" if settings.DEBUG else "INFO")
 logger = logging.getLogger(__name__)
+
+MARKET_RETRY_INTERVAL_S = 60
+MARKET_RETRY_MAX_ATTEMPTS = 60
+
+
+async def _retry_market_startup() -> None:
+    """Retry MarketManager.startup until the live feed is up. One-time steps that
+    already succeeded (instrument sync, tick handler) are not repeated."""
+    import asyncio as _asyncio
+    for _ in range(MARKET_RETRY_MAX_ATTEMPTS):
+        await _asyncio.sleep(MARKET_RETRY_INTERVAL_S)
+        try:
+            await market_manager.startup()
+            logger.info("MarketManager startup succeeded on attempt %d — live feed starting",
+                        market_manager.startup_attempts)
+            return
+        except _asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("MarketManager startup retry %d failed at %s — next try in %ds",
+                         market_manager.startup_attempts, market_manager.startup_error,
+                         MARKET_RETRY_INTERVAL_S)
+    logger.error("MarketManager startup gave up after %d attempts; restart the backend",
+                 MARKET_RETRY_MAX_ATTEMPTS)
 
 
 @asynccontextmanager
@@ -80,8 +105,8 @@ async def lifespan(app: FastAPI):
     except Exception as exc:                            # unchanged tolerance: app may run feedless
         logger.error("MarketManager startup error: %s", exc, exc_info=True)
         logger.warning(
-            "⚠️  App started WITHOUT live market feed. "
-            "Check AngelOne credentials and Redis/Postgres connectivity."
+            "⚠️  App started WITHOUT live market feed — retrying every %ds "
+            "(GET /health shows the failing step).", MARKET_RETRY_INTERVAL_S,
         )
 
     # 2b. Capital sufficiency: WARNING only (blockers-plan item 6), never blocks startup
@@ -133,6 +158,10 @@ async def lifespan(app: FastAPI):
 
     import asyncio as _asyncio
     _token_refresh_task = _asyncio.create_task(_token_refresh_loop())
+    # A feedless start is retried in the background instead of waiting for a
+    # manual restart (the scrip-master download or AngelOne can fail transiently).
+    _market_retry_task = (None if market_started
+                          else _asyncio.create_task(_retry_market_startup()))
 
     # ── Admin key posture (design §17.4, §20.1) ───────────────────────────────
     from app.api.guards import ADMIN_ONLY_ENDPOINTS, admin_key_configured
@@ -169,6 +198,8 @@ async def lifespan(app: FastAPI):
     await backtest_jobs.shutdown()      # persists a running job as CANCELLED; never raises
     await replay_store.dispose_all()
     _token_refresh_task.cancel()
+    if _market_retry_task is not None:
+        _market_retry_task.cancel()
     from app.services.trading.strategy_runner import strategy_runner
     from app.services.market_data.study_collector import study_collector
     await strategy_runner.stop()
@@ -216,6 +247,7 @@ app.include_router(report_router,      prefix="/api/v1")
 app.include_router(regime_router,      prefix="/api/v1/regime")
 app.include_router(analytics_router,   prefix="/api/v1")
 app.include_router(backtest_router,    prefix="/api/v1")
+app.include_router(research_router,    prefix="/api/v1")   # read-only history download
 
 
 @app.get("/")
@@ -250,4 +282,9 @@ async def health():
         "feed_connected":  feed_up,
         "session_valid":   session_valid,
         "subscriptions":   subs,
+        "market_startup":  {
+            "stage":    getattr(market_manager, "startup_stage", None),
+            "error":    getattr(market_manager, "startup_error", None),
+            "attempts": getattr(market_manager, "startup_attempts", None),
+        },
     }
