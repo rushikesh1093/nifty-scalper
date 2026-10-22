@@ -30,6 +30,7 @@ from app.db.replay_store import Dataset
 from app.services.backtest import artifacts, series
 from app.services.metrics import stats
 from app.services.metrics import trade_metrics as tm
+from app.strategies.names import ALL_STRATEGY_NAMES
 
 BACKTEST_MAX_STORE_ROWS = 200
 NOT_INITIALISED = "replay_store_not_initialised"
@@ -47,8 +48,22 @@ def run_params(record: dict) -> tuple[TradingParams, list[str]]:
     try:
         return TradingParams.from_mapping(raw), []
     except (TradingParamsError, TypeError, ValueError):
-        # a record written by an older code_version may carry a renamed or removed key
-        return TradingParams(), ["params_defaults_used"]
+        pass
+    # A run recorded before the strategy rewrite keys max_hold_minutes by
+    # strategies that no longer exist. Those holds cannot apply to anything;
+    # drop just them, say so, and keep the rest of the run's real params.
+    hold = raw.get("max_hold_minutes")
+    if isinstance(hold, dict):
+        known = set(ALL_STRATEGY_NAMES) | {"DEFAULT"}
+        legacy = {k: v for k, v in hold.items() if k in known}
+        if legacy != hold:
+            try:
+                return (TradingParams.from_mapping(dict(raw, max_hold_minutes=legacy)),
+                        ["legacy_strategy_keys_dropped"])
+            except (TradingParamsError, TypeError, ValueError):
+                pass
+    # a record written by an older code_version may carry a renamed or removed key
+    return TradingParams(), ["params_defaults_used"]
 
 
 def run_capital(record: dict) -> float:

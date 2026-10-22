@@ -38,7 +38,6 @@ import numpy as np
 from app.runtime.context import now_utc, params, trading_day
 from app.services.trading import exit_plan as xp
 from app.services.trading.exit_plan import ExitPlan
-from app.services.trading.regime_indicators import compute_adx
 from app.strategies.base import BaseStrategy, Direction, SignalEvent
 from app.strategies.indicators import ema, resample, rsi, supertrend
 from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
@@ -351,6 +350,10 @@ class SupertrendEMAStrategy(_PlanStrategy):
         if self._last_exit_at is not None and \
                 (now_utc() - self._last_exit_at).total_seconds() < self.COOLDOWN_BARS * 60:
             return None
+
+        # Imported here, not at module top: regime_indicators imports
+        # app.strategies.indicators, whose package __init__ imports this module.
+        from app.services.trading.regime_indicators import compute_adx
 
         h, l, c, st = self._series(bars)
         e5, e13 = ema(c, 5), ema(c, 13)

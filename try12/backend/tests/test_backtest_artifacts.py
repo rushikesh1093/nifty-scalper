@@ -124,7 +124,9 @@ def test_detail_from_the_artefact(art):
     assert d["synthetic_state"] == "UNVERIFIED" and d["label"] == "capital-15000-A-proposed"
     assert d["capital"] == 15_000.0 and d["params"]["cfg"]["capital"] == 15_000.0
     assert d["per_trade_available"] is False and d["metrics_row"] is None
-    assert d["oos_split"] == 0.7 and d["warnings"] == [] and d["validation"]["run_id"] == FOUR
+    assert d["oos_split"] == 0.7 and d["validation"]["run_id"] == FOUR
+    # a pre-rewrite run keeps its params; only holds for removed strategies are dropped
+    assert d["warnings"] in ([], ["legacy_strategy_keys_dropped"])
 
 
 def test_breakdowns_and_no_trade_summary_from_the_artefact(art):
