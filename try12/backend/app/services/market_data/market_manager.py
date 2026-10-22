@@ -35,6 +35,10 @@ HISTORICAL_CANDLE_LIMIT = 390  # full trading day
 # today's, which is what the strategies' indicators warm up on.
 SEED_LOOKBACK_DAYS = 6
 SEED_KEEP_CANDLES = 500
+# AngelOne's historical API knows the NSE indices by "999"-prefixed tokens; the
+# short feed tokens (26000 / 26009 / 26017) return SUCCESS with zero candles.
+# Candles are still stored under the feed token, which is what everything reads.
+INDEX_HISTORICAL_TOKENS = {"26000": "99926000", "26009": "99926009", "26017": "99926017"}
 
 
 class MarketManager:
@@ -371,7 +375,8 @@ class MarketManager:
         try:
             candles = await angel_client.get_candle_data(
                 exchange=exchange,
-                symbol_token=token,
+                symbol_token=(INDEX_HISTORICAL_TOKENS.get(token, token)
+                              if exchange == "NSE" else token),
                 interval="ONE_MINUTE",
                 from_date=from_dt,
                 to_date=to_dt,

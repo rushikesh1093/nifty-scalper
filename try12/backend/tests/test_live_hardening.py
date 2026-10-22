@@ -224,3 +224,26 @@ def test_runner_hands_futures_candles_to_the_orb(runtime_ctx, fake_redis, monkey
     monkeypatch.setattr(fake_redis, "get_candles", _candles)        # runtime_ctx's market
     assert run(strategy_runner._futures_candles("NIFTY")) == [{"token": "F1", "volume": 5}]
     assert run(strategy_runner._futures_candles("BANKNIFTY")) == []      # none published
+
+
+# ── index history: AngelOne wants the 999-prefixed token ─────────────────────
+
+def test_spot_seed_asks_angelone_for_the_999_index_token(monkeypatch):
+    import app.services.market_data.market_manager as mm
+    asked, stored = [], {}
+
+    async def _candles(exchange, symbol_token, interval, from_date, to_date):
+        asked.append((exchange, symbol_token))
+        return [["2026-10-21T09:15:00+05:30", 1.0, 2.0, 0.5, 1.5, 0]]
+
+    async def _set(token, interval, candles):
+        stored[token] = candles
+
+    monkeypatch.setattr(mm.angel_client, "get_candle_data", _candles)
+    monkeypatch.setattr(mm.redis_cache, "set_candles", _set)
+    m = mm.MarketManager()
+    run(m._seed_one_token_exchange("26000", "NIFTY", "NSE"))
+    run(m._seed_one_token_exchange("48704", "NIFTY27OCT26FUT", "NFO"))
+    assert asked == [("NSE", "99926000"), ("NFO", "48704")]
+    assert set(stored) == {"26000", "48704"}                 # stored under the feed token
+    assert stored["26000"][0]["token"] == "26000"
