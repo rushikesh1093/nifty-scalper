@@ -1,8 +1,8 @@
 """
 Bug 2, name half (design §6.1, R3.3, R3.9).
 
-The orchestrator's flag universe must be exactly the 12 strategies that
-build_strategies() instantiates. Before this fix it listed two phantom names
+The orchestrator's flag universe must be exactly the strategies that
+build_strategies() instantiates (three since the strategy rewrite). Before this fix it listed two phantom names
 (PCR_SIGNAL, GAP_FILL) and omitted CPR_VWAP / GAP_VWAP_FILL, so those two
 strategies were never gated by a regime rule.
 """
@@ -22,11 +22,7 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 
 # The expected set is written out here on purpose rather than imported, so the
 # test cannot pass by both sides reading the same wrong source.
-CANONICAL_12 = {
-    "ORB_VWAP", "VWAP_PULLBACK", "EMA_VWAP", "SUPERTREND_VWAP", "PDH_PDL",
-    "VWAP_REVERSAL", "BOLLINGER_BREAKOUT", "RSI_VWAP", "OI_SPIKE", "IV_CRUSH",
-    "CPR_VWAP", "GAP_VWAP_FILL",
-}
+CANONICAL = {"VWAP_EMA_PULLBACK", "ORB_BREAKOUT", "SUPERTREND_EMA"}
 PHANTOM = re.compile(r"\b(PCR_SIGNAL|GAP_FILL)\b")
 
 
@@ -40,20 +36,20 @@ def _state(regime: str = "RANGE_NORMAL_VOL") -> RegimeState:
                        timestamp=datetime.now(timezone.utc), indicators=ind)
 
 
-def test_built_strategies_are_the_canonical_12():
-    assert {s.name for s in build_strategies("NIFTY")} == CANONICAL_12
+def test_built_strategies_are_the_canonical_names():
+    assert {s.name for s in build_strategies("NIFTY")} == CANONICAL
 
 
-def test_orchestrator_universe_equals_the_12_canonical_names():
+def test_orchestrator_universe_equals_the_canonical_names():
     flags = run(strategy_orchestrator.on_regime_detected(_state()))
-    assert set(flags) == CANONICAL_12
+    assert set(flags) == CANONICAL
 
 
-def test_strategy_name_enum_matches_canonical_12():
+def test_strategy_name_enum_matches_canonical():
     from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
-    assert set(ALL_STRATEGY_NAMES) == CANONICAL_12
-    assert len(ALL_STRATEGY_NAMES) == 12
-    assert {m.value for m in StrategyName} == CANONICAL_12
+    assert set(ALL_STRATEGY_NAMES) == CANONICAL
+    assert len(ALL_STRATEGY_NAMES) == 3
+    assert {m.value for m in StrategyName} == CANONICAL
 
 
 def test_strategies_module_reexports_the_canonical_tuple():
@@ -65,7 +61,7 @@ def test_strategies_module_reexports_the_canonical_tuple():
 def test_regime_rules_only_name_canonical_strategies():
     from app.services.trading.regime_rules import REGIME_RULES
     for regime, rule in REGIME_RULES.items():
-        unknown = set(rule.enabled_strategies) - CANONICAL_12
+        unknown = set(rule.enabled_strategies) - CANONICAL
         assert not unknown, f"{regime} names unknown strategies {unknown}"
 
 
@@ -82,7 +78,7 @@ THIRTEEN_REGIMES = {
 def test_every_strategy_is_enabled_in_some_regime():
     from app.services.trading.regime_rules import NEVER_ENABLED, REGIME_RULES
     union = set().union(*(r.enabled_strategies for r in REGIME_RULES.values()))
-    assert union | set(NEVER_ENABLED) == CANONICAL_12
+    assert union | set(NEVER_ENABLED) == CANONICAL
     assert NEVER_ENABLED == frozenset()
 
 
@@ -138,34 +134,34 @@ def _merge(monkeypatch, regime, user_flags):
 
 def test_absent_regime_flag_means_disabled(monkeypatch):
     async def _only_one(state):
-        return {"VWAP_REVERSAL": True}           # a map that forgot 11 strategies
+        return {"ORB_BREAKOUT": True}            # a map that forgot 2 strategies
 
     monkeypatch.setattr(strategy_orchestrator, "on_regime_detected", _only_one)
     flags = _merge(monkeypatch, "RANGE_NORMAL_VOL", {})
-    assert set(flags) == CANONICAL_12
-    assert [n for n, on in flags.items() if on] == ["VWAP_REVERSAL"]
+    assert set(flags) == CANONICAL
+    assert [n for n, on in flags.items() if on] == ["ORB_BREAKOUT"]
 
 
 def test_user_disable_overrides_the_regime(monkeypatch):
-    flags = _merge(monkeypatch, "RANGE_NORMAL_VOL", {"RSI_VWAP": False})
-    assert flags["RSI_VWAP"] is False
-    assert flags["VWAP_REVERSAL"] is True
+    flags = _merge(monkeypatch, "TREND_HIGH_VOL", {"SUPERTREND_EMA": False})
+    assert flags["SUPERTREND_EMA"] is False
+    assert flags["VWAP_EMA_PULLBACK"] is True
     from app.services.trading.strategy_orchestrator import strategy_orchestrator
-    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "RSI_VWAP") == (False, "user_disabled")
-    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "VWAP_REVERSAL") == (True, "enabled")
-    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "ORB_VWAP") == (False, "regime_rule")
+    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "SUPERTREND_EMA") == (False, "user_disabled")
+    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "VWAP_EMA_PULLBACK") == (True, "enabled")
+    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "ORB_BREAKOUT") == (False, "regime_rule")
 
 
 def test_is_strategy_enabled_defaults_closed():
     from app.services.trading.strategy_orchestrator import StrategyOrchestrator
-    assert StrategyOrchestrator().is_strategy_enabled("NIFTY", "ORB_VWAP") == \
+    assert StrategyOrchestrator().is_strategy_enabled("NIFTY", "ORB_BREAKOUT") == \
         (False, "regime flags not yet computed")
 
 
 def test_detection_failure_disables_everything():
     flags = strategy_orchestrator.mark_regime_unavailable("NIFTY")
-    assert set(flags) == CANONICAL_12 and not any(flags.values())
-    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "ORB_VWAP") == \
+    assert set(flags) == CANONICAL and not any(flags.values())
+    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "ORB_BREAKOUT") == \
         (False, "regime_unavailable")
 
 
@@ -181,9 +177,9 @@ def test_trend_high_vol_narrows_direction_by_price_vs_vwap():
     from tests.helpers import make_signal
     st = _state("TREND_HIGH_VOL")                 # price 22610 > vwap 22600
     assert strategy_orchestrator.should_allow_signal(
-        make_signal(strategy="SUPERTREND_VWAP", direction=Direction.BUY), st)[0] is True
+        make_signal(strategy="SUPERTREND_EMA", direction=Direction.BUY), st)[0] is True
     ok, _, reason = strategy_orchestrator.should_allow_signal(
-        make_signal(strategy="SUPERTREND_VWAP", direction=Direction.SELL), st)
+        make_signal(strategy="SUPERTREND_EMA", direction=Direction.SELL), st)
     assert ok is False and "BUY only" in reason
 
 
@@ -207,7 +203,7 @@ def test_startup_regime_checks_catch_a_broken_map(monkeypatch):
     monkeypatch.setattr(regime_rules, "REGIME_RULES", broken)
     v = " | ".join(check_regime_map())
     assert "unknown strategy" in v                 # check 2
-    assert "never enabled" in v and "EMA_VWAP" in v   # check 3
+    assert "never enabled" in v and "VWAP_EMA_PULLBACK" in v   # check 3
     assert "multiplier" in v                       # check 4
     assert "regime keys" in v                      # check 5
 
@@ -222,14 +218,14 @@ def test_run_startup_checks_passes_under_runtime_ctx(runtime_ctx, sqlite_db):
 def test_strategy_map_endpoint(runtime_ctx, monkeypatch):
     from app.api.routes.regime import get_strategy_map
 
-    _merge(monkeypatch, "REGIME_TRANSITION", {"RSI_VWAP": False})
+    _merge(monkeypatch, "REGIME_TRANSITION", {"SUPERTREND_EMA": False})
     body = run(get_strategy_map())
     assert body["multiplier_set"] == [0.0, 0.5, 1.0] and body["never_enabled"] == []
     assert {r["regime"] for r in body["regimes"]} == THIRTEEN_REGIMES
     nifty = next(c for c in body["current"] if c["underlying"] == "NIFTY")
     reasons = {s["name"]: s["reason"] for s in nifty["strategies"]}
-    assert reasons["RSI_VWAP"] == "user_disabled"
-    assert reasons["ORB_VWAP"] == "transition_cooldown"
+    assert reasons["SUPERTREND_EMA"] == "user_disabled"
+    assert reasons["ORB_BREAKOUT"] == "transition_cooldown"
     bank = next(c for c in body["current"] if c["underlying"] == "BANKNIFTY")
     assert {s["reason"] for s in bank["strategies"]} == {"regime_unavailable"}
 

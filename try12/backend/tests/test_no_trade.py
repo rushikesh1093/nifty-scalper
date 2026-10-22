@@ -15,7 +15,7 @@ NO_TRADE = APP / "services" / "trading" / "no_trade.py"
 
 SECTION12 = {
     "CYCLE": {"OUTSIDE_SESSION_WINDOW", "AFTER_ENTRY_CUTOFF", "INSUFFICIENT_CANDLES",
-              "ATR_BELOW_FLOOR", "VIX_ABOVE_MAX", "VIX_BELOW_MIN", "NO_PREV_DAY_SNAPSHOT",
+              "ATR_BELOW_FLOOR", "VIX_ABOVE_MAX", "VIX_BELOW_MIN",
               "REGIME_UNAVAILABLE", "REGIME_NO_TRADE", "TRANSITION_COOLDOWN",
               "FEED_UNAVAILABLE"},
     "STRATEGY_GATE": {"STRATEGY_USER_DISABLED", "STRATEGY_REGIME_DISABLED",
@@ -173,13 +173,13 @@ def test_two_same_direction_signals_in_one_candle_write_one_row(runtime_ctx, sql
         return True
 
     monkeypatch.setattr(SignalBus, "_handlers", [_opened])
-    a = make_signal(strategy="ORB_VWAP")
-    b = make_signal(strategy="VWAP_PULLBACK")
+    a = make_signal(strategy="ORB_BREAKOUT")
+    b = make_signal(strategy="VWAP_EMA_PULLBACK")
     assert run(SignalBus.publish(a)) is True
     assert run(SignalBus.publish(b)) is False
     rows = run(_rows(sqlite_db))
     assert [(r.stage, r.code, r.strategy_name) for r in rows] == \
-        [("SIGNAL_GATE", "AGGREGATOR_SAME_DIRECTION", "VWAP_PULLBACK")]
+        [("SIGNAL_GATE", "AGGREGATOR_SAME_DIRECTION", "VWAP_EMA_PULLBACK")]
     assert rows[0].underlying == "NIFTY" and rows[0].run_id == "PAPER"
 
 
@@ -409,7 +409,7 @@ def test_signals_emitted_counts_published_signals(quiet_runner, sqlite_db, monke
     monkeypatch.setattr(SignalBus, "_handlers", [_rejected])
 
     async def _emit(candles, indicators):
-        await SignalBus.publish(make_signal(strategy="ORB_VWAP"))
+        await SignalBus.publish(make_signal(strategy="ORB_BREAKOUT"))
 
     stubs[0].on_candle = _emit
     feed(0)
@@ -484,11 +484,11 @@ def test_r12_8a_every_gate_type_fires_and_the_rows_account_for_no_trades(
     async def _emit(candles, indicators):
         d = script.get(current["i"])
         if d is not None:
-            await SignalBus.publish(make_signal(strategy="VWAP_PULLBACK", direction=d))
+            await SignalBus.publish(make_signal(strategy="VWAP_EMA_PULLBACK", direction=d))
 
-    emitter = next(s for s in stubs if s.name == "VWAP_PULLBACK")
+    emitter = next(s for s in stubs if s.name == "VWAP_EMA_PULLBACK")
     emitter.on_candle = _emit
-    with using(replace(ctx(), user_flags=FrozenUserFlags({"ORB_VWAP": False}))):
+    with using(replace(ctx(), user_flags=FrozenUserFlags({"ORB_BREAKOUT": False}))):
         for i in range(6):
             current["i"] = i
             if i == 5:

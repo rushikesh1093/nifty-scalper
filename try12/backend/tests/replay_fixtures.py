@@ -22,11 +22,11 @@ the P&L does not depend on which strike the selector prefers:
   every entry fills at ceil_tick(99.95 x 1.0005) = 100.00 with stop 85.00,
   target 130.00 (R = 15.00, reward 30.00) and 3 lots of 65 (floor(20,000 / 6,500)).
 
-  T1 10:00 VWAP_PULLBACK  10:00:59 ltp 84.90             SL      exit 84.80 (bid)
-  T2 10:30 EMA_VWAP       115.00 BE -> 123.00 partial 1 lot @ 122.85 + LOCK_40
+  T1 10:00 VWAP_EMA_PULLBACK  10:00:59 ltp 84.90             SL      exit 84.80 (bid)
+  T2 10:30 SUPERTREND_EMA       115.00 BE -> 123.00 partial 1 lot @ 122.85 + LOCK_40
                           -> 128.00 LOCK_60 (118.00) -> 117.90 SL exit 117.75 (bid)
-  T3 11:00 VWAP_PULLBACK  131.00                          TARGET  exit 129.87
-  T4 11:30 EMA_VWAP       80.00                           SL      exit 79.90 (bid)
+  T3 11:00 VWAP_EMA_PULLBACK  131.00                          TARGET  exit 129.87
+  T4 11:30 SUPERTREND_EMA       80.00                           SL      exit 79.90 (bid)
 """
 from __future__ import annotations
 
@@ -88,8 +88,8 @@ FOUR_TRADE_PATH = {
     minute_index("11:30"): 80.00,
 }
 FOUR_TRADE_SCHEDULE = {
-    "VWAP_PULLBACK": {"10:00": "BUY", "11:00": "BUY"},
-    "EMA_VWAP": {"10:30": "BUY", "11:30": "BUY"},
+    "VWAP_EMA_PULLBACK": {"10:00": "BUY", "11:00": "BUY"},
+    "SUPERTREND_EMA": {"10:30": "BUY", "11:30": "BUY"},
 }
 
 
@@ -97,7 +97,7 @@ FOUR_TRADE_SCHEDULE = {
 
 def scripted_factory(schedule: dict, extra: Optional[Callable] = None) -> Callable:
     """strategy_factory for ReplayEngine: one ScriptedStrategy per schedule entry
-    (plus *extra(underlying)*, e.g. the real OI/IV strategies)."""
+    (plus *extra(underlying)*, e.g. real strategies riding along)."""
     from app.runtime.context import now_ist
     from app.strategies.base import BaseStrategy, Direction
 
@@ -225,16 +225,13 @@ def four_trade(tmp_path_factory):
     from tests.helpers import position_fields, reset_singletons
 
     from app.services.trading.strategy_runner import strategy_runner
-    from app.strategies.strategies import IVCrushStrategy, OISpikeStrategy
 
     base = tmp_path_factory.mktemp("four_trade")
     quote = scripted_quote(FOUR_TRADE_PATH)
-    # The real OI/IV strategies ride along, user-disabled through the run's
-    # frozen flags: _inject_oi_iv still feeds them (it runs before the skip
-    # loop), so the injection is observable without adding trades.
-    factory = scripted_factory(FOUR_TRADE_SCHEDULE,
-                               extra=lambda u: [OISpikeStrategy(u), IVCrushStrategy(u)])
-    flags = {"user_strategy_flags": {"OI_SPIKE": False, "IV_CRUSH": False}}
+    # ORB_BREAKOUT is user-disabled through the run's frozen flags; no scripted
+    # strategy carries that name, so the flag must not change the four trades.
+    factory = scripted_factory(FOUR_TRADE_SCHEDULE)
+    flags = {"user_strategy_flags": {"ORB_BREAKOUT": False}}
     out = SimpleNamespace()
     with pytest.MonkeyPatch.context() as mp:
         reset_singletons()

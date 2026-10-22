@@ -48,6 +48,8 @@ class SignalEvent:
     target_ref:       Optional[float] = None
     risk_reward:      Optional[float] = None
     notes:            str = ""
+    # Spot-based exit plan (exit_plan.ExitPlan.to_dict()); None = generic ladder
+    exit_plan:        Optional[dict] = None
 
 
 # Type alias for async signal handlers
@@ -194,29 +196,34 @@ class SignalBus:
 
 class BaseStrategy(ABC):
     """
-    Abstract base for all 12 strategies.
-    Subclasses implement `evaluate()` which is called on every new candle.
+    Abstract base for the strategies (app.strategies.names).
+    Subclasses implement `evaluate()` which is called on every new candle,
+    and may implement `candle_exit()` for exits that need a closed bar.
     """
     name:        str = "BASE"
     underlying:  str = "NIFTY"
     enabled:     bool = True
 
-    # Risk defaults (overridden per strategy)
-    # Standard 1:2 R:R — entry=100, SL=90 (−10%), target=120 (+20%)
-    sl_pct:      float = 0.10   # SL as 10% of option LTP
-    target_pct:  float = 0.20   # Target as 20% of option LTP → R:R = 2.0
+    # Premium hard stop (fraction of the option fill). The spot exit plan runs
+    # alongside it — whichever hits first.
+    sl_pct:      float = 0.10
+    target_pct:  float = 0.20
 
     def __init__(self, underlying: str = "NIFTY"):
         self.underlying = underlying
         self._last_signal_time: Optional[datetime] = None
-        # Respect per-strategy cooldown set as a class attribute (e.g.
-        # VWAPReversalStrategy._cooldown_minutes = 10).  Only fall back to the
-        # default of 5 minutes when the subclass hasn't declared its own value.
+        # Multi-day 1-min candles (oldest first) for indicator warm-up; the
+        # runner sets it every cycle. Empty → strategies use today's candles.
+        self.history: list[dict] = []
+        self.open_positions: int = 0
+        # Respect per-strategy cooldown set as a class attribute.  Only fall
+        # back to the default of 5 minutes when the subclass hasn't declared one.
         if not hasattr(self, '_cooldown_minutes'):
             self._cooldown_minutes: int = 5   # default: min gap between signals
 
     async def on_candle(self, candles: list[dict], indicators: dict):
-        """Called by strategy runner on every new closed candle."""
+        """Called by strategy runner on every new closed candle (after it has
+        set ``self.history``)."""
         if not self.enabled:
             return
         if not self._cooldown_ok():
@@ -226,15 +233,36 @@ class BaseStrategy(ABC):
             self._last_signal_time = signal.signal_time
             logger.info("[%s] Signal: %s %s @ %.2f",
                         self.name, signal.direction, self.underlying, signal.spot_price)
-            await SignalBus.publish(signal)
+            if await SignalBus.publish(signal):
+                self.open_positions += 1
+                self.on_position_opened(signal)
 
     @abstractmethod
     async def evaluate(self, candles: list[dict], indicators: dict) -> Optional[SignalEvent]:
         """
         Evaluate current market state and return a SignalEvent or None.
-        `candles` — list of OHLCV dicts, newest last.
+        `candles` — today's 1-min OHLCV dicts, newest last.
         `indicators` — output of compute_all(candles).
         """
+
+    def candle_exit(self, plan, candles: list[dict], indicators: dict) -> Optional[str]:
+        """Exit reason for an open position of this strategy on a candle
+        close, or None to hold. *plan* is its exit_plan.ExitPlan, and may be
+        tightened in place (the caller persists it). Default: no bar exits."""
+        return None
+
+    # ── position lifecycle hooks (paper_engine → strategy) ───────────────────
+
+    def on_position_opened(self, signal: SignalEvent) -> None:
+        """A signal of this strategy opened a position."""
+
+    def position_closed(self, direction: Direction, reason: str) -> None:
+        """Called by paper_engine after a final close of this strategy's position."""
+        self.open_positions = max(0, self.open_positions - 1)
+        self.on_position_closed(direction, reason)
+
+    def on_position_closed(self, direction: Direction, reason: str) -> None:
+        """Subclass hook for per-day trade rules (cooldowns, reverse trades)."""
 
     def _cooldown_ok(self) -> bool:
         if not self._last_signal_time:
@@ -246,7 +274,8 @@ class BaseStrategy(ABC):
         return elapsed >= self._cooldown_minutes
 
     def _make_signal(self, direction: Direction, spot: float,
-                     indicators: dict, notes: str = "") -> SignalEvent:
+                     indicators: dict, notes: str = "",
+                     exit_plan: Optional[dict] = None) -> SignalEvent:
         return SignalEvent(
             strategy_name=self.name,
             underlying=self.underlying,
@@ -259,4 +288,5 @@ class BaseStrategy(ABC):
             target_pct=self.target_pct,
             min_rr=params().min_rr,   # a record of the floor applied; params() is the only source
             notes=notes,
+            exit_plan=exit_plan,
         )

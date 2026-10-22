@@ -130,7 +130,7 @@ def test_detail_metrics_and_breakdowns(store):
         assert m["mean_cost_r"] == pytest.approx(
             m["metrics"]["expectancy_r"] - m["metrics"]["expectancy_r_net"], abs=1e-9)
     by = _get(f"{API}/runs/{rid}/metrics/by/strategy").json()
-    assert set(by["groups"]) == {"VWAP_PULLBACK", "EMA_VWAP"} and by["source"] == "store"
+    assert set(by["groups"]) == {"VWAP_EMA_PULLBACK", "SUPERTREND_EMA"} and by["source"] == "store"
     assert sum(g["trades"] for g in by["groups"].values()) == store.run1.metrics.trades
     day = _get(f"{API}/runs/{rid}/metrics/by/day").json()
     assert list(day["groups"]) == ["2026-09-01"]

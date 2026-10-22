@@ -31,13 +31,13 @@ def test_detect_then_persist_writes_one_regime_state(sqlite_db, monkeypatch):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         flags, state = run(strategy_runner._detect_and_merge_regime(
-            "NIFTY", [], {}, False, {"VWAP_PULLBACK": True},
+            "NIFTY", [], {}, False, {"VWAP_EMA_PULLBACK": True},
         ))
         assert run(_count(sqlite_db, RegimeStateModel)) == 0
         run(strategy_runner._persist_regime_state("NIFTY", state))
         gc.collect()
     assert state.regime == "BULL_TREND_NORMAL_VOL"
-    assert flags["VWAP_PULLBACK"] is True
+    assert flags["VWAP_EMA_PULLBACK"] is True
     assert run(_count(sqlite_db, RegimeStateModel)) == 1
     never_awaited = [w for w in caught if issubclass(w.category, RuntimeWarning)
                      and "never awaited" in str(w.message)]

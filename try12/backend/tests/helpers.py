@@ -64,7 +64,6 @@ def reset_singletons() -> None:
     strategy_orchestrator._flag_state.clear()
     strategy_orchestrator._current_regime.clear()
     getattr(strategy_orchestrator, "_daily_halts", {}).clear()
-    strategy_runner._oi_iv_warned.clear()
     strategy_runner._seen.clear()
     strategy_runner._seen_day = None
     strategy_runner._strategy_gate_last.clear()
@@ -122,7 +121,7 @@ def with_instruments(rc, rows):
     return dataclasses.replace(rc, instruments=FakeInstruments(rows))
 
 
-async def add_closed(Session, *, net: float, at: datetime, strategy: str = "VWAP_PULLBACK",
+async def add_closed(Session, *, net: float, at: datetime, strategy: str = "VWAP_EMA_PULLBACK",
                      run_id: str = "PAPER", **overrides) -> int:
     """A closed position whose exit (and entry, 5 minutes earlier) is at *at*."""
     fields = dict(is_open=False, net_pnl=float(net), gross_pnl=float(net), exit_time=at,
@@ -149,7 +148,7 @@ async def seed_config(Session, **overrides) -> None:
 def position_fields(**overrides) -> dict:
     """Column values for one open 1-lot position (entry 100, SL 85, target 130)."""
     fields = dict(
-        strategy_name="VWAP_PULLBACK",
+        strategy_name="VWAP_EMA_PULLBACK",
         token="OPT1",
         symbol="NIFTY06OCT2622600CE",
         underlying="NIFTY",
@@ -203,7 +202,7 @@ async def get_config_row(Session) -> TradingConfig:
         )).scalar_one()
 
 
-def make_signal(strategy="VWAP_PULLBACK", underlying="NIFTY", direction=Direction.BUY,
+def make_signal(strategy="VWAP_EMA_PULLBACK", underlying="NIFTY", direction=Direction.BUY,
                 sl_pct=0.15, target_pct=0.30, min_rr=2.0, atr=0.0) -> SignalEvent:
     return SignalEvent(
         strategy_name=strategy,

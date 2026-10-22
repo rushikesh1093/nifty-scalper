@@ -70,7 +70,7 @@ def test_signal_open_trail_partial_close_writes_every_aggregate(runtime_ctx, sql
 
     (rp,) = _rows(sqlite_db, RegimePerformanceModel)
     assert (rp.regime, rp.underlying, rp.strategy_name, rp.run_id) == \
-        (REGIME, "NIFTY", "VWAP_PULLBACK", "PAPER")
+        (REGIME, "NIFTY", "VWAP_EMA_PULLBACK", "PAPER")
     assert (rp.total_trades, rp.winning_trades, rp.losing_trades, rp.flat_trades) == (1, 1, 0, 0)
     assert float(rp.total_pnl) == pytest.approx(closed.net_pnl, abs=0.01)
     assert rp.r_sample_size == 1 and rp.sum_r == pytest.approx(r) and rp.sum_r_win == pytest.approx(r)
@@ -80,7 +80,7 @@ def test_signal_open_trail_partial_close_writes_every_aggregate(runtime_ctx, sql
 
     (sp,) = _rows(sqlite_db, StrategyPerf)
     assert (sp.strategy_name, sp.total_trades, sp.winning_trades, sp.losing_trades) == \
-        ("VWAP_PULLBACK", 1, 1, 0)
+        ("VWAP_EMA_PULLBACK", 1, 1, 0)
     assert (sp.winning_trades_r, sp.losing_trades_r, sp.r_sample_size) == (1, 0, 1)
     assert sp.avg_win_r == pytest.approx(r) and sp.avg_loss_r is None
     assert sp.expectancy_r == pytest.approx(r) and sp.avg_rr == pytest.approx(r)
@@ -100,8 +100,8 @@ def test_incremental_aggregates_equal_a_full_rebuild(runtime_ctx, sqlite_db, fak
     run(seed_config(sqlite_db, used_capital=26000.0))
     common = dict(entry_regime=REGIME, initial_risk=15.0, r_source="ENTRY",
                   original_quantity=65, original_lots=1)
-    plan = [("VWAP_PULLBACK", 130.0, "TARGET"), ("VWAP_PULLBACK", 84.0, "SL"),
-            ("ORB_VWAP", 100.4, "MANUAL"), ("VWAP_PULLBACK", 112.0, "MANUAL")]
+    plan = [("VWAP_EMA_PULLBACK", 130.0, "TARGET"), ("VWAP_EMA_PULLBACK", 84.0, "SL"),
+            ("ORB_BREAKOUT", 100.4, "MANUAL"), ("VWAP_EMA_PULLBACK", 112.0, "MANUAL")]
     for strategy, px, reason in plan:
         pid = run(add_position(sqlite_db, strategy_name=strategy, **common))
         fake_redis.put_tick("OPT1", px, age_s=1)
@@ -151,7 +151,7 @@ def test_record_trade_result_requires_a_session():
     from app.services.trading.trade_outcome import TradeOutcome
     with pytest.raises(TypeError):
         run(strategy_orchestrator.record_trade_result(
-            None, regime=REGIME, underlying="NIFTY", strategy_name="ORB_VWAP",
+            None, regime=REGIME, underlying="NIFTY", strategy_name="ORB_BREAKOUT",
             outcome=None))
     assert TradeOutcome.__dataclass_params__.frozen
 

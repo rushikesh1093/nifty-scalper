@@ -147,7 +147,7 @@ def test_timeout_uses_max_hold_minutes(runtime_ctx, sqlite_db, fake_redis):
 
     run(seed_config(sqlite_db, used_capital=6500.0))
     entry_time = runtime_ctx.clock.now_utc()
-    pid = run(add_position(sqlite_db, strategy_name="ORB_VWAP", entry_time=entry_time,
+    pid = run(add_position(sqlite_db, strategy_name="ORB_BREAKOUT", entry_time=entry_time,
                            initial_risk=15.0, r_source="ENTRY", original_quantity=65))
     p = replace(TradingParams(), max_hold_minutes={"DEFAULT": 10})
     with using(replace(runtime_ctx, params=StaticParams(p))):

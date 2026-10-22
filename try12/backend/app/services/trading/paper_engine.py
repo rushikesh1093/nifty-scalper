@@ -20,6 +20,13 @@ Exit ladder (trailing.py, design §8.1-8.3): SL / target first, then the
 partial (once, ≥ 2 lots), then trailing.next_stop on the reduced position. A
 stale price only ever runs SL / EOD exits.
 
+Exit plans (exit_plan.py): a position whose signal carried a spot exit plan
+replaces the ladder / partial / timeout with the plan — spot stop, spot
+target, T1 partial + stop to entry, break-even trigger, premium-point target
+and time stop on every monitor pass; EMA-trail / VWAP / Supertrend-flip exits
+on candle closes (run_candle_exits). The premium stop stays live alongside.
+An opposite-direction signal closes open positions on that underlying.
+
 R accounting (design §8.4): initial_stop_loss, initial_risk and r_source are
 written once at insert; exit_value_weighted, r_multiple (gross) and
 r_multiple_net are written once at the final close.
@@ -44,6 +51,7 @@ from app.db.models.paper_trade import (
 )
 from app.db.models.risk import PositionEvent
 from app.runtime.context import ctx, market, now_ist, now_utc, params, sessions, trading_day
+from app.services.trading import exit_plan as xp
 from app.services.trading import fills, no_trade, risk_gate, risk_state, trailing
 from app.services.trading.no_trade import Stage
 from app.services.trading.option_selector import SelectedOption, option_selector
@@ -54,6 +62,7 @@ from app.services.trading.session_times import (
     is_market_hours, parse_square_off,
 )
 from app.strategies.base import SignalEvent, Direction
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +104,15 @@ def _plain_indicators(indicators: Optional[dict]) -> dict:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _spot_token(underlying: str) -> str:
+    return settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
+
+
+def _position_direction(pos: PaperPosition) -> Direction:
+    """Spot direction of a long-option position: CE → BUY, PE → SELL."""
+    return Direction.SELL if (pos.option_type or "").upper() == "PE" else Direction.BUY
 
 
 def _quote(tick: Optional[dict]) -> tuple:
@@ -150,6 +168,10 @@ class PaperEngine:
         refusal records one no_trade_decisions row and a SKIPPED signal.
         """
         from app.services.trading.mode_manager import mode_manager
+
+        # An opposite-direction signal is an exit for what is open on this
+        # underlying, whether or not the new signal goes on to open a trade.
+        await self._close_opposite(signal)
 
         # study_phase comes through ctx().control: the live row (an operator
         # toggle applies at once) or, in replay, the frozen RunConfig — never the
@@ -291,6 +313,12 @@ class PaperEngine:
         # ── SL / target on the ACTUAL entry; initial risk is written once ─────
         sl, tgt, rr, target_stretched = fills.entry_levels(
             actual_entry, signal.sl_pct, signal.target_pct, p.min_rr)
+        plan = xp.ExitPlan.from_dict(signal.exit_plan)
+        if plan is not None and plan.premium_target_pts:
+            # A premium-point target (Supertrend scalp) is the plan's own target
+            tgt = fills.ceil_tick(actual_entry + plan.premium_target_pts)
+            rr = (tgt - actual_entry) / (actual_entry - sl) if actual_entry > sl else 0.0
+            target_stretched = False
         initial_risk = round(actual_entry - sl, 2)
         rr = round(rr, 2)
 
@@ -298,9 +326,11 @@ class PaperEngine:
         brokerage = fills.brokerage(lots, p)
 
         # ── Spot ATR vs option SL distance check ──────────────────────────────
+        # Not for exit-plan positions: their real stop is the spot level the
+        # strategy chose, and its own filters (OR width, ADX) judge tradability.
         try:
             spot_atr = signal.indicators.get("atr") or 0.0
-            if spot_atr > 0:
+            if spot_atr > 0 and plan is None:
                 sl_distance_pts = actual_entry * signal.sl_pct
                 approx_delta = getattr(selected, "delta_est", None)
                 approx_delta = abs(approx_delta) if approx_delta else 0.0
@@ -373,6 +403,7 @@ class PaperEngine:
             r_source          = "ENTRY",
             original_quantity = qty,
             original_lots     = lots,
+            exit_plan         = plan.to_dict() if plan is not None else None,
         )
 
         async def _insert(db: AsyncSession) -> int:
@@ -728,6 +759,10 @@ class PaperEngine:
             # out on an old quote — wait for a fresh tick.
             await self._stale_defer(pos, ltp, age)
             return
+        plan = xp.ExitPlan.from_dict(pos.exit_plan)
+        if plan is not None:
+            await self._check_plan(pos, plan, ltp, tick)
+            return
         if pos.target and ltp >= pos.target:
             await self._close_position(pos.id, pos.target, "TARGET")
             self._forget(pos.id)
@@ -793,6 +828,156 @@ class PaperEngine:
                 )
                 await self._close_position(pos.id, ltp, "TIMEOUT")
                 self._forget(pos.id)
+
+    # ── Exit plans (exit_plan.py) ─────────────────────────────────────────────
+
+    async def _spot_price(self, underlying: str) -> Optional[float]:
+        """Fresh spot LTP, or None (a stale/missing spot only skips spot checks)."""
+        try:
+            token = _spot_token(underlying)
+            spot = await market().get_ltp(token)
+            age = _tick_age_seconds(await market().get_tick(token))
+        except Exception:
+            return None
+        if not spot or age is None or age > params().stale_tick_seconds:
+            return None
+        return float(spot)
+
+    async def _check_plan(self, pos: PaperPosition, plan: "xp.ExitPlan", ltp: float,
+                          tick: Optional[dict]) -> None:
+        """Monitor pass for an exit-plan position, after EOD / premium SL /
+        staleness (the caller's step 1): the premium-point TARGET, then the
+        spot actions in exit_plan.tick_action order."""
+        if plan.premium_target_pts and pos.target and ltp >= pos.target:
+            await self._close_position(pos.id, pos.target, xp.TARGET)
+            self._forget(pos.id)
+            return
+        spot = await self._spot_price(pos.underlying)
+        if spot is None:
+            self._warn_price(pos.id, "[PaperEngine] No fresh %s spot price for pos %d — "
+                             "spot stop/target not evaluated (premium stop still live)",
+                             pos.underlying, pos.id)
+        hold = None
+        if pos.entry_time:
+            entry_utc = pos.entry_time
+            if entry_utc.tzinfo is None:
+                entry_utc = entry_utc.replace(tzinfo=timezone.utc)
+            hold = (now_utc() - entry_utc).total_seconds() / 60
+        action = xp.tick_action(plan, spot, hold)
+        if action in (xp.SPOT_SL, xp.TARGET, xp.TIME_EXIT):
+            logger.info("[PaperEngine] plan exit %s pos %d (%s) spot=%s ltp=%.2f",
+                        action, pos.id, pos.strategy_name, spot, ltp)
+            await self._close_position(pos.id, ltp, action)
+            self._forget(pos.id)
+            return
+        if action == xp.T1_PARTIAL:
+            # Book half (needs >= 2 lots); the stop goes to entry either way
+            if (pos.lots or 0) >= 2:
+                if not pos.partial_closed:
+                    await self._partial_close(pos, ltp, tick)
+            elif not pos.partial_skipped:
+                await self._skip_partial(pos, ltp)
+            plan.t1_done = True
+            await self._plan_stop_to_entry(pos, plan, ltp, action)
+        elif action == xp.BREAKEVEN:
+            plan.breakeven_done = True
+            await self._plan_stop_to_entry(pos, plan, ltp, action)
+
+    async def _plan_stop_to_entry(self, pos: PaperPosition, plan: "xp.ExitPlan",
+                                  ltp: float, label: str) -> None:
+        """Spot stop → spot entry and premium stop → actual entry (never looser)."""
+        xp.move_stop_to_entry(plan)
+        live_sl = pos.trailing_sl or pos.stop_loss
+        new_sl = round(pos.actual_entry, 2)
+        values = {"exit_plan": plan.to_dict()}
+        if live_sl is None or new_sl > live_sl:
+            values.update(stop_loss=new_sl, trailing_sl=new_sl)
+        async with sessions()() as db:
+            await db.execute(update(PaperPosition).where(PaperPosition.id == pos.id)
+                             .values(**values))
+            db.add(PositionEvent(
+                position_id=pos.id, run_id=ctx().run_id, event_type="TRAIL_ADVANCE",
+                occurred_at=now_utc(), price=float(ltp), from_value=live_sl,
+                to_value=values.get("stop_loss", live_sl), tier_label=label,
+                detail={"spot_stop": plan.spot_stop},
+            ))
+            await db.commit()
+        pos.exit_plan = values["exit_plan"]
+        if "stop_loss" in values:
+            pos.stop_loss = pos.trailing_sl = new_sl
+        logger.info("[PaperEngine] %s pos %d: stop -> entry (premium %.2f, spot %.2f)",
+                    label, pos.id, new_sl, plan.spot_stop)
+
+    async def run_candle_exits(self, underlying: str, strategies: list, candles: list[dict],
+                               history: list[dict], indicators: dict) -> int:
+        """On every candle close: ask each open exit-plan position's strategy
+        for a bar exit (EMA trail, VWAP, Supertrend flip) and persist any stop
+        it trailed. Returns the number of positions closed."""
+        by_name = {s.name: s for s in strategies}
+        async with sessions()() as db:
+            open_pos = (await db.execute(select(PaperPosition).where(
+                PaperPosition.run_id == ctx().run_id,
+                PaperPosition.underlying == underlying,
+                PaperPosition.is_open == True))).scalars().all()  # noqa: E712
+        closed = 0
+        for pos in open_pos:
+            plan = xp.ExitPlan.from_dict(pos.exit_plan)
+            strat = by_name.get(pos.strategy_name)
+            if plan is None or strat is None:
+                continue
+            before = plan.to_dict()
+            strat.history = history
+            reason = strat.candle_exit(plan, candles, indicators)
+            if reason:
+                price, stale = await self._resolve_exit_price(pos)
+                if price is None:
+                    continue
+                logger.info("[PaperEngine] candle exit %s pos %d (%s)", reason, pos.id,
+                            pos.strategy_name)
+                await self._close_position(pos.id, price, reason + ("_STALE" if stale else ""))
+                self._forget(pos.id)
+                closed += 1
+            elif plan.to_dict() != before:
+                async with sessions()() as db:
+                    await db.execute(update(PaperPosition).where(
+                        PaperPosition.id == pos.id, PaperPosition.is_open == True)  # noqa: E712
+                        .values(exit_plan=plan.to_dict()))
+                    await db.commit()
+        return closed
+
+    async def _close_opposite(self, signal: SignalEvent) -> int:
+        """Close open positions on the signal's underlying that face the other way."""
+        want = "PE" if signal.direction == Direction.BUY else "CE"
+        async with sessions()() as db:
+            rows = (await db.execute(select(PaperPosition).where(
+                PaperPosition.run_id == ctx().run_id,
+                PaperPosition.underlying == signal.underlying,
+                PaperPosition.option_type == want,
+                PaperPosition.is_open == True))).scalars().all()  # noqa: E712
+        closed = 0
+        for pos in rows:
+            price, stale = await self._resolve_exit_price(pos)
+            if price is None:
+                continue
+            logger.info("[PaperEngine] OPPOSITE_SIGNAL closes pos %d (%s %s) on %s %s",
+                        pos.id, pos.strategy_name, want, signal.strategy_name,
+                        signal.direction.value)
+            await self._close_position(pos.id, price,
+                                       xp.OPPOSITE_SIGNAL + ("_STALE" if stale else ""))
+            self._forget(pos.id)
+            closed += 1
+        return closed
+
+    def _notify_closed(self, pos: PaperPosition, reason: str) -> None:
+        """Tell the owning strategy instance (its per-day trade rules). Never raises."""
+        try:
+            from app.services.trading.strategy_runner import strategy_runner
+            strat = strategy_runner.find_strategy(pos.underlying, pos.strategy_name)
+            if strat is not None:
+                strat.position_closed(_position_direction(pos), reason)
+        except Exception as exc:
+            logger.warning("[PaperEngine] strategy close hook failed for pos %s: %s",
+                           getattr(pos, "id", "?"), exc)
 
     async def _stale_defer(self, pos: PaperPosition, ltp: float, age: Optional[float]) -> None:
         """One STALE_DEFER position event per position per minute (ctx clock)."""
@@ -1080,6 +1265,7 @@ class PaperEngine:
                 context=no_trade.as_context(leg="EXIT", source=exit_source, reason=reason))
 
         # Nothing to release: the row just left open_capital_used's sum (is_open = false).
+        self._notify_closed(pos, reason)
 
         # Cleanup Redis
         await market().delete(f"pos:{pos_id}")

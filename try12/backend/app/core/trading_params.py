@@ -38,7 +38,9 @@ MAX_FIXED_FRACTION_PCT = 40.0      # % of capital one trade may be sized on (the
 
 
 def _default_max_hold() -> dict[str, int]:
-    return {"VWAP_REVERSAL": 25, "RSI_VWAP": 25, "VWAP_PULLBACK": 25, "DEFAULT": 45}
+    # Generic premium-ladder positions only; the three strategies carry their
+    # own time stops in the exit plan (ORB 45 min, Supertrend 10 min).
+    return {"DEFAULT": 45}
 
 
 def _default_dte_bands() -> dict[str, tuple[tuple[int, int], ...]]:

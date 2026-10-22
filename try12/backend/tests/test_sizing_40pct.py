@@ -71,7 +71,7 @@ def _rows(Session, model):
     return run(_all())
 
 
-def _decide(Session, strategy="VWAP_PULLBACK") -> FractionDecision:
+def _decide(Session, strategy="VWAP_EMA_PULLBACK") -> FractionDecision:
     async def _go():
         async with Session() as db:
             return await fraction_decision(db, strategy)
@@ -226,7 +226,7 @@ WEAK_EDGE = dict(winning_trades_r=16, losing_trades_r=14, sum_r_win=32.0, sum_r_
 def test_kelly_never_exceeds_the_fixed_fraction(runtime_ctx, sqlite_db, fixed, cap, edge):
     async def _seed():
         async with sqlite_db() as db:
-            db.add(StrategyPerf(strategy_name="VWAP_PULLBACK", run_id="PAPER", **edge))
+            db.add(StrategyPerf(strategy_name="VWAP_EMA_PULLBACK", run_id="PAPER", **edge))
             await db.commit()
     run(_seed())
     with using(_ctx40(runtime_ctx, fixed_fraction_pct=fixed, kelly_fraction_cap_pct=cap)):

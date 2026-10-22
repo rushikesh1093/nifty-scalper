@@ -71,7 +71,23 @@ def test_migration_chain_0010_to_0013():
         assert callable(mod.upgrade) and callable(mod.downgrade)
         prev = rev
     heads = sorted(p.name for p in VERSIONS.glob("*.py"))
-    assert heads[-1] == "0013_config_params_and_renames.py"
+    assert heads[-1] == "0014_position_exit_plan.py"
+
+
+def test_migration_0014_adds_the_exit_plan_column():
+    mod = _load("0014_position_exit_plan.py")
+    assert (mod.revision, mod.down_revision) == ("0014", "0013")
+    assert callable(mod.upgrade) and callable(mod.downgrade)
+    from app.db.models.paper_trade import PaperPosition
+    assert PaperPosition.__table__.c.exit_plan.nullable is True
+
+
+def test_exit_plan_round_trips(sqlite_db):
+    plan = {"strategy": "ORB_BREAKOUT", "side": "BUY", "spot_entry": 22075.0,
+            "spot_stop": 22030.0, "spot_target": 22120.0, "t1_done": False}
+    pid = run(add_position(sqlite_db, exit_plan=plan))
+    assert run(get_position(sqlite_db, pid)).exit_plan == plan
+    assert run(get_position(sqlite_db, run(add_position(sqlite_db)))).exit_plan is None
 
 
 # ── §11 column contract on the ORM ───────────────────────────────────────────

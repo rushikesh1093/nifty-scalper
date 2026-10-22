@@ -29,7 +29,7 @@ def _closed(Session, ctx, nets, strategies=None, minutes_ago=60, step=5):
     now = ctx.clock.now_utc()
     n = len(nets)
     for i, net in enumerate(nets):
-        strat = (strategies[i] if strategies else "VWAP_PULLBACK")
+        strat = (strategies[i] if strategies else "VWAP_EMA_PULLBACK")
         run(add_closed(Session, net=net, strategy=strat,
                        at=now - timedelta(minutes=minutes_ago + (n - 1 - i) * step)))
 
@@ -41,7 +41,7 @@ def _streak(Session, ctx):
     return run(_go())
 
 
-def _gate(Session, strategy="VWAP_PULLBACK"):
+def _gate(Session, strategy="VWAP_EMA_PULLBACK"):
     async def _go():
         async with Session() as db:
             return await risk_gate.evaluate_pre_selection(
@@ -53,7 +53,7 @@ def test_three_consecutive_losses_halt_the_day(day, sqlite_db):
     _closed(sqlite_db, day, [-100, -100, -100], strategies=["EMA_VWAP", "OI_SPIKE", "CPR_VWAP"])
     s = _streak(sqlite_db, day)
     assert s.consecutive_losses == 3 and s.global_halt
-    gate = _gate(sqlite_db, "ORB_VWAP")
+    gate = _gate(sqlite_db, "ORB_BREAKOUT")
     assert gate.allowed is False and gate.code.value == "LOSING_STREAK_HALT"
     assert gate.context["consecutive_losses"] == 3
     (halt,) = [h for h in _halts(sqlite_db) if h.halt_type == "LOSING_STREAK"]
@@ -70,12 +70,12 @@ def _halts(Session):
 def test_two_losses_do_not_halt_the_day(day, sqlite_db):
     _closed(sqlite_db, day, [-100, -100], strategies=["EMA_VWAP", "OI_SPIKE"])
     assert _streak(sqlite_db, day).global_halt is False
-    assert _gate(sqlite_db, "ORB_VWAP").allowed is True
+    assert _gate(sqlite_db, "ORB_BREAKOUT").allowed is True
 
 
 def test_a_win_resets_the_streak(day, sqlite_db):
     _closed(sqlite_db, day, [-100, -100, 250, -100],
-            strategies=["EMA_VWAP", "OI_SPIKE", "CPR_VWAP", "ORB_VWAP"])
+            strategies=["EMA_VWAP", "OI_SPIKE", "CPR_VWAP", "ORB_BREAKOUT"])
     s = _streak(sqlite_db, day)
     assert s.consecutive_losses == 1 and not s.global_halt
     assert _gate(sqlite_db, "PDH_PDL").allowed is True
@@ -84,7 +84,7 @@ def test_a_win_resets_the_streak(day, sqlite_db):
 def test_a_flat_trade_is_neutral(day, sqlite_db):
     """abs(net) <= ₹1 neither increments nor resets (R10.5)."""
     _closed(sqlite_db, day, [-100, 0.5, -100, -1.0, -100],
-            strategies=["EMA_VWAP", "OI_SPIKE", "CPR_VWAP", "ORB_VWAP", "PDH_PDL"])
+            strategies=["EMA_VWAP", "OI_SPIKE", "CPR_VWAP", "ORB_BREAKOUT", "PDH_PDL"])
     s = _streak(sqlite_db, day)
     assert s.consecutive_losses == 3 and s.global_halt        # the flats neither broke nor added
     run(add_closed(sqlite_db, net=1.0, strategy="RSI_VWAP",
@@ -111,18 +111,18 @@ def test_cooldown_blocks_for_15_minutes_then_expires(day, sqlite_db):
 
 
 def test_two_losses_in_one_strategy_disable_only_that_strategy(day, sqlite_db):
-    _closed(sqlite_db, day, [-100, -100], strategies=["VWAP_PULLBACK", "VWAP_PULLBACK"])
+    _closed(sqlite_db, day, [-100, -100], strategies=["VWAP_EMA_PULLBACK", "VWAP_EMA_PULLBACK"])
     s = _streak(sqlite_db, day)
-    assert s.halted_strategies == frozenset({"VWAP_PULLBACK"}) and not s.global_halt
-    halted = _gate(sqlite_db, "VWAP_PULLBACK")
+    assert s.halted_strategies == frozenset({"VWAP_EMA_PULLBACK"}) and not s.global_halt
+    halted = _gate(sqlite_db, "VWAP_EMA_PULLBACK")
     assert halted.allowed is False and halted.code.value == "STRATEGY_DAILY_HALT"
-    assert _gate(sqlite_db, "EMA_VWAP").allowed is True
+    assert _gate(sqlite_db, "SUPERTREND_EMA").allowed is True
     # and the strategy map reports it with the closed-set reason
-    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "VWAP_PULLBACK") == \
+    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "VWAP_EMA_PULLBACK") == \
         (False, "daily_strategy_halt")
-    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "EMA_VWAP")[0] is True
+    assert strategy_orchestrator.is_strategy_enabled("NIFTY", "SUPERTREND_EMA")[0] is True
     assert [h.scope for h in _halts(sqlite_db) if h.halt_type == "STRATEGY_STREAK"] == \
-        ["VWAP_PULLBACK"]
+        ["VWAP_EMA_PULLBACK"]
 
 
 def test_state_survives_a_restart(day, sqlite_db):
@@ -143,7 +143,7 @@ def test_only_todays_trades_count(day, sqlite_db):
 
 def test_an_operator_release_suppresses_the_halt_for_the_day(day, sqlite_db):
     _closed(sqlite_db, day, [-100, -100, -100], strategies=["EMA_VWAP", "OI_SPIKE", "CPR_VWAP"])
-    assert _gate(sqlite_db, "ORB_VWAP").code.value == "LOSING_STREAK_HALT"
+    assert _gate(sqlite_db, "ORB_BREAKOUT").code.value == "LOSING_STREAK_HALT"
 
     async def _release():
         async with sqlite_db() as db:
@@ -162,13 +162,13 @@ def test_three_sub_1r_losses_engage_the_streak_halt_before_the_loss_cap(day, sql
     """−₹100 each is far below 1R (1.5% of capital = ₹3,000), so only the global
     streak halt can bind: the one scenario in which it fires at the D2 defaults."""
     _closed(sqlite_db, day, [-100, -100, -100], strategies=["EMA_VWAP", "OI_SPIKE", "CPR_VWAP"])
-    gate = _gate(sqlite_db, "ORB_VWAP")
+    gate = _gate(sqlite_db, "ORB_BREAKOUT")
     assert gate.code.value == "LOSING_STREAK_HALT"
 
 
 def test_two_full_losses_engage_the_daily_loss_cap_first(day, sqlite_db):
     _closed(sqlite_db, day, [-3000, -3000], strategies=["EMA_VWAP", "OI_SPIKE"])
-    gate = _gate(sqlite_db, "ORB_VWAP")
+    gate = _gate(sqlite_db, "ORB_BREAKOUT")
     assert gate.code.value == "DAILY_LOSS_CAP"
     assert _streak(sqlite_db, day).global_halt is False
 

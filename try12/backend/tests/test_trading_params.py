@@ -53,7 +53,7 @@ def test_section_19_1_defaults():
         3.0, 50_000, 1_000, 2.0, 40.0)
     assert p.premium_band == {"NIFTY": (10.0, 700.0), "BANKNIFTY": (10.0, 1500.0)}
     assert (p.slippage_pct, p.quote_slippage_pct) == (0.2, 0.05)
-    assert p.max_hold_minutes == {"VWAP_REVERSAL": 25, "RSI_VWAP": 25, "VWAP_PULLBACK": 25, "DEFAULT": 45}
+    assert p.max_hold_minutes == {"DEFAULT": 45}   # plan strategies carry their own time stops
     assert p.timeout_exit_min_gain_pct == 5.0
     assert p.r_flat_epsilon == 0.01
     assert p.brokerage_per_lot_per_leg == 20.0
@@ -168,7 +168,7 @@ def test_transition_cooldown_seven_is_allowed():
 
 
 def test_max_hold_missing_default():
-    _assert_one_naming(_violations(max_hold_minutes={"RSI_VWAP": 25}), "max_hold_minutes")
+    _assert_one_naming(_violations(max_hold_minutes={"ORB_BREAKOUT": 25}), "max_hold_minutes")
 
 
 def test_max_hold_unknown_strategy():

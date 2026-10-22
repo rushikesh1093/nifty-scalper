@@ -1127,7 +1127,7 @@ def test_launch_options_shape(env):
     assert tuple(o["defaults"]["overrides"]) == jobs.DEFAULT_OVERRIDE_KEYS
     assert o["defaults"]["overrides"]["capital"] == 200000.0
     assert o["defaults"]["overrides"]["max_hold_minutes"] == \
-        {"DEFAULT": 45, "RSI_VWAP": 25, "VWAP_PULLBACK": 25, "VWAP_REVERSAL": 25}
+        {"DEFAULT": 45}
     assert o["defaults"]["seed"] == settings.REPLAY_DEFAULT_SEED
     assert o["underlyings"] == ["NIFTY", "BANKNIFTY"]
     assert (o["running_job_id"], o["max_concurrent_jobs"]) == (None, 1)

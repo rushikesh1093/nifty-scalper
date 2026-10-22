@@ -143,17 +143,17 @@ def _seed_rows(Session, rc):
                     code="DAILY_LOSS_HALT", underlying="NIFTY", reason="x",
                     context={"rejections": {"SPREAD_TOO_WIDE": 50}}))
                 # the SKIPPED twin of the NO_OPTION_AVAILABLE row: same tally, not re-counted
-                db.add(StrategySignal(strategy_name="ORB_VWAP", underlying="NIFTY",
+                db.add(StrategySignal(strategy_name="ORB_BREAKOUT", underlying="NIFTY",
                                       direction="BUY", spot_price=SPOT, signal_time=at,
                                       run_id=run_id,
                                       selection_rejections={"SPREAD_TOO_WIDE": 2,
                                                             "LIQUIDITY_TOO_LOW": 1}))
                 # a signal whose option WAS selected: the other strikes' rejections
-                db.add(StrategySignal(strategy_name="ORB_VWAP", underlying="NIFTY",
+                db.add(StrategySignal(strategy_name="ORB_BREAKOUT", underlying="NIFTY",
                                       direction="BUY", spot_price=SPOT, signal_time=at,
                                       run_id=run_id, suggested_token="NIFTY-CE-22600",
                                       selection_rejections={"VOLUME_INSUFFICIENT": 4}))
-                db.add(StrategySignal(strategy_name="ORB_VWAP", underlying="BANKNIFTY",
+                db.add(StrategySignal(strategy_name="ORB_BREAKOUT", underlying="BANKNIFTY",
                                       direction="BUY", spot_price=48000.0, signal_time=at,
                                       run_id=run_id, suggested_token="BN-1",
                                       selection_rejections={"QUOTE_STALE": 7}))

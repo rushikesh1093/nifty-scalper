@@ -236,6 +236,19 @@ class ReplayMarketData:
         if token in self.overrides:
             return copy.deepcopy(self.overrides[token])
         now = self.clock.now_utc()
+        if token in self.spot_tokens:
+            # The spot index has candles, not ticks: the last CLOSED candle is the
+            # tick, stamped at its close (same price get_ltp returns), so spot
+            # exits see a price whose age is known.
+            s = self.candles.get(token)
+            hit = s.at_or_before(now) if s is not None else None
+            if hit is None:
+                return None
+            close_at, c = hit
+            return {"token": token, "ltp": float(c["close"]), "open": c.get("open"),
+                    "high": c.get("high"), "low": c.get("low"), "close": c.get("close"),
+                    "volume": c.get("volume"), "oi": None, "best_bid": None,
+                    "best_ask": None, "ts": utc(close_at).isoformat()}
         s = self.ticks.get(token)
         hit = s.at_or_before(now) if s is not None else None
         if hit is not None:

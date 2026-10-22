@@ -200,7 +200,6 @@ def reset_process_state() -> None:
     strategy_orchestrator._flag_state.clear()
     strategy_orchestrator._current_regime.clear()
     getattr(strategy_orchestrator, "_daily_halts", {}).clear()
-    strategy_runner._oi_iv_warned.clear()
     strategy_runner._seen.clear()
     strategy_runner._seen_day = None
     strategy_runner._strategy_gate_last.clear()

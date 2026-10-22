@@ -50,9 +50,15 @@ class RegimeRule(NamedTuple):
 
 # ── REGIME_RULES (design §6.2) ───────────────────────────────────────────────
 # 13 keys: 7 tradeable regimes, 5 no-trade regimes and the legacy UNKNOWN
-# alias. Every one of the 12 strategies is enabled somewhere (NEVER_ENABLED is
-# empty) and every multiplier is in POSITION_MULTIPLIERS. Startup checks 2-5
-# assert all of that (app/services/trading/startup_checks.py).
+# alias. Every strategy is enabled somewhere (NEVER_ENABLED is empty) and
+# every multiplier is in POSITION_MULTIPLIERS. Startup checks 2-5 assert all
+# of that (app/services/trading/startup_checks.py).
+#
+#   VWAP_EMA_PULLBACK  trend days only (fails when price keeps crossing VWAP)
+#   SUPERTREND_EMA     trend + breakout swings (ADX filters the chop)
+#   ORB_BREAKOUT       every tradeable regime: its own OR-width filter is the
+#                      low-volatility guard, and the regime is rarely settled
+#                      by the 09:30-11:00 entry window
 
 _BUY = frozenset({"BUY"})
 _SELL = frozenset({"SELL"})
@@ -65,35 +71,31 @@ SAFETY_BLOCKED_REGIMES = frozenset({
     "UNCLASSIFIED", "REGIME_TRANSITION", "HIGH_VOL_CHOP", "DETECTOR_ERROR", "UNKNOWN",
 })
 
-_TREND = frozenset({S.VWAP_PULLBACK.value, S.EMA_VWAP.value, S.SUPERTREND_VWAP.value,
-                    S.CPR_VWAP.value, S.OI_SPIKE.value})
-_BREAKOUT = frozenset({S.ORB_VWAP.value, S.PDH_PDL.value, S.BOLLINGER_BREAKOUT.value,
-                       S.OI_SPIKE.value, S.IV_CRUSH.value})
+_TREND = frozenset({S.VWAP_EMA_PULLBACK.value, S.SUPERTREND_EMA.value, S.ORB_BREAKOUT.value})
+_BREAKOUT = frozenset({S.ORB_BREAKOUT.value, S.SUPERTREND_EMA.value})
 
 REGIME_RULES: dict[str, RegimeRule] = {
     # ── Trend regimes ────────────────────────────────────────────────────────
     "BULL_TREND_NORMAL_VOL": RegimeRule(
         enabled_strategies=_TREND, allowed_directions=_BUY, position_multiplier=1.0,
-        notes="Directional continuation with tradeable volatility — pullback and "
-              "trend-confirmation edges, CE only",
+        notes="Directional continuation with tradeable volatility — pullback, "
+              "momentum-flip and range-break edges, CE only",
     ),
     "BEAR_TREND_NORMAL_VOL": RegimeRule(
         enabled_strategies=_TREND, allowed_directions=_SELL, position_multiplier=1.0,
         notes="Mirror of BULL_TREND_NORMAL_VOL — PE only",
     ),
     "TREND_HIGH_VOL": RegimeRule(
-        enabled_strategies=frozenset({S.VWAP_PULLBACK.value, S.SUPERTREND_VWAP.value,
-                                      S.IV_CRUSH.value}),
+        enabled_strategies=frozenset({S.VWAP_EMA_PULLBACK.value, S.SUPERTREND_EMA.value}),
         # Both directions here; should_allow_signal narrows by price vs VWAP
         allowed_directions=_BOTH, position_multiplier=0.5,
-        notes="Trend intact but ATR elevated: the two widest-stop trend entries plus "
-              "the IV-expansion edge, half size",
+        notes="Trend intact but ATR elevated: pullback and momentum-flip entries, half size",
     ),
     # ── Breakout regimes ─────────────────────────────────────────────────────
     "BREAKOUT_EVENT_BULLISH": RegimeRule(
         enabled_strategies=_BREAKOUT, allowed_directions=_BUY,
         position_multiplier=1.0,          # 0.5 when ATR_percentile > 70 (get_regime_rule)
-        notes="Level broken on volume — range/level breakout edges",
+        notes="Level broken on volume — range break and momentum flip",
     ),
     "BREAKOUT_EVENT_BEARISH": RegimeRule(
         enabled_strategies=_BREAKOUT, allowed_directions=_SELL,
@@ -102,16 +104,15 @@ REGIME_RULES: dict[str, RegimeRule] = {
     ),
     # ── Compression / range regimes ──────────────────────────────────────────
     "LOW_VOL_COMPRESSION": RegimeRule(
-        enabled_strategies=frozenset({S.BOLLINGER_BREAKOUT.value, S.ORB_VWAP.value,
-                                      S.CPR_VWAP.value, S.GAP_VWAP_FILL.value}),
+        enabled_strategies=frozenset({S.ORB_BREAKOUT.value}),
         allowed_directions=_BOTH, position_multiplier=1.0,
-        notes="Coiled tape: squeeze-expansion and narrow-CPR/gap-fill edges",
+        notes="Coiled tape: only the opening-range break (its width filter applies)",
     ),
     "RANGE_NORMAL_VOL": RegimeRule(
-        enabled_strategies=frozenset({S.VWAP_REVERSAL.value, S.RSI_VWAP.value,
-                                      S.CPR_VWAP.value, S.GAP_VWAP_FILL.value}),
+        enabled_strategies=frozenset({S.ORB_BREAKOUT.value}),
         allowed_directions=_BOTH, position_multiplier=1.0,
-        notes="Mean reversion around VWAP / pivot / gap",
+        notes="Sideways: trend and momentum entries whipsaw here; only the "
+              "opening-range break may fire",
     ),
     # ── No-trade regimes (D7) ────────────────────────────────────────────────
     "HIGH_VOL_CHOP": RegimeRule(

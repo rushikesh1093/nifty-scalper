@@ -55,7 +55,7 @@ def _open(runtime_ctx, sqlite_db, fake_redis, monkeypatch, direction, strategy):
 def test_a_bearish_signal_buys_a_pe_and_never_sells_or_shorts_a_ce(
         runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     ok, positions = _open(runtime_ctx, sqlite_db, fake_redis, monkeypatch,
-                          Direction.SELL, "VWAP_REVERSAL")
+                          Direction.SELL, "ORB_BREAKOUT")
     assert ok is True and len(positions) == 1
     pos = positions[0]
     assert pos.direction == SignalDirection.BUY            # bought, never sold
@@ -66,7 +66,7 @@ def test_a_bearish_signal_buys_a_pe_and_never_sells_or_shorts_a_ce(
 
 def test_a_bullish_signal_buys_a_ce(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     ok, positions = _open(runtime_ctx, sqlite_db, fake_redis, monkeypatch,
-                          Direction.BUY, "RSI_VWAP")
+                          Direction.BUY, "ORB_BREAKOUT")
     assert ok is True and len(positions) == 1
     pos = positions[0]
     assert pos.direction == SignalDirection.BUY and pos.option_type == "CE"

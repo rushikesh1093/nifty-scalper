@@ -21,13 +21,19 @@ def vwap(high: np.ndarray, low: np.ndarray, close: np.ndarray,
     """
     Volume-weighted average price.
     Resets at session start (call with intraday candles only).
+
+    NSE index spot candles carry volume=0. With no volume yet, the session
+    average of the typical price stands in (equal weights), not the current
+    bar's own typical price — that made "close above VWAP" a statement about
+    one candle rather than the session.
     """
     h, l, c, v = _ensure(high), _ensure(low), _ensure(close), _ensure(volume)
     typical = (h + l + c) / 3.0
     cumtpv  = np.cumsum(typical * v)
     cumvol  = np.cumsum(v)
+    session_mean = np.cumsum(typical) / np.arange(1, len(typical) + 1)
     with np.errstate(invalid="ignore", divide="ignore"):
-        result = np.where(cumvol > 0, cumtpv / cumvol, typical)
+        result = np.where(cumvol > 0, cumtpv / cumvol, session_mean)
     return result
 
 
@@ -307,3 +313,61 @@ def compute_all(candles: list[dict]) -> dict:
         "low":           float(lows[-1]),
         "volume":        float(vols[-1]),
     }
+
+
+# ── Resampling 1-min candles to N-minute bars ─────────────────────────────────
+
+SESSION_OPEN_MINUTE = 9 * 60 + 15     # NSE cash/F&O open, 09:15 IST
+
+
+def resample(candles: list[dict], minutes: int) -> list[dict]:
+    """Group 1-min candles (oldest first) into *minutes*-minute bars aligned to
+    09:15 IST, per trading day. Only COMPLETED bars are returned: a bar is
+    complete once the 1-min candle of its last minute is present (or any later
+    candle). Each bar carries ``start`` / ``end`` (aware IST datetimes) and the
+    usual open/high/low/close/volume. Candles with unreadable timestamps or
+    before 09:15 are skipped.
+    """
+    from datetime import timedelta
+    from app.services.market_data.timestamps import try_normalize_candle_timestamp
+
+    stamped = []
+    for cd in candles:
+        dt = try_normalize_candle_timestamp(cd.get("timestamp"))
+        if dt is None:
+            continue
+        mins = dt.hour * 60 + dt.minute
+        if mins < SESSION_OPEN_MINUTE:
+            continue
+        stamped.append((dt.replace(second=0, microsecond=0), cd))
+    if not stamped:
+        return []
+    stamped.sort(key=lambda x: x[0])
+    last_start = stamped[-1][0]
+
+    bars: list[dict] = []
+    cur = None
+    for dt, cd in stamped:
+        mins = dt.hour * 60 + dt.minute
+        offset = (mins - SESSION_OPEN_MINUTE) // minutes * minutes
+        b_start = dt.replace(hour=(SESSION_OPEN_MINUTE + offset) // 60,
+                             minute=(SESSION_OPEN_MINUTE + offset) % 60)
+        if cur is None or cur["start"] != b_start:
+            if cur is not None:
+                bars.append(cur)
+            cur = {"start": b_start, "end": b_start + timedelta(minutes=minutes),
+                   "timestamp": b_start.isoformat(),
+                   "open": float(cd["open"]), "high": float(cd["high"]),
+                   "low": float(cd["low"]), "close": float(cd["close"]),
+                   "volume": float(cd.get("volume") or 0)}
+        else:
+            cur["high"] = max(cur["high"], float(cd["high"]))
+            cur["low"] = min(cur["low"], float(cd["low"]))
+            cur["close"] = float(cd["close"])
+            cur["volume"] += float(cd.get("volume") or 0)
+    if cur is not None:
+        bars.append(cur)
+    # The newest bar is complete only once its last minute has been seen.
+    if bars and last_start + timedelta(minutes=1) < bars[-1]["end"]:
+        bars.pop()
+    return bars

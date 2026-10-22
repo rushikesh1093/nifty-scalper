@@ -184,6 +184,8 @@ class PaperPosition(Base):
     hold_minutes            = Column(Float,   nullable=True)
     sizing_detail           = Column(JSON,    nullable=True)   # SizingDecision record
     entry_indicators        = Column(JSON,    nullable=True)   # indicator snapshot at entry
+    # Spot exit plan (exit_plan.ExitPlan.to_dict()); NULL = generic premium ladder
+    exit_plan               = Column(JSON,    nullable=True)
 
     __table_args__ = (
         Index("ix_pp_strategy_open",   "strategy_name", "is_open"),

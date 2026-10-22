@@ -81,7 +81,7 @@ def seed_config(Session, **overrides):
 def add_position(Session, **overrides) -> int:
     from app.db.models.paper_trade import PaperPosition, SignalDirection, TradingMode
     fields = dict(
-        strategy_name="VWAP_PULLBACK", token="OPT1", symbol="NIFTY06OCT2622600CE",
+        strategy_name="VWAP_EMA_PULLBACK", token="OPT1", symbol="NIFTY06OCT2622600CE",
         underlying="NIFTY", strike=22600.0, option_type="CE", direction=SignalDirection.BUY,
         lots=1, lot_size=65, quantity=65, entry_price=100.0, entry_slippage=0.0,
         actual_entry=100.0, stop_loss=85.0, initial_stop_loss=85.0, target=130.0,

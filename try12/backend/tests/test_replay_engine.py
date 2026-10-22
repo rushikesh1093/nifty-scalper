@@ -39,14 +39,14 @@ def charges(buy_value: float, sell_value: float, brokerage: float) -> float:
 
 # (strategy, exit_reason, actual_exit, gross, charges, r_multiple)
 EXPECTED = [
-    ("VWAP_PULLBACK", "SL", 84.80, (84.80 - ENTRY) * QTY,
+    ("VWAP_EMA_PULLBACK", "SL", 84.80, (84.80 - ENTRY) * QTY,
      charges(ENTRY * QTY, 84.80 * QTY, 120.0), (84.80 - ENTRY) / RISK),
-    ("EMA_VWAP", "SL", 117.75, (122.85 - ENTRY) * 65 + (117.75 - ENTRY) * 130,
+    ("SUPERTREND_EMA", "SL", 117.75, (122.85 - ENTRY) * 65 + (117.75 - ENTRY) * 130,
      round(charges(ENTRY * 65, 122.85 * 65, 40.0) + charges(ENTRY * 130, 117.75 * 130, 80.0), 2),
      ((65 * 122.85 + 130 * 117.75) / QTY - ENTRY) / RISK),
-    ("VWAP_PULLBACK", "TARGET", 129.87, (129.87 - ENTRY) * QTY,
+    ("VWAP_EMA_PULLBACK", "TARGET", 129.87, (129.87 - ENTRY) * QTY,
      charges(ENTRY * QTY, 129.87 * QTY, 120.0), (129.87 - ENTRY) / RISK),
-    ("EMA_VWAP", "SL", 79.90, (79.90 - ENTRY) * QTY,
+    ("SUPERTREND_EMA", "SL", 79.90, (79.90 - ENTRY) * QTY,
      charges(ENTRY * QTY, 79.90 * QTY, 120.0), (79.90 - ENTRY) / RISK),
 ]
 
@@ -176,18 +176,8 @@ def test_a_deactivated_instrument_master_is_tradeable(four_trade):
     assert day.universe_size >= 2 * 8 and day.chosen_expiry == "2026-09-03"
 
 
-def test_oi_and_iv_are_injected_under_replay(four_trade):
-    from app.strategies.strategies import IVCrushStrategy, OISpikeStrategy
-    [(missing,)] = _q(four_trade.SessA, select(CycleStats.oi_iv_context_missing).where(
-        CycleStats.run_id == four_trade.run1.run_id))
-    assert missing == 0
-    oi = next(s for s in four_trade.strategies_run1 if isinstance(s, OISpikeStrategy))
-    iv = next(s for s in four_trade.strategies_run1 if isinstance(s, IVCrushStrategy))
-    assert oi.ce_oi > 0 and oi.pe_oi > 0
-    assert iv.atm_iv == pytest.approx(14.0)
-    # user-disabled through the run's frozen flags, so neither traded
-    assert {p.strategy_name for p in positions(four_trade.SessA, four_trade.run1.run_id)} == \
-        {"VWAP_PULLBACK", "EMA_VWAP"}
+def test_only_the_scripted_strategies_trade_under_replay(four_trade):
+    assert {p.strategy_name for p in positions(four_trade.SessA, four_trade.run1.run_id)} ==         {"VWAP_EMA_PULLBACK", "SUPERTREND_EMA"}
 
 # ── per-day caps (R13.9) ─────────────────────────────────────────────────────
 
@@ -196,8 +186,8 @@ def test_the_daily_trade_cap_applies_per_replayed_day(tmp_path, monkeypatch):
     isolate_singletons(monkeypatch)
     times = ["10:00", "10:06", "10:12", "10:18", "10:24", "10:30"]
     path = {minute_index(t): 131.0 for t in times}       # every entry hits target next minute
-    schedule = {"VWAP_PULLBACK": {t: "BUY" for t in times[0::2]},
-                "EMA_VWAP": {t: "BUY" for t in times[1::2]}}
+    schedule = {"VWAP_EMA_PULLBACK": {t: "BUY" for t in times[0::2]},
+                "SUPERTREND_EMA": {t: "BUY" for t in times[1::2]}}
     Session, engine, url = make_db(tmp_path / "caps.db")
     fill_db(url, [DAY1, DAY2], scripted_quote(path))
     try:
