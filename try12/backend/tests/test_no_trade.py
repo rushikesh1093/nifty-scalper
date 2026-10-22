@@ -261,7 +261,7 @@ def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     stubs = [_Stub(n) for n in ALL_STRATEGY_NAMES]
     runner._strategies["NIFTY"] = stubs
 
-    async def _merge(underlying, candles, indicators, is_expiry_day, flags):
+    async def _merge(underlying, candles, indicators, is_expiry_day, flags, history=None):
         return {n: flags.get(n, True) for n in ALL_STRATEGY_NAMES}, None
 
     monkeypatch.setattr(runner, "_detect_and_merge_regime", _merge)
@@ -363,7 +363,7 @@ def test_skip_loop_records_user_and_regime_disables_once(quiet_runner, sqlite_db
 
     runner, stubs, feed = quiet_runner
 
-    async def _merge(underlying, candles, indicators, is_expiry_day, flags):
+    async def _merge(underlying, candles, indicators, is_expiry_day, flags, history=None):
         merged = {n: flags.get(n, True) for n in ALL_STRATEGY_NAMES}
         merged["IV_CRUSH"] = False                     # regime says no
         return merged, None

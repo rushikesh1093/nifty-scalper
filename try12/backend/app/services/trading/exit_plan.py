@@ -59,6 +59,10 @@ class ExitPlan:
     time_stop_minutes:   Optional[float] = None
     t1_done:             bool = False
     breakeven_done:      bool = False
+    # ISO start of the last bar the strategy's bar exits looked at (set to the
+    # trigger bar at entry). Every completed bar after it is checked once, so a
+    # runner cycle that skips a minute cannot skip a bar exit.
+    last_bar_start:      Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)

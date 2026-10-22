@@ -88,6 +88,7 @@ class RegimeDetector:
         underlying: str,
         is_expiry_day: bool = False,
         db_session=None,
+        history: Optional[list[dict]] = None,
     ) -> RegimeState:
         """
         Classify the current market regime from candle data.
@@ -109,6 +110,7 @@ class RegimeDetector:
             underlying:    Instrument name, e.g. "NIFTY" or "BANKNIFTY".
             is_expiry_day: True when today is the weekly options expiry.
             db_session:    Optional async SQLAlchemy session for DB persistence.
+            history:       Optional multi-day candles (ADX / ATR-percentile warm-up).
 
         Returns:
             RegimeState — never raises.
@@ -120,7 +122,7 @@ class RegimeDetector:
 
             # Step 2: Build regime-specific indicators
             regime_indicators: RegimeIndicators = build_regime_indicators(
-                candles, indicators, config
+                candles, indicators, config, history=history
             )
 
             # Step 3: Previous states. After a restart the in-memory history is

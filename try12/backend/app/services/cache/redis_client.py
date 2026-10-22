@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 TTL_TICK         = 300      # LTP / tick data — raised from 60s to 300s so option
                             # selector doesn't see stale/None on low-liquidity strikes
                             # where ticks arrive every 2-5 minutes
-TTL_OHLC         = 28800    # OHLC candles — 8 hours (full trading day)
+TTL_OHLC         = 4 * 86400  # OHLC candles — 4 days, so yesterday's session (and a
+                            # weekend) survives overnight: the strategies' EMA / RSI /
+                            # Supertrend / ADX warm up on it. Lists are trimmed to 500
+                            # candles, so memory stays bounded.
 TTL_OPTION_CHAIN = 30       # Option chain — very fresh
 TTL_POSITIONS    = 10       # Positions — near real-time
 TTL_ORDER_BOOK   = 10

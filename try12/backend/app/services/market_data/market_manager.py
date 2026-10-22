@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 ATM_STRIKE_RADIUS = 10
 # How many historical 1m candles to seed on startup
 HISTORICAL_CANDLE_LIMIT = 390  # full trading day
+# Spot / futures seed: this many calendar days back (covers a weekend plus a
+# holiday), trimmed to the newest SEED_KEEP_CANDLES — yesterday's session plus
+# today's, which is what the strategies' indicators warm up on.
+SEED_LOOKBACK_DAYS = 6
+SEED_KEEP_CANDLES = 500
 
 
 class MarketManager:
@@ -84,11 +89,22 @@ class MarketManager:
             except Exception as exc:
                 logger.warning("Spot OHLC seed error for %s: %s", s_name, exc)
 
+        # 5c. Nearest-expiry index futures: the spot index carries no volume, and
+        # the ORB rule reads volume off the future. Published as fut_token:<NAME>.
+        fut_tokens = await self._nearest_futures()
+        for f_token, f_symbol, f_name in fut_tokens:
+            tick_writer.register_symbol(f_token, f_symbol)
+            try:
+                await self._seed_one_token_exchange(f_token, f_symbol, "NFO")
+            except Exception as exc:
+                logger.warning("Futures OHLC seed error for %s: %s", f_symbol, exc)
+            await redis_cache.set(f"fut_token:{f_name}", f_token, ttl=86400)
+
         # 6. Register tick handler
         market_feed.add_async_handler(self._on_tick)
 
         # 7. Subscribe to watchlist
-        nfo_tokens = [t for t, _ in watchlist]
+        nfo_tokens = [t for t, _ in watchlist] + [t for t, _, _ in fut_tokens]
         # Core NSE underlyings — VIX is subscribed separately below
         nse_tokens = [settings.NIFTY_TOKEN, settings.BANKNIFTY_TOKEN]
         market_feed.subscribe("NFO", nfo_tokens)
@@ -344,8 +360,9 @@ class MarketManager:
              and AngelOne refuses the historical call — the DB already has candles
              from earlier in the same day.
         """
+        from datetime import timedelta as _seed_td
         today = date.today()
-        from_dt = f"{today} 09:15"
+        from_dt = f"{today - _seed_td(days=SEED_LOOKBACK_DAYS)} 09:15"
         to_dt   = f"{today} 15:30"
 
         candle_dicts: list[dict] = []
@@ -403,7 +420,8 @@ class MarketManager:
                 session_open_utc = date.today()  # placeholder; built below
                 import datetime as _dt_mod
                 session_open_utc = _dt_mod.datetime.combine(
-                    today, _dt_mod.time(3, 45), tzinfo=_tz.utc  # 09:15 IST
+                    today - _seed_td(days=SEED_LOOKBACK_DAYS), _dt_mod.time(3, 45),
+                    tzinfo=_tz.utc  # 09:15 IST
                 )
 
                 async with AsyncSessionLocal() as db:
@@ -414,10 +432,10 @@ class MarketManager:
                             OHLC.interval == "ONE_MINUTE",
                             OHLC.timestamp >= session_open_utc,
                         )
-                        .order_by(OHLC.timestamp.asc())
-                        .limit(500)
+                        .order_by(OHLC.timestamp.desc())
+                        .limit(SEED_KEEP_CANDLES)
                     )
-                    rows = result.scalars().all()
+                    rows = list(reversed(result.scalars().all()))
 
                 if rows:
                     candle_dicts = [
@@ -452,7 +470,33 @@ class MarketManager:
                 logger.warning("DB fallback seed error for %s: %s", symbol, exc2)
 
         if candle_dicts:
-            await redis_cache.set_candles(token, "ONE_MINUTE", candle_dicts)
+            await redis_cache.set_candles(token, "ONE_MINUTE", candle_dicts[-SEED_KEEP_CANDLES:])
+
+    async def _nearest_futures(self) -> list[tuple[str, str, str]]:
+        """(token, symbol, underlying) of the nearest-expiry NIFTY / BANKNIFTY
+        index future in the synced instrument master; [] on any error."""
+        from sqlalchemy import select
+        from app.db.models.instrument import Instrument, InstrumentType
+        out: list[tuple[str, str, str]] = []
+        try:
+            async with AsyncSessionLocal() as db:
+                for name in ("NIFTY", "BANKNIFTY"):
+                    row = (await db.execute(
+                        select(Instrument).where(
+                            Instrument.name == name,
+                            Instrument.instrument_type == InstrumentType.FUTIDX,
+                            Instrument.expiry >= date.today(),
+                        ).order_by(Instrument.expiry).limit(1)
+                    )).scalar_one_or_none()
+                    if row is not None:
+                        out.append((row.token, row.symbol, name))
+                        logger.info("Futures for %s volume: %s (%s)", name, row.symbol, row.token)
+                    else:
+                        logger.warning("No %s index future in the instrument master — "
+                                       "ORB volume rule will not be checked", name)
+        except Exception as exc:
+            logger.warning("Futures lookup failed: %s", exc)
+        return out
 
     # ── Dynamic subscription management ──────────────────────────────────────
 

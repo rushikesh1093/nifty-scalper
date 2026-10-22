@@ -198,7 +198,8 @@ def test_startup_regime_checks_catch_a_broken_map(monkeypatch):
     broken["RANGE_NORMAL_VOL"] = broken["RANGE_NORMAL_VOL"]._replace(
         enabled_strategies=frozenset({"PCR" + "_SIGNAL"}), position_multiplier=0.3)
     del broken["UNKNOWN"]
-    for k in ("TREND_HIGH_VOL", "BULL_TREND_NORMAL_VOL", "BEAR_TREND_NORMAL_VOL"):
+    for k in ("TREND_HIGH_VOL", "BULL_TREND_NORMAL_VOL", "BEAR_TREND_NORMAL_VOL",
+              "BREAKOUT_EVENT_BULLISH", "BREAKOUT_EVENT_BEARISH"):
         broken[k] = broken[k]._replace(enabled_strategies=frozenset())
     monkeypatch.setattr(regime_rules, "REGIME_RULES", broken)
     v = " | ".join(check_regime_map())

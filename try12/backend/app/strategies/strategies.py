@@ -30,7 +30,7 @@ Entry is "next candle's open": the signal is evaluated as soon as the bar
 closes and filled at market straight away, which is that open.
 """
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from typing import Optional
 
 import numpy as np
@@ -39,7 +39,7 @@ from app.runtime.context import now_utc, params, trading_day
 from app.services.trading import exit_plan as xp
 from app.services.trading.exit_plan import ExitPlan
 from app.strategies.base import BaseStrategy, Direction, SignalEvent
-from app.strategies.indicators import ema, resample, rsi, supertrend
+from app.strategies.indicators import ema, resample, rsi, supertrend, vwap
 from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
 from app.services.market_data.timestamps import try_normalize_candle_timestamp
 
@@ -60,16 +60,37 @@ def _ts(candle: dict) -> Optional[datetime]:
     return try_normalize_candle_timestamp(candle.get("timestamp"))
 
 
-def _just_closed(bars: list[dict], candles: list[dict]) -> bool:
-    """The newest completed bar closed with the newest 1-min candle, i.e. this
-    is the cycle in which the bar completed (bar exits run once per bar)."""
-    if not bars or not candles:
-        return False
-    last = _ts(candles[-1])
-    if last is None:
-        return False
-    return (last.replace(second=0, microsecond=0) - bars[-1]["start"]).total_seconds() / 60 \
-        == (bars[-1]["end"] - bars[-1]["start"]).total_seconds() / 60 - 1
+def _new_bars(plan, bars: list[dict]) -> list[int]:
+    """Indexes of the completed bars the plan's bar exits have not seen yet,
+    oldest first, and mark them seen. Walking every one (not only the newest)
+    means a runner cycle that skips a minute cannot skip a bar exit. A plan
+    without a mark (written before the field existed) sees the newest bar."""
+    if not bars:
+        return []
+    if plan.last_bar_start is None:
+        idx = [len(bars) - 1]
+    else:
+        seen = datetime.fromisoformat(plan.last_bar_start)
+        idx = [i for i, b in enumerate(bars) if b["start"] > seen]
+    if idx:
+        plan.last_bar_start = bars[idx[-1]]["start"].isoformat()
+    return idx
+
+
+def _session_vwap_at(candles: list[dict]) -> dict:
+    """Today's session VWAP after each 1-min candle, keyed by the candle's close
+    time (aware IST), so a bar's VWAP is the value at the bar's end."""
+    today = trading_day()
+    rows = [(dt, c) for c in candles if (dt := _ts(c)) is not None and dt.date() == today]
+    if not rows:
+        return {}
+    h = np.array([float(c["high"]) for _, c in rows])
+    l = np.array([float(c["low"]) for _, c in rows])
+    cl = np.array([float(c["close"]) for _, c in rows])
+    v = np.array([float(c.get("volume") or 0) for _, c in rows])
+    series = vwap(h, l, cl, v)
+    return {dt.replace(second=0, microsecond=0) + timedelta(minutes=1): float(x)
+            for (dt, _), x in zip(rows, series)}
 
 
 class _PlanStrategy(BaseStrategy):
@@ -102,8 +123,20 @@ class _PlanStrategy(BaseStrategy):
             return True
         return False
 
+    def restore_day(self, positions: list) -> None:
+        """Rebuild today's per-strategy state from this strategy's persisted
+        positions (oldest first) after a restart: the open count here, the
+        trade rules in subclasses. Marks the day as already rolled."""
+        self._day = trading_day()
+        self.open_positions = sum(1 for p in positions if p.is_open)
+
     def _plan_signal(self, direction: Direction, spot: float, indicators: dict,
-                     notes: str, plan: ExitPlan) -> Optional[SignalEvent]:
+                     notes: str, plan: ExitPlan,
+                     bar_start: Optional[datetime] = None) -> Optional[SignalEvent]:
+        # Bar exits start after the trigger bar (the bar of this strategy's timeframe)
+        start = bar_start or self._last_bar_start
+        if start is not None and plan.last_bar_start is None:
+            plan.last_bar_start = start.isoformat()
         problems = plan.validate()
         if problems:
             logger.debug("[%s] plan rejected: %s", self.name, "; ".join(problems))
@@ -189,15 +222,21 @@ class VWAPEMAPullbackStrategy(_PlanStrategy):
 
     def candle_exit(self, plan, candles, indicators) -> Optional[str]:
         bars = self._bars(candles)
-        if len(bars) < 22 or not _just_closed(bars, candles):
+        if len(bars) < 22:
             return None
-        c = bars[-1]["close"]
-        vwap_v = indicators.get("vwap")
-        if vwap_v is not None and xp.breached(plan.side, c, vwap_v):
-            return xp.VWAP_EXIT                      # hard exit: closed back across VWAP
-        if plan.t1_done:
-            e9, _, _ = self._emas(bars)
-            if not np.isnan(e9[-1]) and xp.breached(plan.side, c, float(e9[-1])):
+        new = _new_bars(plan, bars)
+        if not new:
+            return None
+        vwap_at = _session_vwap_at(candles)
+        e9, _, _ = self._emas(bars)
+        for i in new:
+            c = bars[i]["close"]
+            vwap_v = vwap_at.get(bars[i]["end"])
+            if vwap_v is None and i == len(bars) - 1:
+                vwap_v = indicators.get("vwap")
+            if vwap_v is not None and xp.breached(plan.side, c, vwap_v):
+                return xp.VWAP_EXIT                  # hard exit: closed back across VWAP
+            if plan.t1_done and not np.isnan(e9[i]) and xp.breached(plan.side, c, float(e9[i])):
                 return xp.EMA_TRAIL                  # runner closed on the wrong side of EMA 9
         return None
 
@@ -212,6 +251,7 @@ class ORBBreakoutStrategy(_PlanStrategy):
     OR_START, OR_END = dtime(9, 15), dtime(9, 30)
     MIN_WIDTH, MAX_WIDTH = 40.0, 120.0
     VOL_MULT, VOL_BARS = 1.2, 5
+    MIN_VOL_BARS = 3       # a 09:35 breakout has only 4 earlier bars that day
     LAST_ENTRY = dtime(11, 0)
     TIME_STOP_MINUTES = 45
     BREAKEVEN_FRAC = 0.5
@@ -219,6 +259,34 @@ class ORBBreakoutStrategy(_PlanStrategy):
     def __init__(self, underlying: str = "NIFTY"):
         super().__init__(underlying)
         self._trades: list[list] = []          # [direction, exit_reason | None] per trade today
+        # Nearest-expiry index-future 1-min candles (per-minute volume), set by
+        # the runner each cycle. Empty → the volume rule cannot be checked.
+        self.futures_candles: list[dict] = []
+        self._vol_warned_day = None
+
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._trades = [[Direction.SELL if (p.option_type or "").upper() == "PE" else Direction.BUY,
+                         None if p.is_open else p.exit_reason] for p in positions]
+
+    def _volume_ok(self, bar: dict) -> bool:
+        """Futures volume of *bar* > VOL_MULT × the average of the (up to)
+        VOL_BARS bars before it that day, needing at least MIN_VOL_BARS. No
+        futures volume (replay, feed gap) → not checked, logged once a day;
+        the index spot itself carries no volume."""
+        fut = resample(self.futures_candles, self.BAR_MINUTES) if self.futures_candles else []
+        by_start = {b["start"]: b for b in fut}
+        cur = by_start.get(bar["start"])
+        prior = [b for b in fut if b["start"] < bar["start"]
+                 and b["start"].date() == bar["start"].date()][-self.VOL_BARS:]
+        if cur is None or len(prior) < self.MIN_VOL_BARS or not cur["volume"]:
+            if self._vol_warned_day != trading_day():
+                self._vol_warned_day = trading_day()
+                logger.warning("[%s] no futures volume for %s bars — volume rule not checked",
+                               self.name, self.underlying)
+            return True
+        avg = float(np.mean([b["volume"] for b in prior]))
+        return avg > 0 and cur["volume"] > self.VOL_MULT * avg
 
     def opening_range(self, candles) -> Optional[tuple[float, float]]:
         """(high, low) of today's 09:15-09:29 one-minute candles, or None until
@@ -271,14 +339,13 @@ class ORBBreakoutStrategy(_PlanStrategy):
             return None
 
         c, prev_c = last["close"], bars[-2]["close"]
-        prior = [b["volume"] for b in bars[-1 - self.VOL_BARS:-1]]
-        avg_vol = float(np.mean(prior)) if prior else 0.0
-        # NSE index spot carries no volume; without volume data the check is skipped
-        vol_ok = last["volume"] > self.VOL_MULT * avg_vol if (avg_vol > 0 and last["volume"] > 0) \
-            else True
+        up = c > or_high and prev_c <= or_high and self._allowed(Direction.BUY)
+        down = c < or_low and prev_c >= or_low and self._allowed(Direction.SELL)
+        if not (up or down) or not self._volume_ok(last):
+            return None
         mid = round((or_high + or_low) / 2, 2)
 
-        if c > or_high and prev_c <= or_high and vol_ok and self._allowed(Direction.BUY):
+        if up:
             target = or_high + width
             plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c, spot_stop=mid,
                             spot_target=round(target, 2),
@@ -288,7 +355,7 @@ class ORBBreakoutStrategy(_PlanStrategy):
                 Direction.BUY, c, indicators,
                 f"ORB up: close={c:.1f} > OR high={or_high:.1f} width={width:.1f} "
                 f"target={target:.1f} stop(mid)={mid:.1f}", plan)
-        if c < or_low and prev_c >= or_low and vol_ok and self._allowed(Direction.SELL):
+        if down:
             target = or_low - width
             plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c, spot_stop=mid,
                             spot_target=round(target, 2),
@@ -323,6 +390,15 @@ class SupertrendEMAStrategy(_PlanStrategy):
 
     def on_position_opened(self, signal: SignalEvent) -> None:
         self._trades_today += 1
+
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._trades_today = len(positions)
+        exits = [p.exit_time for p in positions if p.exit_time is not None]
+        self._last_exit_at = max(exits) if exits else None
+        if self._last_exit_at is not None and self._last_exit_at.tzinfo is None:
+            from datetime import timezone
+            self._last_exit_at = self._last_exit_at.replace(tzinfo=timezone.utc)
 
     def on_position_closed(self, direction: Direction, reason: str) -> None:
         self._last_exit_at = now_utc()
@@ -390,12 +466,16 @@ class SupertrendEMAStrategy(_PlanStrategy):
         bars = self._bars(candles)
         if len(bars) < 40:
             return None
-        _, _, _, st = self._series(bars)
-        if np.isnan(st.supertrend[-1]):
+        new = _new_bars(plan, bars)
+        if not new:
             return None
-        if int(st.direction[-1]) != plan.sign:
-            return xp.ST_FLIP
-        xp.tighten_stop(plan, round(float(st.supertrend[-1]), 2))   # trail on the ST line
+        _, _, _, st = self._series(bars)
+        for i in new:
+            if np.isnan(st.supertrend[i]):
+                continue
+            if int(st.direction[i]) != plan.sign:
+                return xp.ST_FLIP
+            xp.tighten_stop(plan, round(float(st.supertrend[i]), 2))   # trail on the ST line
         return None
 
 

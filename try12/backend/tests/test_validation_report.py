@@ -271,5 +271,5 @@ def test_the_replayed_run_renders_all_twelve_sections(four_trade, tmp_path):
     assert rep["sections"]["8"]["cycle_totals"]["NIFTY"]["candles_evaluated"] == 345
 
 
-# the first 24 candles stop at INSUFFICIENT_CANDLES (MIN_TODAY_CANDLES = 25)
-N_EVALUATED_REGIME_ROWS = 345 - 24
+# the first 19 candles stop at INSUFFICIENT_CANDLES (MIN_TODAY_CANDLES = 20)
+N_EVALUATED_REGIME_ROWS = 345 - 19

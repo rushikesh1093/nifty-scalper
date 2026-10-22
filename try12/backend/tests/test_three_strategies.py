@@ -120,22 +120,29 @@ def test_pullback_needs_no_close_below_ema21():
 def test_pullback_bar_exits_vwap_then_ema_trail_after_t1():
     strat = VWAPEMAPullbackStrategy()
     bars = pullback_bars()
-    plan = xp.ExitPlan(strategy=strat.name, side="BUY", spot_entry=22042.0,
-                       spot_stop=22031.0, spot_t1=22058.5)
+    trigger = (OPEN + timedelta(minutes=3 * (len(bars) - 1))).isoformat()
+
+    def plan(**kw):
+        return xp.ExitPlan(strategy=strat.name, side="BUY", spot_entry=22042.0,
+                           spot_stop=22031.0, spot_t1=22058.5, last_bar_start=trigger, **kw)
+
     # a bar that closes below EMA 9 but above VWAP: held before T1, exit after T1
     dip = bars + [(22042.0, 22043.0, 22020.0, 22028.0)]
     c = expand(dip, 3)
     with at(3 * len(dip)):
         ind = compute_all(c)
         assert ind["vwap"] < 22028.0
-        assert strat.candle_exit(plan, c, ind) is None
-        plan.t1_done = True
-        assert strat.candle_exit(plan, c, ind) == xp.EMA_TRAIL
-        assert strat.candle_exit(plan, c, dict(ind, vwap=22030.0)) == xp.VWAP_EXIT
-        # mid-bar (the 3-min bar has not just closed): no bar exit
-        assert strat.candle_exit(plan, c + expand([(22028.0,) * 4], 1,
-                                                  OPEN + timedelta(minutes=3 * len(dip))),
-                                 ind) is None
+        assert strat.candle_exit(plan(), c, ind) is None
+        assert strat.candle_exit(plan(t1_done=True), c, ind) == xp.EMA_TRAIL
+        p = plan()
+        assert strat.candle_exit(p, c, ind) is None
+        assert strat.candle_exit(p, c, dict(ind, vwap=22030.0)) is None   # bar already seen
+        # mid-bar (the next 3-min bar has not closed): no new bar, no bar exit
+        mid = c + expand([(22028.0,) * 4], 1, OPEN + timedelta(minutes=3 * len(dip)))
+        assert strat.candle_exit(plan(t1_done=True), mid, ind) == xp.EMA_TRAIL
+        q = plan(t1_done=True)
+        strat.candle_exit(q, c, ind)
+        assert strat.candle_exit(q, mid, ind) is None
 
 
 # ── 2. Opening range breakout (5-min) ────────────────────────────────────────
@@ -253,10 +260,13 @@ def test_supertrend_flip_against_is_a_bar_exit_and_the_stop_trails():
     strat = SupertrendEMAStrategy()
     bars = st_bars(6)
     c = expand(bars, 1)
+    seen = (OPEN + timedelta(minutes=len(bars) - 2)).isoformat()     # one new bar to check
     plan = xp.ExitPlan(strategy=strat.name, side="BUY", spot_entry=22050.0,
-                       spot_stop=21900.0, premium_target_pts=20.0, time_stop_minutes=10)
+                       spot_stop=21900.0, premium_target_pts=20.0, time_stop_minutes=10,
+                       last_bar_start=seen)
     with at(len(bars)):
         assert strat.candle_exit(plan, c, {}) is None
         assert plan.spot_stop > 21900.0                            # trailed to the ST line
-        short = xp.ExitPlan.from_dict(dict(plan.to_dict(), side="SELL", spot_stop=23000.0))
+        short = xp.ExitPlan.from_dict(dict(plan.to_dict(), side="SELL", spot_stop=23000.0,
+                                           last_bar_start=seen))
         assert strat.candle_exit(short, c, {}) == xp.ST_FLIP

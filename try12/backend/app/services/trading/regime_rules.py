@@ -54,7 +54,11 @@ class RegimeRule(NamedTuple):
 # every multiplier is in POSITION_MULTIPLIERS. Startup checks 2-5 assert all
 # of that (app/services/trading/startup_checks.py).
 #
-#   VWAP_EMA_PULLBACK  trend days only (fails when price keeps crossing VWAP)
+#   VWAP_EMA_PULLBACK  trend and breakout regimes (fails when price keeps
+#                      crossing VWAP). With no volume on the index spot, the
+#                      classifier labels a whole trending day BREAKOUT_EVENT_*
+#                      once price leaves the opening range, so a trend-only
+#                      pullback strategy would almost never be allowed.
 #   SUPERTREND_EMA     trend + breakout swings (ADX filters the chop)
 #   ORB_BREAKOUT       every tradeable regime: its own OR-width filter is the
 #                      low-volatility guard, and the regime is rarely settled
@@ -72,7 +76,8 @@ SAFETY_BLOCKED_REGIMES = frozenset({
 })
 
 _TREND = frozenset({S.VWAP_EMA_PULLBACK.value, S.SUPERTREND_EMA.value, S.ORB_BREAKOUT.value})
-_BREAKOUT = frozenset({S.ORB_BREAKOUT.value, S.SUPERTREND_EMA.value})
+_BREAKOUT = frozenset({S.ORB_BREAKOUT.value, S.SUPERTREND_EMA.value,
+                       S.VWAP_EMA_PULLBACK.value})
 
 REGIME_RULES: dict[str, RegimeRule] = {
     # ── Trend regimes ────────────────────────────────────────────────────────
@@ -95,7 +100,8 @@ REGIME_RULES: dict[str, RegimeRule] = {
     "BREAKOUT_EVENT_BULLISH": RegimeRule(
         enabled_strategies=_BREAKOUT, allowed_directions=_BUY,
         position_multiplier=1.0,          # 0.5 when ATR_percentile > 70 (get_regime_rule)
-        notes="Level broken on volume — range break and momentum flip",
+        notes="Level broken (volume when the feed has it) — range break, momentum "
+              "flip and pullback continuation, CE only",
     ),
     "BREAKOUT_EVENT_BEARISH": RegimeRule(
         enabled_strategies=_BREAKOUT, allowed_directions=_SELL,

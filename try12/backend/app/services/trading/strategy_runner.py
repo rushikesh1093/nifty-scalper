@@ -31,6 +31,8 @@ from app.services.market_data.timestamps import try_normalize_candle_timestamp
 logger = logging.getLogger(__name__)
 
 CANDLE_CHECK_INTERVAL = 60   # seconds — check for new candles every minute
+CANDLE_SETTLE_SECONDS = 2    # run each cycle this long after the minute boundary, once
+                             # the feed has closed and pushed the previous 1-min candle
 VIX_TOKEN             = settings.VIX_TOKEN  # India VIX token (centralised in config)
 
 # Market gates
@@ -42,7 +44,10 @@ VIX_MAX           = 25.0   # above → extreme fear/erratic, hard SLs get blown
                             #  on normal volatile days, 20 was blocking good sessions)
 ATR_MIN_NIFTY     = 1.5    # Nifty 1-min ATR below this = dead chop (was 2.5 — blocked ORB window)
 ATR_MIN_BANKNIFTY = 5.0    # BankNifty moves ~3× Nifty (was 8.0)
-MIN_TODAY_CANDLES = 25     # today-only 1m candles required before strategies run
+MIN_TODAY_CANDLES = 20     # today-only 1m candles required before strategies run:
+                            # 09:15-09:34, so the ORB can act on the 09:30-09:35 bar.
+                            # EMA / RSI / Supertrend / ADX warm up on the multi-day
+                            # history, not on today's candles alone.
 EXPIRY_MIN_SL_PCT = 0.15   # on expiry day skip ALL strategies with sl_pct < 15%
                             # Raised from 0.08 — a 10% SL on a cheap OTM option
                             # (e.g. ₹23 LTP → SL at ₹20.70) is blown by a single
@@ -136,13 +141,56 @@ class StrategyRunner:
         from app.strategies.base import signal_aggregator
         signal_aggregator.reset()
         logger.info("Signal aggregator cleared for new session.")
+        await self._restore_strategy_state()
+
+    async def _restore_strategy_state(self) -> None:
+        """Rebuild each strategy's per-day state (open count, ORB trades and
+        their exits, Supertrend count and last exit) from today's persisted
+        positions, so a restart mid-session cannot reset the day's trade rules.
+        Never raises: a DB problem leaves the in-memory state as it is."""
+        from datetime import timedelta, timezone
+        from sqlalchemy import select
+        from app.db.models.paper_trade import PaperPosition
+        from app.services.market_data.timestamps import IST
+
+        day = trading_day()
+        start = datetime.combine(day, dtime(0, 0), IST).astimezone(timezone.utc)
+        try:
+            async with sessions()() as db:
+                rows = (await db.execute(select(PaperPosition).where(
+                    PaperPosition.run_id == ctx().run_id,
+                    PaperPosition.entry_time >= start,
+                    PaperPosition.entry_time < start + timedelta(days=1),
+                ).order_by(PaperPosition.entry_time))).scalars().all()
+        except Exception as exc:
+            logger.warning("Strategy state restore skipped (DB read failed): %s", exc)
+            return
+        for underlying, strategies in self._strategies.items():
+            for strat in strategies:
+                restore = getattr(strat, "restore_day", None)
+                if restore is None:
+                    continue
+                mine = [r for r in rows if r.underlying == underlying
+                        and r.strategy_name == strat.name]
+                restore(mine)
+                if mine:
+                    logger.info("[%s] %s restored %d trade(s) from today (%d open)",
+                                underlying, strat.name, len(mine),
+                                sum(1 for r in mine if r.is_open))
 
     # ── Main candle loop ──────────────────────────────────────────────────────
 
     async def _candle_loop(self):
         while self._running:
             try:
-                await asyncio.sleep(CANDLE_CHECK_INTERVAL)
+                # Wake just after each minute boundary rather than every 60 s of
+                # elapsed time: a fixed sleep drifts by the cycle's own run time,
+                # so entries lagged the bar close by up to a minute and a cycle
+                # now and then saw two new candles at once.
+                now = ctx().clock.now_utc()      # the ctx clock: no wall-clock read here
+                await asyncio.sleep(
+                    CANDLE_CHECK_INTERVAL - now.second - now.microsecond / 1e6
+                    + CANDLE_SETTLE_SECONDS)
                 for underlying in ["NIFTY", "BANKNIFTY"]:
                     await self.run_cycle(underlying)
                 await self._refresh_display_caches()
@@ -465,7 +513,7 @@ class StrategyRunner:
         # regardless of what regime says.
         try:
             final_flags, regime_state = await self._detect_and_merge_regime(
-                underlying, candles, indicators, is_expiry_day, flags,
+                underlying, candles, indicators, is_expiry_day, flags, history=history,
             )
         except Exception as _regime_err:
             # Never fall back to raw user flags: a Redis or DB blip must not
@@ -524,6 +572,8 @@ class StrategyRunner:
             tally.strategies_evaluated += 1
             try:
                 strat.history = history
+                if hasattr(strat, "futures_candles"):
+                    strat.futures_candles = await self._futures_candles(underlying)
                 await strat.on_candle(candles, indicators)
             except Exception as e:
                 logger.error("[%s] Strategy error: %s", strat.name, e, exc_info=True)
@@ -551,6 +601,7 @@ class StrategyRunner:
         indicators: dict,
         is_expiry_day: bool,
         flags: dict,
+        history: Optional[list[dict]] = None,
     ) -> tuple[dict, object]:
         """
         Detect the regime, then merge regime flags with user flags.
@@ -564,6 +615,7 @@ class StrategyRunner:
             underlying=underlying,
             is_expiry_day=is_expiry_day,
             db_session=None,
+            history=history,
         )
 
         regime_flags = await strategy_orchestrator.on_regime_detected(regime_state)
@@ -599,6 +651,19 @@ class StrategyRunner:
             self._queue_cycle_gate(tally, underlying, candle_ts, ReasonCode.REGIME_NO_TRADE,
                                    f"Regime {regime} enables no strategy", regime=regime)
         return True
+
+    async def _futures_candles(self, underlying: str) -> list[dict]:
+        """1-min candles of the nearest index future (per-minute volume), via the
+        token market_manager subscribed and published as ``fut_token:<UNDERLYING>``.
+        [] when there is none (replay, feed down) — the caller then cannot check volume."""
+        try:
+            token = await market().get(f"fut_token:{underlying}")
+            if not token:
+                return []
+            return await market().get_candles(str(token), "ONE_MINUTE", 500)
+        except Exception as exc:
+            logger.debug("[%s] futures candles unavailable: %s", underlying, exc)
+            return []
 
     # ── EOD monitor ───────────────────────────────────────────────────────────
 
