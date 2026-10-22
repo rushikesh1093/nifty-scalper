@@ -8,7 +8,7 @@ guarded default updates would rewrite, and the smallest correction that leaves
 writes only under ``--apply`` with every safety condition met.
 
 Never touched here: ``capital`` and ``fixed_fraction_pct`` (at most
-``MAX_FIXED_FRACTION_PCT``, 40 %, of capital per trade). Whether the capital at
+``MAX_FIXED_FRACTION_PCT``, 100 %, of capital per trade). Whether the capital at
 that fraction can buy a useful contract is the operator's decision (item 6);
 the startup capital-sufficiency warning shows the numbers.
 """

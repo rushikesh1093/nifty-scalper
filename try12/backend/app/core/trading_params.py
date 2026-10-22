@@ -34,7 +34,8 @@ FORBIDDEN_KEYS: dict[str, str] = {
 
 TRADE_AMOUNT_TOLERANCE = 500.0     # ₹ — display cache vs fixed_fraction × capital
 MAX_HOLD_MINUTES_MAX = 374         # one session is 375 one-minute candles
-MAX_FIXED_FRACTION_PCT = 40.0      # % of capital one trade may be sized on (the only bound)
+MAX_FIXED_FRACTION_PCT = 100.0     # % of capital one trade may be sized on (the only bound):
+                                   # up to all of it. Exposure, daily-loss and lot caps still apply.
 
 
 def _default_max_hold() -> dict[str, int]:

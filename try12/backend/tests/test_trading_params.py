@@ -109,12 +109,17 @@ def test_kelly_cap_below_fraction_is_valid_and_bounds_kelly():
     assert TradingParams().kelly_cap_effective_pct == 10.0      # defaults 10 / 15
 
 
-@pytest.mark.parametrize("value", [0.0, 40.01, 100.0])
+@pytest.mark.parametrize("value", [0.0, -1.0, 100.01])
 def test_fixed_fraction_bounds(value):
     v = _violations(fixed_fraction_pct=value)
     _assert_one_naming(v, "fixed_fraction_pct")
-    # the message must state the 40% bound, not merely mention the field
-    assert any("fixed_fraction_pct" in x and "(0, 40]" in x for x in v), v
+    # the message must state the 100% bound, not merely mention the field
+    assert any("fixed_fraction_pct" in x and "(0, 100]" in x for x in v), v
+
+
+@pytest.mark.parametrize("value", [40.0, 100.0])
+def test_up_to_all_of_capital_is_a_legal_fraction(value):
+    assert _violations(fixed_fraction_pct=value) == []
 
 
 @pytest.mark.parametrize("value", [0.0, 0.6])

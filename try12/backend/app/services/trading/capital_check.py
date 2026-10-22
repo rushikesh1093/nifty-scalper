@@ -7,7 +7,7 @@ The affordability ceiling is the same arithmetic as ``risk_gate.fraction_decisio
 When that ceiling is below the premium-band floor or a typical ATM premium, the
 system can only buy deep-OTM contracts. This module says so with the numbers;
 it changes no default. Raising capital or fixed_fraction_pct (at most
-MAX_FIXED_FRACTION_PCT, 40 % of capital per trade) is the operator's decision.
+MAX_FIXED_FRACTION_PCT, 100 % of capital per trade) is the operator's decision.
 """
 from __future__ import annotations
 
