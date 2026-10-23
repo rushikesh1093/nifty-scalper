@@ -163,10 +163,10 @@ def test_orb_breakout_long_plan():
         sig = evaluate(strat, c)
     assert sig.direction == Direction.BUY
     plan = xp.ExitPlan.from_dict(sig.exit_plan)
-    assert plan.spot_stop == 22030.0                          # OR mid
+    assert plan.spot_stop == 22045.0                          # OR high - width/4
     assert plan.spot_target == 22120.0                        # OR high + width
     assert plan.breakeven_trigger == pytest.approx(22075 + 0.5 * (22120 - 22075))
-    assert plan.time_stop_minutes == 45 and sig.sl_pct == 0.25
+    assert plan.time_stop_minutes == 90 and sig.sl_pct == 0.25
 
 
 def test_orb_width_filter():
@@ -228,7 +228,7 @@ def test_supertrend_fires_only_on_the_confirmation_candle():
             plan = xp.ExitPlan.from_dict(sig.exit_plan)
             assert sig.direction == Direction.BUY
             assert plan.spot_stop < plan.spot_entry
-            assert plan.premium_target_pts == 20.0 and plan.time_stop_minutes == 10
+            assert plan.premium_target_pts == 8.0 and plan.time_stop_minutes == 10
     assert fired.count(True) == 1
 
 

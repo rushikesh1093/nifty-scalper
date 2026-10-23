@@ -12,15 +12,17 @@ the premium hard stop (``sl_pct``):
                      half, stop to entry. Rest trails on EMA 9 (3-min close).
                      Hard exit on a 3-min close back across VWAP.
   ORB_BREAKOUT       5-min. OR = 09:15-09:30, width 40-120 pts. Close beyond
-                     the OR (volume > 1.2× last 5 bars when the feed has
-                     volume). Stop: OR mid or 25 % premium. Target: breakout
-                     level ± OR width; stop to entry at 50 % of the way; 45-min
-                     time exit. One trade per direction, no entries after
+                     the OR (futures volume > 1.2× earlier bars). Stop: a
+                     quarter of the OR width back inside the range, or 25 %
+                     premium. Target: breakout level ± OR width; stop to entry
+                     at 50 % of the way; 90-min time exit (real-path sweep:
+                     the OR-mid stop and 45-min exit lost most). One trade per direction, no entries after
                      11:00, one reverse trade only after a stop-out.
   SUPERTREND_EMA     1-min. Supertrend(10, 2) flip + EMA 5/13 cross within ±2
                      bars, ADX(14) > 20. Stop: Supertrend line (trailed) or
-                     15 % premium. Target +20 pts premium. Exit on an adverse
-                     flip; 10-min time stop; 3-bar cooldown after an exit;
+                     15 % premium. Target +8 pts premium (+20 needs ~38 NIFTY
+                     pts in 10 min: reached ~15 % of the time on real data).
+                     Exit on an adverse flip; 10-min time stop; 3-bar cooldown after an exit;
                      max 6 trades a day.
 
 Point thresholds are NIFTY points, so these strategies are built for NIFTY
@@ -253,8 +255,9 @@ class ORBBreakoutStrategy(_PlanStrategy):
     VOL_MULT, VOL_BARS = 1.2, 5
     MIN_VOL_BARS = 3       # a 09:35 breakout has only 4 earlier bars that day
     LAST_ENTRY = dtime(11, 0)
-    TIME_STOP_MINUTES = 45
+    TIME_STOP_MINUTES = 90
     BREAKEVEN_FRAC = 0.5
+    STOP_INSIDE_FRAC = 0.25        # stop this fraction of the OR width back inside the range
 
     def __init__(self, underlying: str = "NIFTY"):
         super().__init__(underlying)
@@ -343,28 +346,28 @@ class ORBBreakoutStrategy(_PlanStrategy):
         down = c < or_low and prev_c >= or_low and self._allowed(Direction.SELL)
         if not (up or down) or not self._volume_ok(last):
             return None
-        mid = round((or_high + or_low) / 2, 2)
-
         if up:
             target = or_high + width
-            plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c, spot_stop=mid,
+            stop = round(or_high - self.STOP_INSIDE_FRAC * width, 2)
+            plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c, spot_stop=stop,
                             spot_target=round(target, 2),
                             breakeven_trigger=round(c + self.BREAKEVEN_FRAC * (target - c), 2),
                             time_stop_minutes=self.TIME_STOP_MINUTES)
             return self._plan_signal(
                 Direction.BUY, c, indicators,
                 f"ORB up: close={c:.1f} > OR high={or_high:.1f} width={width:.1f} "
-                f"target={target:.1f} stop(mid)={mid:.1f}", plan)
+                f"target={target:.1f} stop={stop:.1f}", plan)
         if down:
             target = or_low - width
-            plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c, spot_stop=mid,
+            stop = round(or_low + self.STOP_INSIDE_FRAC * width, 2)
+            plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c, spot_stop=stop,
                             spot_target=round(target, 2),
                             breakeven_trigger=round(c - self.BREAKEVEN_FRAC * (c - target), 2),
                             time_stop_minutes=self.TIME_STOP_MINUTES)
             return self._plan_signal(
                 Direction.SELL, c, indicators,
                 f"ORB down: close={c:.1f} < OR low={or_low:.1f} width={width:.1f} "
-                f"target={target:.1f} stop(mid)={mid:.1f}", plan)
+                f"target={target:.1f} stop={stop:.1f}", plan)
         return None
 
 
@@ -378,7 +381,7 @@ class SupertrendEMAStrategy(_PlanStrategy):
     ST_PERIOD, ST_MULT = 10, 2.0
     ADX_MIN = 20.0
     CROSS_WINDOW = 2
-    PREMIUM_TARGET_PTS = 20.0
+    PREMIUM_TARGET_PTS = 8.0
     TIME_STOP_MINUTES = 10
     COOLDOWN_BARS = 3
     MAX_TRADES = 6

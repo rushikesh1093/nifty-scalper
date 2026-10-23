@@ -202,9 +202,13 @@ async def fraction_decision(db, strategy: str) -> FractionDecision:
 
 def sizing_decision(*, fraction: FractionDecision, regime_multiplier: float,
                     expected_entry_fill: float, lot_size: int, available_capital: float,
-                    open_exposure: float) -> SizingDecision:
+                    open_exposure: float,
+                    initial_risk: Optional[float] = None) -> SizingDecision:
     """Phase two: lots from the fill and lot size. The regime multiplier is
-    applied here exactly once, to the deployed amount."""
+    applied here exactly once, to the deployed amount. *initial_risk* is the
+    premium points lost per contract if the premium stop is hit; with it the
+    lots are also capped so that loss stays within max_risk_per_trade_pct of
+    capital (clamp ``max_risk_per_trade``)."""
     cfg = ctx().cfg
     clamps = list(fraction.clamps)
     trade_amount = round_to_500(fraction.base_amount * regime_multiplier)
@@ -222,6 +226,9 @@ def sizing_decision(*, fraction: FractionDecision, regime_multiplier: float,
             clamps.append(name)
 
     _clamp(cfg.max_lots_per_trade, "max_lots_per_trade")
+    if initial_risk is not None and initial_risk > 0 and lot_size > 0:
+        risk_budget = params().max_risk_per_trade_pct / 100.0 * cfg.capital
+        _clamp(int(risk_budget // (initial_risk * lot_size)), "max_risk_per_trade")
     if cost_per_lot > 0:
         _clamp(int(max(available_capital, 0.0) // cost_per_lot), "available_capital")
         headroom = cfg.open_exposure_cap_pct / 100.0 * cfg.capital - open_exposure
@@ -399,9 +406,11 @@ async def evaluate_sizing(db, signal, candidate, *, fraction: FractionDecision,
     sizing = sizing_decision(
         fraction=fraction, regime_multiplier=regime_multiplier, expected_entry_fill=fill,
         lot_size=candidate.lot_size, available_capital=rc.cfg.capital - used,
-        open_exposure=used)
+        open_exposure=used, initial_risk=initial_risk)
     ctx_dict = dict(open_capital_used=used, binding_clamp=sizing.binding_clamp,
                     trade_amount=sizing.trade_amount, lots=sizing.lots,
+                    initial_risk_per_lot=round(initial_risk * candidate.lot_size, 2),
+                    max_risk_rupees=round(p_.max_risk_per_trade_pct / 100.0 * rc.cfg.capital, 2),
                     expected_entry_fill=fill, fill_source=fill_source,
                     cost_per_lot=round(fill * candidate.lot_size, 2))
     if sizing.reject is not None:

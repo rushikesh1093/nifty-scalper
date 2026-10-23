@@ -42,6 +42,18 @@ def _decide(Session, strategy="VWAP_EMA_PULLBACK") -> FractionDecision:
     return run(_go())
 
 
+
+@pytest.fixture(autouse=True)
+def _kelly_window_of_30(monkeypatch):
+    """These tests are about the Kelly arithmetic and guards, written for a
+    30-trade window; live now waits for 100 decided trades
+    (test_quant_fixes.test_kelly_waits_for_100_decided_trades)."""
+    import dataclasses
+    from app.services.trading import risk_gate
+    real = risk_gate.params
+    monkeypatch.setattr(risk_gate, "params",
+                        lambda: dataclasses.replace(real(), kelly_min_trades=30))
+
 # ── the corrected b, against the legacy mean-R formula (R7.9) ────────────────
 
 def _legacy_fraction(p: float, avg_rr: float) -> float:

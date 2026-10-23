@@ -231,7 +231,10 @@ def four_trade(tmp_path_factory):
     # ORB_BREAKOUT is user-disabled through the run's frozen flags; no scripted
     # strategy carries that name, so the flag must not change the four trades.
     factory = scripted_factory(FOUR_TRADE_SCHEDULE)
-    flags = {"user_strategy_flags": {"ORB_BREAKOUT": False}}
+    flags = {"user_strategy_flags": {"ORB_BREAKOUT": False},
+             # the hand-computed expectations use per-lot brokerage (not the
+             # default flat per-order model)
+             "brokerage_flat_per_order": False}
     out = SimpleNamespace()
     with pytest.MonkeyPatch.context() as mp:
         reset_singletons()

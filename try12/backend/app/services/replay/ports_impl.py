@@ -190,6 +190,9 @@ class ReplayMarketData:
                        for key, pairs in day_data.chains.items()}
         self.vix = day_data.vix
         self.overrides.clear()
+        # what market_manager publishes live (strategy_runner._futures_candles)
+        for und, tok in getattr(day_data, "futures", {}).items():
+            self.kv[f"fut_token:{und}"] = tok
 
     # rendering ---------------------------------------------------------------
 

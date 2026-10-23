@@ -97,7 +97,7 @@ def test_a_fresh_row_takes_the_section_19_1_defaults_and_starts(sqlite_db):
     assert (row.losing_streak_halt_n, row.strategy_streak_halt_n,
             row.post_loss_cooldown_minutes) == (3, 2, 15)
     assert (row.kelly_multiplier, row.kelly_fraction_cap_pct, row.kelly_min_trades) == \
-        (0.25, 15.0, 30)
+        (0.25, 15.0, 100)
     tp = TradingParams()
     assert all(getattr(row, k) == getattr(tp, k)
                for k in ("capital", "max_trades_per_day", "max_daily_loss", "slippage_pct",

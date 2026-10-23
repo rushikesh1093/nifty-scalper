@@ -512,8 +512,9 @@ class StrategyRunner:
         # user-disable takes precedence: a user-disabled strategy stays disabled
         # regardless of what regime says.
         try:
+            regime_ind = await self._regime_indicators(underlying, candles, indicators)
             final_flags, regime_state = await self._detect_and_merge_regime(
-                underlying, candles, indicators, is_expiry_day, flags, history=history,
+                underlying, candles, regime_ind, is_expiry_day, flags, history=history,
             )
         except Exception as _regime_err:
             # Never fall back to raw user flags: a Redis or DB blip must not
@@ -651,6 +652,33 @@ class StrategyRunner:
             self._queue_cycle_gate(tally, underlying, candle_ts, ReasonCode.REGIME_NO_TRADE,
                                    f"Regime {regime} enables no strategy", regime=regime)
         return True
+
+    REGIME_VOLUME_BARS = 20
+
+    async def _regime_indicators(self, underlying: str, candles: list[dict],
+                                 indicators: dict) -> dict:
+        """*indicators* with ``volume`` / ``avg_volume`` taken from the index
+        future: the spot index carries no volume, and compute_all never sets
+        avg_volume, so the regime's volume-surge test always read "unavailable"
+        and passed. volume = the future's 1-min volume for the latest spot
+        candle's minute; avg_volume = the mean of the REGIME_VOLUME_BARS
+        minutes before it, today only. No futures data → unchanged."""
+        fut = await self._futures_candles(underlying)
+        if not fut or not candles:
+            return indicators
+        from app.services.market_data.timestamps import try_normalize_candle_timestamp as _ts
+        last = _ts(candles[-1].get("timestamp"))
+        if last is None:
+            return indicators
+        rows = sorted(((t, float(c.get("volume") or 0)) for c in fut
+                       if (t := _ts(c.get("timestamp"))) is not None
+                       and t.date() == last.date() and t <= last), key=lambda r: r[0])
+        if not rows or rows[-1][0] != last:
+            return indicators
+        prior = [v for _, v in rows[:-1]][-self.REGIME_VOLUME_BARS:]
+        if len(prior) < 5 or rows[-1][1] <= 0:
+            return indicators
+        return dict(indicators, volume=rows[-1][1], avg_volume=sum(prior) / len(prior))
 
     async def _futures_candles(self, underlying: str) -> list[dict]:
         """1-min candles of the nearest index future (per-minute volume), via the

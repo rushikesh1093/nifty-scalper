@@ -38,7 +38,7 @@ def test_section_19_1_defaults():
     assert (p.max_open_positions, p.max_lots_per_trade, p.max_trades_per_day) == (3, 3, 6)
     assert (p.max_daily_loss, p.max_daily_loss_pct) == (6000.0, 3.0)
     assert (p.losing_streak_halt_n, p.strategy_streak_halt_n, p.post_loss_cooldown_minutes) == (3, 2, 15)
-    assert (p.kelly_multiplier, p.kelly_fraction_cap_pct, p.kelly_min_trades) == (0.25, 15.0, 30)
+    assert (p.kelly_multiplier, p.kelly_fraction_cap_pct, p.kelly_min_trades) == (0.25, 15.0, 100)
     assert (p.cooldown_mirror_ttl_s, p.params_cache_ttl_s) == (120, 30)
     assert p.transition_cooldown_candles == 3
     assert p.min_rr == 2.0

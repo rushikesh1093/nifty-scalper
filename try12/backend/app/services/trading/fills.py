@@ -148,8 +148,14 @@ def entry_levels(actual_entry: float, sl_pct: float, target_pct: float,
 
 
 def brokerage(lots: int, params) -> float:
-    """Per leg: brokerage_per_lot_per_leg × lots."""
-    return round(params.brokerage_per_lot_per_leg * max(int(lots or 0), 0), 2)
+    """Per leg (one order): the flat per-order amount when brokerage_flat_per_order,
+    else brokerage_per_lot_per_leg × lots. No lots, no order, no brokerage."""
+    n = max(int(lots or 0), 0)
+    if n == 0:
+        return 0.0
+    if getattr(params, "brokerage_flat_per_order", False):
+        return round(params.brokerage_per_lot_per_leg, 2)
+    return round(params.brokerage_per_lot_per_leg * n, 2)
 
 
 def statutory_charges(buy_value: float, sell_value: float, brokerage_amount: float,

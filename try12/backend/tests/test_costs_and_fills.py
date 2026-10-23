@@ -20,7 +20,10 @@ def test_statutory_charges_hand_calc():
 
 
 def test_brokerage_per_lot_per_leg():
-    assert fills.brokerage(3, P) == 60.0
+    # per lot when the flat per-order model is off; otherwise one flat amount per order
+    from dataclasses import replace
+    assert fills.brokerage(3, replace(P, brokerage_flat_per_order=False)) == 60.0
+    assert fills.brokerage(3, replace(P, brokerage_flat_per_order=True)) == 20.0
 
 
 def test_quote_validity():

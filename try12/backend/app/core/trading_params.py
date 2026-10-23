@@ -65,6 +65,9 @@ class TradingParams:
     # ── capital and caps (trading_config) ────────────────────────────────────
     capital: float = 200_000.0
     fixed_fraction_pct: float = 10.0
+    # Most one trade may LOSE if its premium stop is hit, as % of capital:
+    # lots <= floor(capital x pct / (initial premium risk x lot size)).
+    max_risk_per_trade_pct: float = 12.5
     trade_amount: Optional[float] = None          # demoted display cache (§9.5)
     open_exposure_cap_pct: float = 40.0
     max_open_positions: int = 3
@@ -81,7 +84,9 @@ class TradingParams:
     # ── Kelly (trading_config) ───────────────────────────────────────────────
     kelly_multiplier: float = 0.25
     kelly_fraction_cap_pct: float = 15.0
-    kelly_min_trades: int = 30
+    # Kelly needs a real sample before it may resize anything: below this many
+    # decided trades a strategy stays on the fixed fraction.
+    kelly_min_trades: int = 100
 
     # ── caches / regime ──────────────────────────────────────────────────────
     cooldown_mirror_ttl_s: int = 120
@@ -119,6 +124,9 @@ class TradingParams:
     quote_max_spread_pct: float = 5.0
     allow_ltp_only_fill: bool = False
     brokerage_per_lot_per_leg: float = 20.0
+    # Discount brokers (AngelOne) charge a flat amount per executed ORDER, not per
+    # lot: with this on, brokerage_per_lot_per_leg is that flat per-order amount.
+    brokerage_flat_per_order: bool = True
     stt_sell_pct: float = 0.15
     exchange_txn_pct: float = 0.03553
     sebi_per_crore: float = 10.0
@@ -189,6 +197,8 @@ class TradingParams:
         if not (0 < self.max_daily_loss_pct <= 100):
             v.append(f"max_daily_loss_pct={self.max_daily_loss_pct} must be in (0, 100]")
 
+        if not (0 < self.max_risk_per_trade_pct <= 100):
+            v.append(f"max_risk_per_trade_pct={self.max_risk_per_trade_pct} must be in (0, 100]")
         if not (0 < self.fixed_fraction_pct <= MAX_FIXED_FRACTION_PCT):
             v.append(f"fixed_fraction_pct={self.fixed_fraction_pct} must be in "
                      f"(0, {MAX_FIXED_FRACTION_PCT:g}]")

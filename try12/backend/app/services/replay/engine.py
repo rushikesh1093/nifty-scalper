@@ -364,9 +364,13 @@ class ReplayEngine:
 
         # one merged, time-ordered stream of candle closes (§14.4) so the shared
         # caps interleave across underlyings exactly as they would live
+        # Only this day's candles are stepped: the loaded series also carries the
+        # previous sessions as indicator history (data_loader.HISTORY_LOOKBACK_DAYS).
         closes: dict[datetime, list[str]] = {}
         for u in unds:
             for c in data.candles.get(spot_token(u), []):
+                if utc(c["timestamp"]).astimezone(IST).date() != day:
+                    continue
                 closes.setdefault(utc(c["timestamp"]) + CANDLE, []).append(u)
         square_off = parse_square_off(cfg.square_off_time)
         squared = False
