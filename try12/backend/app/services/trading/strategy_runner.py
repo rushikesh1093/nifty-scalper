@@ -497,12 +497,19 @@ class StrategyRunner:
                 return True
 
         # ── Gate 3: Expiry day filter ─────────────────────────────────────────
-        # Nearest expiry from the InstrumentPort universe (design §14.2).
+        # Nearest expiry from the instrument master (design §14.2), the same
+        # answer live and replay: a port without nearest_expiry falls back to
+        # its universe.
         today = trading_day()
+        port = ctx().instruments
         async with sessions()() as db:
-            universe = await ctx().instruments.instruments_for(db, underlying)
-        expiries = sorted({i.expiry for i in universe if i.expiry and i.expiry >= today})
-        is_expiry_day = bool(expiries and expiries[0] == today)
+            if hasattr(port, "nearest_expiry"):
+                nearest = await port.nearest_expiry(db, underlying)
+            else:
+                universe = await port.instruments_for(db, underlying)
+                exps = sorted({i.expiry for i in universe if i.expiry and i.expiry >= today})
+                nearest = exps[0] if exps else None
+        is_expiry_day = nearest == today
         if is_expiry_day:
             logger.info("[%s] Expiry day — strategies with sl_pct < %.2f will be skipped",
                         underlying, EXPIRY_MIN_SL_PCT)

@@ -9,7 +9,7 @@ is the whole cache surface (tests/test_market_port_scan.py).
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 if TYPE_CHECKING:
     from app.core.trading_params import TradingParams
@@ -59,3 +59,7 @@ class RunControlPort(Protocol):
 class InstrumentPort(Protocol):                    # §10.4: universe resolution, no wall clock
     async def instruments_for(self, db, underlying: str) -> list["Instrument"]: ...
     def invalidate(self) -> None: ...
+    # Nearest option expiry on or after the trading day, from the instrument
+    # MASTER (not only contracts that traded): what "is today an expiry day"
+    # must be answered from. Optional: the runner falls back to instruments_for.
+    async def nearest_expiry(self, db, underlying: str) -> Optional["date"]: ...

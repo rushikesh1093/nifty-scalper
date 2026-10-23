@@ -133,6 +133,23 @@ class ReplayInstruments:
     def invalidate(self) -> None:          # POST /instruments/sync: nothing to drop in replay
         pass
 
+    async def nearest_expiry(self, db, underlying: str):
+        """From the instrument master, not the traded-today universe: on an expiry
+        day the expiring series often has no recorded ticks, and answering from
+        instruments_for() made replay miss EVERY expiry day (live never did), so
+        backtests traded days live refuses (audit D1, 23 Oct)."""
+        from sqlalchemy import select
+        from app.db.models.instrument import Instrument, InstrumentType
+        from app.runtime.context import trading_day
+        key = ("expiry", underlying.upper(), trading_day())
+        if key not in self._cache:
+            self._cache[key] = (await db.execute(select(Instrument.expiry).where(
+                Instrument.name == underlying.upper(),
+                Instrument.instrument_type == InstrumentType.OPTIDX,
+                Instrument.expiry >= key[2],
+            ).order_by(Instrument.expiry).limit(1))).scalar_one_or_none()
+        return self._cache[key]
+
 
 # ── market data ──────────────────────────────────────────────────────────────
 

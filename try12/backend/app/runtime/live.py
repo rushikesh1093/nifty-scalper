@@ -274,6 +274,14 @@ class LiveInstruments:
     def invalidate(self) -> None:
         self._cache.clear()
 
+    async def nearest_expiry(self, db, underlying: str):
+        """Live's universe already is the master (active, expiry >= today)."""
+        from app.runtime.context import trading_day
+        today = trading_day()
+        exps = sorted({i.expiry for i in await self.instruments_for(db, underlying)
+                       if i.expiry and i.expiry >= today})
+        return exps[0] if exps else None
+
 
 # ── Regime config ────────────────────────────────────────────────────────────
 
