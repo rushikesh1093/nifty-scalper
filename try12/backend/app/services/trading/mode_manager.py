@@ -143,7 +143,8 @@ class ModeManager:
         capital:
           max_open_positions = max(2, floor(capital / trade_amount × 0.6))
                              → 60% max deployment across concurrent positions
-          max_daily_loss    = 5% of capital when out of range
+          max_daily_loss    = 5% of capital only when INVALID (<= 0 or > capital);
+                              an operator's value inside (0, capital] is kept
         """
         async with session_factory() as db:
             result = await db.execute(
@@ -230,13 +231,15 @@ class ModeManager:
                     cfg.max_open_positions or 0, ideal_pos, capital,
                 )
 
-            # max_daily_loss: should be ~5% of capital
-            if (cfg.max_daily_loss or 0) > capital * 0.20 or (cfg.max_daily_loss or 0) < 100:
+            # max_daily_loss: reset only when invalid. It used to be reset whenever it
+            # exceeded 20% of capital, which silently undid an operator's limit on
+            # every start (23 Oct: Rs4,500 on Rs21,000 came back as Rs1,000).
+            if not (0 < (cfg.max_daily_loss or 0) <= capital):
                 new_loss = round(capital * 0.05 / 100) * 100
                 patches["max_daily_loss"]     = new_loss
                 patches["max_daily_loss_pct"] = 5.0
                 logger.warning(
-                    "max_daily_loss was ₹%.0f (out of range) — reset to ₹%.0f (5%% of capital).",
+                    "max_daily_loss was ₹%.0f (invalid) — reset to ₹%.0f (5%% of capital).",
                     cfg.max_daily_loss or 0, new_loss,
                 )
 

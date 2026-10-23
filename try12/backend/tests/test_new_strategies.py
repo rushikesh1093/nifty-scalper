@@ -250,3 +250,19 @@ def test_only_atm_or_one_strike_otm(runtime_ctx, strike, kind, ok):
     assert (cand is not None) is ok, fr.reason
     if not ok:
         assert "strikes OTM" in fr.reason
+
+
+# ── ensure_config keeps an operator's daily loss limit ───────────────────────
+
+@pytest.mark.parametrize("loss,kept", [(5000.0, True), (21000.0, True), (0.0, False),
+                                       (30000.0, False)])
+def test_ensure_config_keeps_a_valid_daily_loss_limit(sqlite_db, loss, kept):
+    from sqlalchemy import select
+    from app.db.models.paper_trade import TradingConfig
+    from app.services.trading.mode_manager import mode_manager
+    from tests.helpers import seed_config
+    run(seed_config(sqlite_db, capital=21000.0, max_daily_loss=loss, max_daily_loss_pct=24.0))
+    cfg = run(mode_manager.ensure_config(session_factory=sqlite_db))
+    assert (cfg.max_daily_loss == loss) is kept
+    if not kept:
+        assert cfg.max_daily_loss == 1000.0 and cfg.max_daily_loss_pct == 5.0
