@@ -56,8 +56,8 @@ def test_resample_aligns_to_0915_and_drops_the_incomplete_bar():
 
 
 def test_build_strategies_is_nifty_only():
-    assert [s.name for s in build_strategies("NIFTY")] == [
-        "VWAP_EMA_PULLBACK", "ORB_BREAKOUT", "SUPERTREND_EMA"]
+    assert [s.name for s in build_strategies("NIFTY")][:3] == [
+        "VWAP_EMA_PULLBACK", "ORB_BREAKOUT", "SUPERTREND_EMA"]       # + four more (test_new_strategies)
     assert build_strategies("BANKNIFTY") == []
 
 

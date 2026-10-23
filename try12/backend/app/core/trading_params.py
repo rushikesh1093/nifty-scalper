@@ -68,6 +68,11 @@ class TradingParams:
     # Most one trade may LOSE if its premium stop is hit, as % of capital:
     # lots <= floor(capital x pct / (initial premium risk x lot size)).
     max_risk_per_trade_pct: float = 12.5
+    # No NEW entries inside these IST windows ("HH:MM", "HH:MM"); exits still run.
+    entry_blackout_windows: tuple = (("11:30", "12:15"),)
+    # Strikes allowed, counted from the ATM strike: 0 = ATM, 1 = one strike OTM.
+    # Anything further OTM, or in the money, is rejected by the selector.
+    max_otm_strikes: int = 1
     trade_amount: Optional[float] = None          # demoted display cache (§9.5)
     open_exposure_cap_pct: float = 40.0
     max_open_positions: int = 3

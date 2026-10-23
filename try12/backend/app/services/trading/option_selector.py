@@ -633,6 +633,15 @@ def score_candidate(
 
     opt_type_str = inst.option_type.value if inst.option_type else "CE"
 
+    # ── STEP 0: strike limit — the ATM strike or up to max_otm_strikes OTM ────
+    if spot and step and inst.strike is not None:
+        atm = round(spot / step) * step
+        otm_steps = round(((inst.strike - atm) if opt_type_str == "CE" else (atm - inst.strike)) / step)
+        if not 0 <= otm_steps <= tp.max_otm_strikes:
+            return None, _reject(ReasonCode.CONTRACT_UNSUITABLE,
+                                 f"strike {inst.strike:.0f} is {otm_steps:+d} strikes OTM of ATM "
+                                 f"{atm:.0f}; allowed 0..{tp.max_otm_strikes}")
+
     # ── STEP 1: Hard filters — binary pass/fail ───────────────────────────────
     hf = _hard_filter(
         ltp=ltp, bid=_bid, ask=_ask, oi=oi, volume=volume,

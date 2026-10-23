@@ -863,8 +863,8 @@ class PaperEngine:
             if entry_utc.tzinfo is None:
                 entry_utc = entry_utc.replace(tzinfo=timezone.utc)
             hold = (now_utc() - entry_utc).total_seconds() / 60
-        action = xp.tick_action(plan, spot, hold)
-        if action in (xp.SPOT_SL, xp.TARGET, xp.TIME_EXIT):
+        action = xp.tick_action(plan, spot, hold, now_ist().time().replace(tzinfo=None))
+        if action in (xp.SPOT_SL, xp.TARGET, xp.TIME_EXIT, xp.SESSION_EXIT):
             logger.info("[PaperEngine] plan exit %s pos %d (%s) spot=%s ltp=%.2f",
                         action, pos.id, pos.strategy_name, spot, ltp)
             await self._close_position(pos.id, ltp, action)

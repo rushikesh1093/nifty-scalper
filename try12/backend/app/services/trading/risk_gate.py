@@ -288,6 +288,15 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
     if halted:
         return _no(Stage.RISK_GATE, ReasonCode.KILL_SWITCH, f"Kill switch active: {why}")
 
+    # 2b. entry blackout windows (lunch chop)
+    now_t = _ist_time()
+    for start, end in p_.entry_blackout_windows:
+        sh, sm = (int(x) for x in start.split(":")[:2])
+        eh, em = (int(x) for x in end.split(":")[:2])
+        if (sh, sm) <= (now_t.hour, now_t.minute) < (eh, em):
+            return _no(Stage.RISK_GATE, ReasonCode.AFTER_ENTRY_CUTOFF,
+                       f"Entry blackout {start}-{end} IST", blackout=f"{start}-{end}")
+
     # 3. entry cutoff
     if is_after_entry_cutoff(_ist_time(), cfg.square_off_time, cfg.entry_cutoff_buffer_min):
         return _no(Stage.RISK_GATE, ReasonCode.AFTER_ENTRY_CUTOFF,

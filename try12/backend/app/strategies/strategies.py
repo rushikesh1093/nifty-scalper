@@ -41,7 +41,7 @@ from app.runtime.context import now_utc, params, trading_day
 from app.services.trading import exit_plan as xp
 from app.services.trading.exit_plan import ExitPlan
 from app.strategies.base import BaseStrategy, Direction, SignalEvent
-from app.strategies.indicators import ema, resample, rsi, supertrend, vwap
+from app.strategies.indicators import atr, ema, resample, rsi, supertrend, vwap
 from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
 from app.services.market_data.timestamps import try_normalize_candle_timestamp
 
@@ -482,6 +482,257 @@ class SupertrendEMAStrategy(_PlanStrategy):
         return None
 
 
+# ─── 4. 09:15 candle breakout (5-min) ────────────────────────────────────────
+
+class FirstCandleBreakoutStrategy(_PlanStrategy):
+    """The 09:15-09:20 candle's high/low ± 10 pts, broken on a 5-min close
+    between 09:20 and 10:00. Stop: the other side of that candle. Target:
+    1.5 × the candle's range from entry. One trade per direction a day."""
+    name = StrategyName.FIRST_CANDLE_BREAKOUT.value
+    sl_pct = 0.25
+    target_pct = 0.50
+    BAR_MINUTES = 5
+    BUFFER_PTS = 10.0
+    TARGET_RANGE_MULT = 1.5
+    LAST_BAR_END = dtime(10, 0)
+    EXIT_AT = "14:45"
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._taken: set = set()
+
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._taken = {Direction.SELL if (p.option_type or "").upper() == "PE" else Direction.BUY
+                       for p in positions}
+
+    def on_position_opened(self, signal: SignalEvent) -> None:
+        self._taken.add(signal.direction)
+
+    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
+        if self._roll_day():
+            self._taken = set()
+        bars = resample(candles, self.BAR_MINUTES)       # today only
+        if len(bars) < 2 or not self._new_bar(bars) or self.open_positions:
+            return None
+        first, last = bars[0], bars[-1]
+        if _t(first["start"]) != dtime(9, 15) or _t(last["end"]) > self.LAST_BAR_END:
+            return None
+        hi, lo = first["high"], first["low"]
+        rng = hi - lo
+        c = last["close"]
+        if rng <= 0:
+            return None
+        if c > hi + self.BUFFER_PTS and Direction.BUY not in self._taken:
+            plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c, spot_stop=lo,
+                            spot_target=round(c + self.TARGET_RANGE_MULT * rng, 2),
+                            exit_at=self.EXIT_AT)
+            return self._plan_signal(Direction.BUY, c, indicators,
+                                     f"09:15 candle {lo:.1f}-{hi:.1f} broken up: close={c:.1f}", plan)
+        if c < lo - self.BUFFER_PTS and Direction.SELL not in self._taken:
+            plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c, spot_stop=hi,
+                            spot_target=round(c - self.TARGET_RANGE_MULT * rng, 2),
+                            exit_at=self.EXIT_AT)
+            return self._plan_signal(Direction.SELL, c, indicators,
+                                     f"09:15 candle {lo:.1f}-{hi:.1f} broken down: close={c:.1f}", plan)
+        return None
+
+
+# ─── 5. 15-min EMA trend + RSI pullback ──────────────────────────────────────
+
+class EMARSIPullback15mStrategy(_PlanStrategy):
+    """15-min EMA 9 > 21 (21 < 9 for PE); RSI pulls back into 40-50 (50-60);
+    the next candle(s) close back across EMA 9 between 09:30 and 13:00. Stop:
+    the pullback candle's low (high). T1 1R books half and moves the stop to
+    entry, T2 2R closes the rest."""
+    name = StrategyName.EMA_RSI_PULLBACK_15M.value
+    sl_pct = 0.20
+    target_pct = 0.40
+    BAR_MINUTES = 15
+    RSI_LONG, RSI_SHORT = (40.0, 50.0), (50.0, 60.0)
+    TOUCH_LOOKBACK = 3            # the RSI touch may be up to 3 bars before the trigger
+    WINDOW = (dtime(9, 30), dtime(13, 0))
+    EXIT_AT = "14:45"
+
+    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
+        bars = self._bars(candles)                        # multi-day history
+        if len(bars) < 30 or not self._new_bar(bars) or self.open_positions:
+            return None
+        last = bars[-1]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        cl = np.array([b["close"] for b in bars])
+        e9, e21, r = ema(cl, 9), ema(cl, 21), rsi(cl, 14)
+        t = len(bars) - 1
+        if np.isnan(e21[t]) or np.isnan(r[t - 1]):
+            return None
+        c = last["close"]
+        touches = range(max(1, t - self.TOUCH_LOOKBACK), t)
+        for side, sgn, direction, band in (("BUY", 1, Direction.BUY, self.RSI_LONG),
+                                           ("SELL", -1, Direction.SELL, self.RSI_SHORT)):
+            if not sgn * (e9[t] - e21[t]) > 0:
+                continue
+            hit = [i for i in touches if band[0] <= r[i] <= band[1]]
+            if not hit:
+                continue
+            crossed = sgn * (c - e9[t]) > 0 and sgn * (bars[t - 1]["close"] - e9[t - 1]) <= 0
+            if not crossed:
+                continue
+            k = hit[-1]
+            stop = bars[k]["low"] if sgn > 0 else bars[k]["high"]
+            risk = sgn * (c - stop)
+            if risk <= 0:
+                continue
+            plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2),
+                            spot_t1=round(c + sgn * risk, 2), spot_target=round(c + sgn * 2 * risk, 2),
+                            exit_at=self.EXIT_AT)
+            return self._plan_signal(direction, c, indicators,
+                                     f"15m EMA9/21 trend, RSI {r[k]:.1f} pullback, close {c:.1f} "
+                                     f"across EMA9 {e9[t]:.1f}", plan)
+        return None
+
+
+# ─── 6. Pivot point bounce (3-min) ───────────────────────────────────────────
+
+class PivotBounceStrategy(_PlanStrategy):
+    """Previous session's floor pivots: PP = (H+L+C)/3, R1 = 2PP-L, S1 = 2PP-H.
+    CE: a 3-min candle dips to S1 or PP from above and closes bullish above it.
+    PE: a candle pokes up to R1 or PP from below and closes bearish below it.
+    09:30-14:00. Stop 15 pts beyond the level; target the next pivot."""
+    name = StrategyName.PIVOT_BOUNCE.value
+    sl_pct = 0.15
+    target_pct = 0.30
+    BAR_MINUTES = 3
+    STOP_PTS = 15.0
+    WINDOW = (dtime(9, 30), dtime(14, 0))
+    EXIT_AT = "14:45"
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._used: set = set()
+
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._used = set()
+
+    def pivots(self) -> Optional[dict]:
+        """PP/R1/S1 from the last complete session before today in history."""
+        today = trading_day()
+        prev = [c for c in (self.history or []) if (dt := _ts(c)) is not None and dt.date() < today
+                and dtime(9, 15) <= _t(dt) < dtime(15, 30)]
+        if not prev:
+            return None
+        day = max(_ts(c).date() for c in prev)
+        sess = [c for c in prev if _ts(c).date() == day]
+        if len(sess) < 300:                           # need (almost) the whole session
+            return None
+        h = max(float(c["high"]) for c in sess)
+        l = min(float(c["low"]) for c in sess)
+        cl = float(sess[-1]["close"])
+        pp = (h + l + cl) / 3
+        return {"S1": round(2 * pp - h, 2), "PP": round(pp, 2), "R1": round(2 * pp - l, 2)}
+
+    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
+        if self._roll_day():
+            self._used = set()
+        bars = resample(candles, self.BAR_MINUTES)       # today only
+        if len(bars) < 3 or not self._new_bar(bars) or self.open_positions:
+            return None
+        last, prev = bars[-1], bars[-2]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        pv = self.pivots()
+        if pv is None:
+            return None
+        o, h, l, c = last["open"], last["high"], last["low"], last["close"]
+        ladder = [("S1", pv["S1"]), ("PP", pv["PP"]), ("R1", pv["R1"])]
+        for i, (lvl_name, lvl) in enumerate(ladder[:2]):                 # CE at S1 / PP
+            key = ("BUY", lvl_name)
+            if (key not in self._used and prev["close"] > lvl and l <= lvl < c and c > o):
+                target = ladder[i + 1][1]
+                plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c,
+                                spot_stop=round(lvl - self.STOP_PTS, 2), spot_target=target,
+                                exit_at=self.EXIT_AT)
+                sig = self._plan_signal(Direction.BUY, c, indicators,
+                                        f"bounce at {lvl_name} {lvl:.1f}, close {c:.1f}", plan)
+                if sig is not None:
+                    self._used.add(key)
+                return sig
+        for i, (lvl_name, lvl) in ((2, ladder[2]), (1, ladder[1])):        # PE at R1 / PP
+            key = ("SELL", lvl_name)
+            if (key not in self._used and prev["close"] < lvl and h >= lvl > c and c < o):
+                target = ladder[i - 1][1]
+                plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c,
+                                spot_stop=round(lvl + self.STOP_PTS, 2), spot_target=target,
+                                exit_at=self.EXIT_AT)
+                sig = self._plan_signal(Direction.SELL, c, indicators,
+                                        f"rejection at {lvl_name} {lvl:.1f}, close {c:.1f}", plan)
+                if sig is not None:
+                    self._used.add(key)
+                return sig
+        return None
+
+
+# ─── 7. 5-min momentum burst ─────────────────────────────────────────────────
+
+class MomentumBurstStrategy(_PlanStrategy):
+    """Three consecutive green 5-min candles, each closing above the previous
+    candle's high, the last above EMA 20, with 5-min ATR(14) > 15 pts (mirror
+    for PE). 09:30-13:30. Stop: the third candle's low (high). Target: 1.5 ×
+    ATR from entry. Fires on the first such candle of a burst only."""
+    name = StrategyName.MOMENTUM_BURST.value
+    sl_pct = 0.20
+    target_pct = 0.40
+    BAR_MINUTES = 5
+    ATR_MIN = 15.0
+    TARGET_ATR_MULT = 1.5
+    WINDOW = (dtime(9, 30), dtime(13, 30))
+    EXIT_AT = "14:30"
+
+    @staticmethod
+    def _burst(bars, t, sgn) -> bool:
+        for i in (t - 2, t - 1, t):
+            b, p = bars[i], bars[i - 1]
+            if sgn > 0 and not (b["close"] > b["open"] and b["close"] > p["high"]):
+                return False
+            if sgn < 0 and not (b["close"] < b["open"] and b["close"] < p["low"]):
+                return False
+        return True
+
+    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
+        bars = self._bars(candles)                        # multi-day history (EMA / ATR warm-up)
+        if len(bars) < 25 or not self._new_bar(bars) or self.open_positions:
+            return None
+        last = bars[-1]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        today = [i for i, b in enumerate(bars) if b["start"].date() == trading_day()]
+        t = len(bars) - 1
+        if len(today) < 4:                                # the 3 candles + the one before, today
+            return None
+        cl = np.array([b["close"] for b in bars])
+        hi = np.array([b["high"] for b in bars])
+        lo = np.array([b["low"] for b in bars])
+        e20 = ema(cl, 20)
+        a = atr(hi, lo, cl, 14)
+        if np.isnan(e20[t]) or np.isnan(a[t]) or a[t] <= self.ATR_MIN:
+            return None
+        c = last["close"]
+        for side, sgn, direction in (("BUY", 1, Direction.BUY), ("SELL", -1, Direction.SELL)):
+            if not (self._burst(bars, t, sgn) and sgn * (c - e20[t]) > 0):
+                continue
+            if self._burst(bars, t - 1, sgn):            # already a burst a bar ago: not fresh
+                continue
+            stop = last["low"] if sgn > 0 else last["high"]
+            plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2),
+                            spot_target=round(c + sgn * self.TARGET_ATR_MULT * float(a[t]), 2),
+                            exit_at=self.EXIT_AT)
+            return self._plan_signal(direction, c, indicators,
+                                     f"3-candle burst {'up' if sgn > 0 else 'down'}, close {c:.1f}, "
+                                     f"EMA20 {e20[t]:.1f}, ATR {a[t]:.1f}", plan)
+        return None
+
+
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
 def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
@@ -492,6 +743,10 @@ def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
         VWAPEMAPullbackStrategy(underlying),
         ORBBreakoutStrategy(underlying),
         SupertrendEMAStrategy(underlying),
+        FirstCandleBreakoutStrategy(underlying),
+        EMARSIPullback15mStrategy(underlying),
+        PivotBounceStrategy(underlying),
+        MomentumBurstStrategy(underlying),
     ]
 
 

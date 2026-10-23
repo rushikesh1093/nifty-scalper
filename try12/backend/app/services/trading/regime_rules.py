@@ -75,9 +75,16 @@ SAFETY_BLOCKED_REGIMES = frozenset({
     "UNCLASSIFIED", "REGIME_TRANSITION", "HIGH_VOL_CHOP", "DETECTOR_ERROR", "UNKNOWN",
 })
 
-_TREND = frozenset({S.VWAP_EMA_PULLBACK.value, S.SUPERTREND_EMA.value, S.ORB_BREAKOUT.value})
+# The four strategies added 23 Oct: the opening breakout and momentum burst are
+# directional (trend + breakout regimes, the first candle also wherever ORB may
+# fire), the 15-min pullback trades trends, and the pivot bounce is a range play.
+_OPEN_BREAK = S.FIRST_CANDLE_BREAKOUT.value
+_TREND = frozenset({S.VWAP_EMA_PULLBACK.value, S.SUPERTREND_EMA.value, S.ORB_BREAKOUT.value,
+                    _OPEN_BREAK, S.EMA_RSI_PULLBACK_15M.value, S.MOMENTUM_BURST.value})
 _BREAKOUT = frozenset({S.ORB_BREAKOUT.value, S.SUPERTREND_EMA.value,
-                       S.VWAP_EMA_PULLBACK.value})
+                       S.VWAP_EMA_PULLBACK.value, _OPEN_BREAK, S.EMA_RSI_PULLBACK_15M.value,
+                       S.MOMENTUM_BURST.value})
+_RANGE = frozenset({S.ORB_BREAKOUT.value, _OPEN_BREAK, S.PIVOT_BOUNCE.value})
 
 REGIME_RULES: dict[str, RegimeRule] = {
     # ── Trend regimes ────────────────────────────────────────────────────────
@@ -91,7 +98,8 @@ REGIME_RULES: dict[str, RegimeRule] = {
         notes="Mirror of BULL_TREND_NORMAL_VOL — PE only",
     ),
     "TREND_HIGH_VOL": RegimeRule(
-        enabled_strategies=frozenset({S.VWAP_EMA_PULLBACK.value, S.SUPERTREND_EMA.value}),
+        enabled_strategies=frozenset({S.VWAP_EMA_PULLBACK.value, S.SUPERTREND_EMA.value,
+                                      S.EMA_RSI_PULLBACK_15M.value, S.MOMENTUM_BURST.value}),
         # Both directions here; should_allow_signal narrows by price vs VWAP
         allowed_directions=_BOTH, position_multiplier=0.5,
         notes="Trend intact but ATR elevated: pullback and momentum-flip entries, half size",
@@ -110,12 +118,12 @@ REGIME_RULES: dict[str, RegimeRule] = {
     ),
     # ── Compression / range regimes ──────────────────────────────────────────
     "LOW_VOL_COMPRESSION": RegimeRule(
-        enabled_strategies=frozenset({S.ORB_BREAKOUT.value}),
+        enabled_strategies=_RANGE,
         allowed_directions=_BOTH, position_multiplier=1.0,
         notes="Coiled tape: only the opening-range break (its width filter applies)",
     ),
     "RANGE_NORMAL_VOL": RegimeRule(
-        enabled_strategies=frozenset({S.ORB_BREAKOUT.value}),
+        enabled_strategies=_RANGE,
         allowed_directions=_BOTH, position_multiplier=1.0,
         notes="Sideways: trend and momentum entries whipsaw here; only the "
               "opening-range break may fire",

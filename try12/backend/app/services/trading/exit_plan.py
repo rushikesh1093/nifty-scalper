@@ -37,6 +37,7 @@ VWAP_EXIT       = "VWAP_EXIT"
 EMA_TRAIL       = "EMA9_TRAIL"
 ST_FLIP         = "ST_FLIP"
 OPPOSITE_SIGNAL = "OPPOSITE_SIGNAL"
+SESSION_EXIT    = "SESSION_EXIT"         # the strategy's own square-off time
 
 # One-shot (non-closing) actions
 T1_PARTIAL      = "T1_PARTIAL"
@@ -63,6 +64,8 @@ class ExitPlan:
     # trigger bar at entry). Every completed bar after it is checked once, so a
     # runner cycle that skips a minute cannot skip a bar exit.
     last_bar_start:      Optional[str] = None
+    # The strategy's own square-off, IST "HH:MM" (earlier than the session's).
+    exit_at:             Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -115,10 +118,11 @@ def breached(side: str, price: float, level: Optional[float]) -> bool:
 
 
 def tick_action(plan: ExitPlan, spot: Optional[float],
-                hold_minutes: Optional[float]) -> Optional[str]:
+                hold_minutes: Optional[float], now_t=None) -> Optional[str]:
     """The first spot/time action due on this tick, in priority order:
-    SPOT_SL → TARGET (spot) → T1_PARTIAL → BREAKEVEN → TIME_EXIT.
-    A missing spot price skips the spot checks (the premium stop still runs)."""
+    SPOT_SL → TARGET (spot) → T1_PARTIAL → BREAKEVEN → TIME_EXIT → SESSION_EXIT.
+    A missing spot price skips the spot checks (the premium stop still runs).
+    *now_t* is the IST wall time (naive) for the plan's exit_at."""
     if spot is not None and spot > 0:
         if breached(plan.side, spot, plan.spot_stop):
             return SPOT_SL
@@ -131,6 +135,10 @@ def tick_action(plan: ExitPlan, spot: Optional[float],
     if (plan.time_stop_minutes is not None and hold_minutes is not None
             and hold_minutes >= plan.time_stop_minutes):
         return TIME_EXIT
+    if plan.exit_at and now_t is not None:
+        hh, mm = (int(x) for x in plan.exit_at.split(":")[:2])
+        if (now_t.hour, now_t.minute) >= (hh, mm):
+            return SESSION_EXIT
     return None
 
 
