@@ -15,9 +15,6 @@ U = "UNCLASSIFIED"      # the classifier's catch-all (was UNKNOWN before the §6
 B = "BULL_TREND_NORMAL_VOL"
 
 
-TRANSITION_COOLDOWN_BUG = pytest.mark.xfail(strict=True, reason="Known bug since 763d894 (12 Oct): the two-observation candidate check adopts a new regime on its first bar, so REGIME_TRANSITION and its cooldown never fire. Fixing it changes trading; decision pending (audit D3).")
-
-
 def _ind():
     return RegimeIndicators(
         adx=25, atr=5, atr_percentile=50, vwap=100, price=101, vwap_cross_count=0,
@@ -66,7 +63,6 @@ def _entries_into_transition(regimes):
     return sum(1 for i, r in enumerate(regimes) if r == T and (i == 0 or regimes[i - 1] != T))
 
 
-@TRANSITION_COOLDOWN_BUG
 def test_unknown_then_bull_settles(monkeypatch):
     """Readiness-report repro: UNCLASSIFIED x3 then BULL x21 (old code looped T x3 / B x1)."""
     regimes, active = _replay(monkeypatch, [U] * 3 + [B] * 21)
@@ -78,7 +74,6 @@ def test_unknown_then_bull_settles(monkeypatch):
     assert active == 18   # UNCLASSIFIED is no-trade (D7); the 18 BULL candles trade
 
 
-@TRANSITION_COOLDOWN_BUG
 def test_single_flip_one_transition_block(monkeypatch):
     a = "RANGE_NORMAL_VOL"
     regimes, _ = _replay(monkeypatch, [a] * 6 + [B] * 10)

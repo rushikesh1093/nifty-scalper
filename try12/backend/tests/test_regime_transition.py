@@ -26,9 +26,6 @@ C = "BEAR_TREND_NORMAL_VOL"
 X = "EXPIRY_DAY"
 
 
-TRANSITION_COOLDOWN_BUG = pytest.mark.xfail(strict=True, reason="Known bug since 763d894 (12 Oct): the two-observation candidate check adopts a new regime on its first bar, so REGIME_TRANSITION and its cooldown never fire. Fixing it changes trading; decision pending (audit D3).")
-
-
 def _ind():
     return RegimeIndicators(
         adx=25, atr=5, atr_percentile=50, vwap=100, price=101, vwap_cross_count=0,
@@ -82,7 +79,6 @@ def _blocked_by_cooldown(out):
 
 # ── R2.7: 24 candles, one flip ───────────────────────────────────────────────
 
-@TRANSITION_COOLDOWN_BUG
 def test_one_flip_blocks_exactly_three_and_leaves_21_eligible(monkeypatch):
     out = _drive(monkeypatch, [A] * 6 + [B] * 18)
     # eligible = the detector is not in transition AND the orchestrator enables
@@ -97,7 +93,6 @@ def test_one_flip_blocks_exactly_three_and_leaves_21_eligible(monkeypatch):
 
 # ── R2.8: 375 candles, N changes incl. into and out of EXPIRY_DAY ────────────
 
-@TRANSITION_COOLDOWN_BUG
 def test_375_candles_block_n_non_expiry_times_cooldown(monkeypatch):
     segments = [(A, 40), (B, 30), (C, 25), (X, 20), (A, 35), (B, 45), (A, 30),
                 (C, 50), (X, 15), (B, 40), (A, 45)]
@@ -130,7 +125,6 @@ def _with_cooldown(n):
         RegimeConfig(TRANSITION_COOLDOWN_CANDLES=n))))
 
 
-@TRANSITION_COOLDOWN_BUG
 def test_cooldown_seven_still_detects_the_flip_and_blocks_seven(monkeypatch):
     # A second flip one candle after adoption: with a 5-entry history the 7
     # TRANSITION entries leave at most one stable state, and the flip is missed.
@@ -154,7 +148,6 @@ def test_cooldown_twelve_fails_validate():
 
 # ── A → B → C inside one window (review finding 16) ──────────────────────────
 
-@TRANSITION_COOLDOWN_BUG
 def test_third_regime_on_adoption_candle_is_adopted_without_new_cooldown(monkeypatch):
     # flip A→B at candle 5 (blocks 5, 6, 7); candle 8 classifies to C: adopted
     out = _drive(monkeypatch, [A] * 5 + [B] * 3 + [C] * 10)
@@ -164,7 +157,6 @@ def test_third_regime_on_adoption_candle_is_adopted_without_new_cooldown(monkeyp
     assert regimes.count(T) == 3
 
 
-@TRANSITION_COOLDOWN_BUG
 def test_first_candles_of_a_session_have_no_stable_regime(monkeypatch):
     out = _drive(monkeypatch, [B, A, A])
     assert [r for r, _, _ in out] == [B, T, T]   # a flip after one stable candle is a flip
@@ -192,7 +184,6 @@ def test_previous_day_expiry_history_is_discarded(runtime_ctx, fake_redis, monke
     assert [r for r, _, _ in out] == [A] * 5             # zero blocked candles
 
 
-@TRANSITION_COOLDOWN_BUG
 def test_same_day_history_is_rehydrated(runtime_ctx, fake_redis, monkeypatch):
     from app.services.trading.regime_persistence import RegimePersistence, _state_to_dict
 

@@ -74,10 +74,6 @@ class RegimeDetector:
 
         # Tracks the last time we emitted a "regime unchanged" heartbeat log
         self._last_log_time: dict[str, datetime] = {}
-        # Require two consecutive observations before treating a new stable
-        # regime as a real flip. This filters one-bar indicator glitches.
-        self._candidate_regime: dict[str, str] = {}
-        self._candidate_streak: dict[str, int] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -173,19 +169,14 @@ class RegimeDetector:
                     previous_regime, config
                 )
 
-                # Confirm a candidate across two observations before allowing a
-                # transition. A single-bar indicator spike must not repeatedly
-                # lock the runner in REGIME_TRANSITION.
-                if self._candidate_regime.get(underlying) == candidate_regime:
-                    self._candidate_streak[underlying] = self._candidate_streak.get(underlying, 0) + 1
-                else:
-                    self._candidate_regime[underlying] = candidate_regime
-                    self._candidate_streak[underlying] = 1
-                transition_detected = (
-                    self._candidate_streak[underlying] >= 2
-                    and self.check_regime_transition(
-                        candidate_regime, history, config.REGIME_TRANSITION_WINDOW
-                    )
+                # A flip from the last stable regime starts the cooldown on the
+                # bar it is seen (Req 9.1). 763d894 required two observations
+                # first, but the first one was adopted as the regime, so the
+                # second saw no change and the cooldown never fired (audit D3).
+                # A one-bar glitch costs one cooldown and cannot re-arm it:
+                # check_regime_transition ignores REGIME_TRANSITION entries.
+                transition_detected = self.check_regime_transition(
+                    candidate_regime, history, config.REGIME_TRANSITION_WINDOW
                 )
 
                 if transition_detected and candidate_regime not in (
