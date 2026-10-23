@@ -85,6 +85,11 @@ class TradingParams:
     # underlying: two strategies agreeing on a move are one bet, not two
     # (audit D6: 2 x the per-trade risk on one move exceeded the daily limit).
     max_open_per_direction: int = 1
+    # Expiry day: False = the EXPIRY_DAY no-trade regime all day (the old rule).
+    # True = classify the day like any other and trade when that regime allows;
+    # the selector still never buys the expiring series (DTE 0-1: it takes the
+    # next weekly), and strategies with sl_pct < 15% stay skipped that day.
+    trade_on_expiry_day: bool = True
     trade_amount: Optional[float] = None          # demoted display cache (§9.5)
     open_exposure_cap_pct: float = 40.0
     max_open_positions: int = 3

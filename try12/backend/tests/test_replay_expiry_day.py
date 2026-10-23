@@ -65,7 +65,8 @@ def test_replay_takes_no_trade_on_an_expiry_day(tmp_path, monkeypatch):
     Session, engine = _db(tmp_path)
     try:
         schedule = {"SUPERTREND_EMA": {"10:00": "BUY"}}
-        r = replay(Session, EXPIRY_TUE, NEXT_WED, scripted_factory(schedule))
+        r = replay(Session, EXPIRY_TUE, NEXT_WED, scripted_factory(schedule),
+                   overrides={"trade_on_expiry_day": False})        # the no-trade policy
         assert_complete(r)
 
         async def _go():
@@ -82,3 +83,35 @@ def test_replay_takes_no_trade_on_an_expiry_day(tmp_path, monkeypatch):
         assert tue == {"EXPIRY_DAY"} and "EXPIRY_DAY" not in wed
     finally:
         run(engine.dispose())
+
+
+def test_with_expiry_trading_on_the_day_is_classified_and_traded(tmp_path, monkeypatch):
+    """trade_on_expiry_day (the default): the expiry day gets an ordinary regime
+    and trades when that regime allows; the contract is still next week's."""
+    _expiry_aware_regime(monkeypatch)
+    isolate_singletons(monkeypatch)
+    Session, engine = _db(tmp_path)
+    try:
+        schedule = {"SUPERTREND_EMA": {"10:00": "BUY"}}
+        r = replay(Session, EXPIRY_TUE, NEXT_WED, scripted_factory(schedule),
+                   overrides={"trade_on_expiry_day": True})
+        assert_complete(r)
+
+        async def _go():
+            async with Session() as db:
+                pos = (await db.execute(select(PaperPosition).where(
+                    PaperPosition.run_id == r.run_id).order_by(PaperPosition.entry_time))).scalars().all()
+                regimes = (await db.execute(select(RegimeState.regime).where(
+                    RegimeState.run_id == r.run_id))).scalars().all()
+                return pos, regimes
+        pos, regimes = run(_go())
+        assert [p.entry_time.date() for p in pos] == [EXPIRY_TUE, NEXT_WED]
+        assert pos[0].expiry > EXPIRY_TUE                     # never the expiring series
+        assert "EXPIRY_DAY" not in regimes
+    finally:
+        run(engine.dispose())
+
+
+def test_trade_on_expiry_day_defaults_on():
+    from app.core.trading_params import TradingParams
+    assert TradingParams().trade_on_expiry_day is True

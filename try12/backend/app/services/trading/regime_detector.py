@@ -120,6 +120,11 @@ class RegimeDetector:
             # (live: the TTL cache + loader; replay: the run's frozen config).
             config: RegimeConfig = ctx().regime_config.for_underlying(underlying)
 
+            # Expiry day is the no-trade EXPIRY_DAY regime unless trading on
+            # expiry is enabled; then the day is classified on its indicators.
+            from app.runtime.context import params as _params
+            classify_as_expiry = bool(is_expiry_day) and not _params().trade_on_expiry_day
+
             # Step 2: Build regime-specific indicators
             regime_indicators: RegimeIndicators = build_regime_indicators(
                 candles, indicators, config, history=history
@@ -157,14 +162,14 @@ class RegimeDetector:
                 else:
                     # Cooldown expired → classify normally
                     regime = classify_regime(
-                        regime_indicators, underlying, is_expiry_day,
+                        regime_indicators, underlying, classify_as_expiry,
                         previous_regime, config
                     )
                     transition_cooldown_remaining = 0
             else:
                 # Classify candidate regime first
                 candidate_regime = classify_regime(
-                    regime_indicators, underlying, is_expiry_day,
+                    regime_indicators, underlying, classify_as_expiry,
                     previous_regime, config
                 )
 
