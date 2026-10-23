@@ -264,7 +264,8 @@ def live40(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     _seed_live_row(sqlite_db)
     pin_ist_time(monkeypatch, dtime(10, 30))
     allow_regime(monkeypatch)
-    with using(_ctx40(runtime_ctx)):
+    # two BUY signals: lift the one-per-direction rule (D6) so the exposure cap decides
+    with using(_ctx40(runtime_ctx, max_open_per_direction=2)):
         yield sqlite_db
 
 

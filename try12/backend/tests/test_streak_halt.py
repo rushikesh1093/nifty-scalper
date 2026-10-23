@@ -12,7 +12,7 @@ from app.services.trading import risk_gate, risk_state
 from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from tests.helpers import (
     add_closed, add_position, allow_regime, make_signal, pin_ist_time, regime_state,
-    reset_singletons, run, seed_config, with_cfg,
+    reset_singletons, run, seed_config, with_cfg, with_params,
 )
 
 
@@ -174,10 +174,13 @@ def test_two_full_losses_engage_the_daily_loss_cap_first(day, sqlite_db):
 
 
 def test_exposure_cap_is_unreachable_at_the_defaults_and_reachable_at_five(day, sqlite_db):
+    """Same-side positions: the one-per-direction rule (D6) is lifted to reach the caps."""
+    day = with_params(day, max_open_per_direction=10)
     for tok in ("A", "B", "C"):
         run(add_position(sqlite_db, token=tok, trade_amount_used=20_000.0))
     # defaults: 3 positions × ₹20,000 = ₹60,000 < the ₹80,000 cap, so the position cap binds
-    assert _gate(sqlite_db).code.value == "MAX_OPEN_POSITIONS"
+    with using(day):
+        assert _gate(sqlite_db).code.value == "MAX_OPEN_POSITIONS"
     run(add_position(sqlite_db, token="D", trade_amount_used=20_000.0))
     with using(with_cfg(day, max_open_positions=5)):
         assert _gate(sqlite_db).code.value == "EXPOSURE_CAP"      # 4 × 20,000 = 80,000

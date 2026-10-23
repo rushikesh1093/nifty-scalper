@@ -524,15 +524,19 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                 sqlite_lock = None
                 return _lock_timeout(started, None)
 
-        duplicate_query = select(PaperPosition.id).where(
-            PaperPosition.run_id == run_id,
-            PaperPosition.is_open.is_(True),
-        )
-        if duplicate_token is not None:
-            duplicate_query = duplicate_query.where(PaperPosition.token == duplicate_token)
-        elif duplicate_symbol:
-            duplicate_query = duplicate_query.where(PaperPosition.symbol == duplicate_symbol)
-        duplicate_exists = (await db.execute(duplicate_query.limit(1))).scalar_one_or_none()
+        # Only a named contract can be a duplicate: with neither given, the
+        # query used to match ANY open position and refuse every entry.
+        duplicate_exists = None
+        if duplicate_token is not None or duplicate_symbol:
+            duplicate_query = select(PaperPosition.id).where(
+                PaperPosition.run_id == run_id,
+                PaperPosition.is_open.is_(True),
+            )
+            if duplicate_token is not None:
+                duplicate_query = duplicate_query.where(PaperPosition.token == duplicate_token)
+            else:
+                duplicate_query = duplicate_query.where(PaperPosition.symbol == duplicate_symbol)
+            duplicate_exists = (await db.execute(duplicate_query.limit(1))).scalar_one_or_none()
         if duplicate_exists is not None:
             await db.rollback()
             return _no(

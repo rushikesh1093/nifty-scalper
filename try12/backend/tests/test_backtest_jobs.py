@@ -774,6 +774,9 @@ def test_i_a_console_ctrl_c_never_reaches_the_child(tmp_path):
     subprocess.run([sys.executable, str(script), str(flags), str(out)],
                    creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=si, timeout=60)
     res = json.loads(out.read_text(encoding="utf-8"))
+    if res["control_rc"] is None:                 # the control child never saw it either
+        pytest.skip("CTRL_C_EVENT was not delivered on the hidden console (no interactive "
+                    "desktop session, e.g. a service or agent shell): nothing to prove here")
     assert res["control_rc"] is not None          # the event was delivered on that console
     assert res["isolated_alive"] is True          # ...and the isolated child survived it
     assert res["isolated_kbi"] is False

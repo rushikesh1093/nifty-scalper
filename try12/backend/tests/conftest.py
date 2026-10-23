@@ -193,3 +193,14 @@ def fake_redis(monkeypatch):
                  "get_option_chain", "health"):
         monkeypatch.setattr(redis_cache, name, getattr(fake, name))
     return fake
+
+
+def pytest_report_header(config):
+    """Windows' 260-character path limit breaks the migration/config tests in a
+    deep checkout (they fail with FileNotFoundError). Say so up front."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    if os.name == "nt" and len(str(root)) > 110:
+        return (f"WARNING: backend path is {len(str(root))} chars; Windows' 260-char limit "
+                "breaks the migration tests here. Run from a short path "
+                "(e.g. C:/Users/<you>/Downloads/try12fin).")

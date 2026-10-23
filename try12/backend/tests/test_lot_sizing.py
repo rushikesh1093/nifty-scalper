@@ -13,7 +13,7 @@ from app.runtime.context import using
 from app.services.trading.paper_engine import _calc_lots, paper_engine
 from tests.helpers import (
     add_position, allow_regime, fake_candidate, pin_ist_time, run, seed_config, stub_select,
-    make_signal, with_cfg,
+    make_signal, with_cfg, with_params,
 )
 
 
@@ -59,7 +59,9 @@ def test_lot_above_available_capital_is_skipped(wired, runtime_ctx, monkeypatch)
     # ₹198,000 already deployed by an open position → only ₹2,000 free
     run(add_position(wired, trade_amount_used=198_000.0))
     stub_select(monkeypatch, fake_candidate(ltp=40.0, lot_size=65))   # ₹2,605 per lot
-    wide = with_cfg(runtime_ctx, open_exposure_cap_pct=100.0, max_open_positions=10)
+    # the seeded position is a CE like the signal: lift the one-per-direction rule (D6)
+    wide = with_params(with_cfg(runtime_ctx, open_exposure_cap_pct=100.0, max_open_positions=10),
+                       max_open_per_direction=10)
     with using(wide):
         assert run(paper_engine.handle_signal(make_signal())) is False
     (decision,) = [d for d in _rows(wired, NoTradeDecision) if d.stage != "DEGRADATION"]

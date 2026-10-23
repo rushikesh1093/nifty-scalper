@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from tests.helpers import IST, make_signal, run, seed_config
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
+N_STRATEGIES = 7                       # app.strategies.names.ALL_STRATEGY_NAMES
 NO_TRADE = APP / "services" / "trading" / "no_trade.py"
 
 SECTION12 = {
@@ -33,7 +34,7 @@ SECTION12 = {
                   "ATR_VS_SL_DISTANCE"},
     "SIZING": {"KELLY_NO_EDGE", "SIZED_TO_ZERO", "LOT_UNAFFORDABLE", "INSUFFICIENT_CAPITAL",
                "INITIAL_RISK_NON_POSITIVE", "COSTS_EXCEED_EDGE"},
-    "ENTRY": {"CAPITAL_RACE_LOST", "DAILY_TRADE_CAP_RACE", "HALT_ENGAGED_MID_ENTRY",
+    "ENTRY": {"DUPLICATE_OPEN_POSITION", "CAPITAL_RACE_LOST", "DAILY_TRADE_CAP_RACE", "HALT_ENGAGED_MID_ENTRY",
               "UNEXPECTED_ENTRY_ERROR"},
     "DEGRADATION": {"PERF_WRITE_FAILED", "MTM_DEGRADED", "FALLBACK_FILL", "DATA_GAP",
                     "DETECTOR_ERROR", "REGIME_MULTIPLIER_ERROR"},
@@ -246,7 +247,7 @@ def _candle(i, start):
 
 @pytest.fixture
 def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
-    """A runner over 12 stub strategies with every CYCLE gate open."""
+    """A runner over one stub per strategy (N_STRATEGIES) with every CYCLE gate open."""
     from dataclasses import replace
 
     from app.core.config import settings
@@ -272,7 +273,8 @@ def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
         """Put candles 0..i in Redis and move the clock to candle i's close."""
         fake_redis.kv[f"ohlc:{settings.NIFTY_TOKEN}:ONE_MINUTE"] = \
             [_candle(k, start) for k in range(i + 1)]
-        runtime_ctx.clock.set((start + timedelta(minutes=i)).replace(tzinfo=IST))
+        # the bar is closed one minute after it opens: the runner never reads a forming bar
+        runtime_ctx.clock.set((start + timedelta(minutes=i + 1)).replace(tzinfo=IST))
 
     with using(rc):
         yield runner, stubs, _feed
@@ -281,7 +283,7 @@ def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
 def test_quiet_session_cycle_stats_is_positive_evidence(quiet_runner, sqlite_db):
     """R12.8b: nothing blocks and nothing emits — cycle_stats alone says so."""
     runner, stubs, feed = quiet_runner
-    n = 350                                        # 09:15 .. 15:04, the entry window
+    n = 349                                        # bars 09:15 .. 15:03: each closes before the 15:05 cutoff
     for i in range(n):
         feed(i)
         run(runner.run_cycle("NIFTY"))
@@ -289,17 +291,16 @@ def test_quiet_session_cycle_stats_is_positive_evidence(quiet_runner, sqlite_db)
     (cs,) = run(_cycle_stats(sqlite_db))
     assert (cs.run_id, cs.underlying, str(cs.trading_day)) == ("PAPER", "NIFTY", "2026-09-01")
     assert cs.candles_evaluated == n
-    assert cs.strategies_evaluated == 12 * n
+    assert cs.strategies_evaluated == N_STRATEGIES * n
     assert cs.signals_emitted == 0
     assert cs.rejections_recorded == 0
     assert cs.first_cycle_at is not None and cs.last_cycle_at > cs.first_cycle_at
     assert all(s.calls == n for s in stubs)
     rejections = [r for r in run(_rows(sqlite_db)) if r.stage != "DEGRADATION"]
     assert rejections == []
-    # no spot LTP in Redis: OI/IV context missing every candle, one DATA_GAP row per day
-    assert cs.oi_iv_context_missing == n
-    gaps = run(_rows(sqlite_db, code="DATA_GAP"))
-    assert len(gaps) == 1 and gaps[0].context.get("what") == "oi_iv_context"
+    # the three-strategy runner reads no OI/IV context (7840af9): nothing is missing
+    assert cs.oi_iv_context_missing == 0
+    assert run(_rows(sqlite_db, code="DATA_GAP")) == []
 
 
 def test_cycle_gate_writes_one_row_per_candle_not_per_strategy(quiet_runner, sqlite_db, monkeypatch):
@@ -365,20 +366,20 @@ def test_skip_loop_records_user_and_regime_disables_once(quiet_runner, sqlite_db
 
     async def _merge(underlying, candles, indicators, is_expiry_day, flags, history=None):
         merged = {n: flags.get(n, True) for n in ALL_STRATEGY_NAMES}
-        merged["IV_CRUSH"] = False                     # regime says no
+        merged["PIVOT_BOUNCE"] = False                 # regime says no
         return merged, None
 
     monkeypatch.setattr(runner, "_detect_and_merge_regime", _merge)
-    with using(replace(ctx(), user_flags=FrozenUserFlags({"OI_SPIKE": False}))):
+    with using(replace(ctx(), user_flags=FrozenUserFlags({"MOMENTUM_BURST": False}))):
         for i in range(3):
             feed(i)
             run(runner.run_cycle("NIFTY"))
     rows = [(r.stage, r.code, r.strategy_name) for r in run(_rows(sqlite_db))
             if r.stage == "STRATEGY_GATE"]
-    assert sorted(rows) == [("STRATEGY_GATE", "STRATEGY_REGIME_DISABLED", "IV_CRUSH"),
-                            ("STRATEGY_GATE", "STRATEGY_USER_DISABLED", "OI_SPIKE")]
+    assert sorted(rows) == [("STRATEGY_GATE", "STRATEGY_REGIME_DISABLED", "PIVOT_BOUNCE"),
+                            ("STRATEGY_GATE", "STRATEGY_USER_DISABLED", "MOMENTUM_BURST")]
     (cs,) = run(_cycle_stats(sqlite_db))
-    assert cs.strategies_evaluated == 3 * 10 and cs.rejections_recorded == 2
+    assert cs.strategies_evaluated == 3 * (N_STRATEGIES - 2) and cs.rejections_recorded == 2
 
 
 def test_cycle_stats_write_failure_never_aborts_the_cycle(quiet_runner, monkeypatch, caplog):
@@ -451,7 +452,7 @@ def test_a_strategy_in_its_own_cooldown_is_recorded_once_per_episode(
     assert rows == [("STRATEGY_COOLDOWN", stubs[0].name)]
     assert stubs[0].calls == 1                      # evaluated only once the cooldown ended
     (cs,) = run(_cycle_stats(sqlite_db))
-    assert cs.strategies_evaluated == 4 * 12 - 3
+    assert cs.strategies_evaluated == 4 * N_STRATEGIES - 3
 
 
 # ── R12.8a: every gate type fires; the rows alone explain the empty book ────
