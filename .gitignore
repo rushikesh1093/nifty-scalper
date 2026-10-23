@@ -49,6 +49,8 @@ desktop.ini
 
 # ── Logs & local data ─────────────────────────────────
 *.log
+*.log.*
+logs/
 *.db
 *.sqlite
 *.sqlite3

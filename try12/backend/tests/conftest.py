@@ -20,6 +20,9 @@ os.environ.update({
     "ANGEL_CLIENT_ID": "",
     "ANGEL_PASSWORD": "",
     "ANGEL_TOTP_SECRET": "",
+    "LOG_DIR": "",                  # no log files from the test run
+    "ALERT_TELEGRAM_BOT_TOKEN": "",
+    "ALERT_TELEGRAM_CHAT_ID": "",
 })
 
 import pytest  # noqa: E402

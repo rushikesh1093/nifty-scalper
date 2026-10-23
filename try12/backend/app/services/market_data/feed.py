@@ -260,6 +260,7 @@ class MarketFeed:
         self._async_handlers:   list[Callable] = []
         self._running:          bool = False
         self._reconnect_count:  int  = 0
+        self._down_alerted:     bool = False
         self._last_was_429:     bool = False   # flag set when previous attempt got 429
         self._hb_task:          Optional[asyncio.Task] = None
 
@@ -348,6 +349,12 @@ class MarketFeed:
                         "Feed disconnected (%s). Reconnecting in %ds (attempt %d)...",
                         exc, delay, self._reconnect_count,
                     )
+                from app.core.alerts import alert, CRITICAL, WARNING
+                if alert("feed_down", f"Market feed down ({exc_str[:120]}); retry "
+                         f"{self._reconnect_count} in {delay}s",
+                         level=CRITICAL if self._reconnect_count >= 3 else WARNING,
+                         throttle_s=600):
+                    self._down_alerted = True
                 await asyncio.sleep(delay)
 
     async def _connect(self):
@@ -366,6 +373,10 @@ class MarketFeed:
             self._ws = ws
             logger.info("✅ WebSocket connected. Subscribing %d token groups...",
                         len(self._subscriptions))
+            if self._down_alerted:
+                from app.core.alerts import alert, INFO
+                alert("feed_up", "Market feed reconnected", level=INFO)
+                self._down_alerted = False
 
             self._hb_task = asyncio.create_task(self._heartbeat_loop())
             await self._send_subscriptions()

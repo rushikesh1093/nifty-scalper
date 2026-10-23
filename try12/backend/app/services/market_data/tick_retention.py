@@ -162,6 +162,9 @@ async def run_cleanup(session_factory: Callable, *, retention_days: int, backup_
         logger.warning("LOW DISK: %.2f GB free (warning below %.1f GB). A full disk stops the "
                        "database; free space or shorten TICK_RETENTION_DAYS.",
                        res.free_gb, low_disk_warn_gb)
+        from app.core.alerts import alert
+        alert("low_disk", f"Low disk: {res.free_gb:.1f} GB free (warning below "
+                          f"{low_disk_warn_gb:.0f} GB)", throttle_s=3600)
     return res
 
 

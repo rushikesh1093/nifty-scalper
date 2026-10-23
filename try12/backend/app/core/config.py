@@ -76,7 +76,17 @@ class Settings(BaseSettings):
     TICK_RETENTION_DAYS: int = 30
     TICK_BACKUP_DIR: str = "backups/ticks"
     TICK_CLEANUP_TIME_IST: str = "16:05"
-    LOW_DISK_WARN_GB: float = 2.0
+    # ~1.3 GB of ticks a trading day: 10 GB is about a week's warning.
+    LOW_DISK_WARN_GB: float = 10.0
+
+    # Logs (app/core/logging.py): rotating backend.log and alerts.log in
+    # LOG_DIR; empty disables the files. Alerts (app/core/alerts.py) also go to
+    # Telegram when both ALERT_TELEGRAM_* are set.
+    LOG_DIR: str = "logs"
+    LOG_MAX_MB: int = 20
+    LOG_BACKUPS: int = 10
+    ALERT_TELEGRAM_BOT_TOKEN: Optional[str] = None
+    ALERT_TELEGRAM_CHAT_ID: Optional[str] = None
 
     # Candle intervals supported
     SUPPORTED_INTERVALS: list = ["ONE_MINUTE", "THREE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE"]

@@ -26,7 +26,8 @@ from app.api.routes.analytics import router as analytics_router
 from app.api.routes.backtest import router as backtest_router
 from app.services.backtest import jobs as backtest_jobs
 
-setup_logging("DEBUG" if settings.DEBUG else "INFO")
+setup_logging("DEBUG" if settings.DEBUG else "INFO", settings.LOG_DIR,
+              settings.LOG_MAX_MB, settings.LOG_BACKUPS)
 logger = logging.getLogger(__name__)
 
 
@@ -253,6 +254,11 @@ async def health():
     from app.services.market_data.tick_retention import free_disk_gb
     from pathlib import Path
     disk_free = free_disk_gb(Path("."))
+    low_disk = disk_free is not None and disk_free < settings.LOW_DISK_WARN_GB
+    if low_disk:
+        from app.core.alerts import alert
+        alert("low_disk", f"Low disk: {disk_free:.1f} GB free (warning below "
+                          f"{settings.LOW_DISK_WARN_GB:.0f} GB)", throttle_s=3600)
     return {
         "status":          status,
         "redis":           "ok" if redis_ok else "down",
@@ -260,5 +266,13 @@ async def health():
         "session_valid":   session_valid,
         "subscriptions":   subs,
         "disk_free_gb":    disk_free,
-        "low_disk":        disk_free is not None and disk_free < settings.LOW_DISK_WARN_GB,
+        "low_disk":        low_disk,
     }
+
+
+@app.get("/alerts")
+async def alerts(limit: int = 50):
+    """The most recent operator alerts, newest first (in memory since the last
+    start; logs/alerts.log keeps them all)."""
+    from app.core.alerts import recent
+    return {"alerts": recent(max(1, min(limit, 100)))}

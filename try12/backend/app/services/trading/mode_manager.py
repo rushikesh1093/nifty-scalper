@@ -80,6 +80,9 @@ class ModeManager:
         """
         self._halted = True
         logger.error("%s halt (%s): %s", code, halt_type, reason)
+        from app.core.alerts import alert, CRITICAL
+        alert(f"halt:{code}", f"{code} halt ({halt_type}): {reason}", level=CRITICAL,
+              throttle_s=300)
         try:
             async with session_factory() as db:
                 await db.execute(

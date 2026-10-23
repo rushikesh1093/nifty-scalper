@@ -457,6 +457,10 @@ class PaperEngine:
             actual_entry, sl, tgt, rr,
             lots, capital_used, fraction.method, fraction.base_amount, regime_multiplier
         )
+        from app.core.alerts import alert, INFO
+        alert(f"open:{pos_id}", f"OPENED {signal.strategy_name} {selected.symbol} x{lots} lots "
+                                f"@ {actual_entry:.2f} (SL {sl:.2f}, target {tgt:.2f}, "
+                                f"cost Rs{capital_used:,.0f})", level=INFO)
 
         # An entry filled without a valid quote is a recorded degradation (§12)
         if entry_fill_source != "ASK":
@@ -1263,6 +1267,11 @@ class PaperEngine:
             pos_id, reason, actual_exit, exit_source, total_net,
             f"{r_multiple:.3f}" if r_multiple is not None else "n/a",
         )
+        from app.core.alerts import alert, INFO
+        alert(f"close:{pos_id}", f"CLOSED {pos.strategy_name} {pos.symbol} {reason} "
+                                 f"@ {actual_exit:.2f}: net Rs{total_net:,.0f}"
+                                 + (f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""),
+              level=INFO)
 
         # An exit not filled off a valid bid (other than a TARGET limit) is a recorded
         # fallback (§12); exits are never refused, so this is the visible cost.
