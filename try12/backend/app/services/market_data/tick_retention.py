@@ -168,6 +168,30 @@ async def run_cleanup(session_factory: Callable, *, retention_days: int, backup_
     return res
 
 
+async def quarantine_days(session_factory: Callable, days, out_dir: Path,
+                          reason: str) -> list[tuple[date, int, str]]:
+    """Move whole IST days of bad ticks out of the table (audit D8): each day is
+    written to a verified ``<out_dir>/ticks_<day>.csv.gz`` exactly like a
+    retention backup, then deleted, and *reason* is appended to
+    ``<out_dir>/QUARANTINE.txt``. Reversible: the file holds every column.
+    A day whose backup fails raises and is not deleted."""
+    done = []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    async with session_factory() as db:
+        for day in sorted(set(days)):
+            rows, max_id, path = await _backup_day(db, day, out_dir)
+            if not rows:
+                path.unlink(missing_ok=True)
+                continue
+            deleted = await _delete_day(db, day, max_id)
+            with open(out_dir / "QUARANTINE.txt", "a", encoding="utf-8") as fh:
+                fh.write(f"{datetime.now(IST).isoformat(timespec='seconds')}  {day}  "
+                         f"{rows} rows -> {path.name}  ({deleted} deleted)  {reason}\n")
+            logger.warning("Tick quarantine: %s, %d rows -> %s (%s)", day, rows, path, reason)
+            done.append((day, rows, str(path)))
+    return done
+
+
 class TickRetention:
     """Daily scheduler around run_cleanup (wall clock: maintenance, not trading)."""
 

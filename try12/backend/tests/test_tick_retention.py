@@ -123,3 +123,34 @@ def test_the_job_is_started_and_stopped_with_the_app():
     import app.main as main
     src = inspect.getsource(main.lifespan)
     assert "tick_retention.start()" in src and "tick_retention.stop()" in src
+
+
+# ── quarantine (audit D8) ────────────────────────────────────────────────────
+
+def test_quarantine_moves_only_the_named_days(sqlite_db, tmp_path):
+    bad1, bad2, good = date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 12)
+    _add_ticks(sqlite_db, bad1, 6)
+    _add_ticks(sqlite_db, bad2, 3)
+    _add_ticks(sqlite_db, good, 4)
+    out = tmp_path / "quarantine"
+    done = run(tr.quarantine_days(sqlite_db, [bad2, bad1, date(2026, 10, 7)], out,
+                                  "stamped 5h30m early"))
+    assert [(d, n) for d, n, _ in done] == [(bad1, 6), (bad2, 3)]   # the empty day is skipped
+    assert _count(sqlite_db) == 4 and _count(sqlite_db, good) == 4
+    with gzip.open(out / "ticks_2026-10-05.csv.gz", "rt", newline="") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == tr.COLUMNS and len(rows) == 1 + 6
+    log = (out / "QUARANTINE.txt").read_text(encoding="utf-8")
+    assert "2026-10-05" in log and "stamped 5h30m early" in log
+    assert not (out / "ticks_2026-10-07.csv.gz").exists()
+
+
+def test_quarantine_keeps_a_day_whose_backup_fails(sqlite_db, tmp_path, monkeypatch):
+    _add_ticks(sqlite_db, date(2026, 10, 5), 5)
+
+    async def _boom(db, day, out_dir):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(tr, "_backup_day", _boom)
+    with pytest.raises(RuntimeError):
+        run(tr.quarantine_days(sqlite_db, [date(2026, 10, 5)], tmp_path, "bad"))
+    assert _count(sqlite_db) == 5
