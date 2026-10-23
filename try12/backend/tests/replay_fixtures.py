@@ -176,8 +176,12 @@ def replay(Session, date_from: date, date_to: date, factory: Callable, *,
     build_and_write = None
     if report:
         from app.services.replay.report import build_and_write
+    # Replay tests script entries at fixed times on hand-built strike ladders; the
+    # lunch blackout and the ATM/1-OTM strike limit are tested on their own
+    # (test_new_strategies), so they are off here unless a test sets them.
+    base = {"entry_blackout_windows": [], "max_otm_strikes": 20}
     args = ReplayArgs(date_from=date_from, date_to=date_to, underlyings=("NIFTY",),
-                      params_overrides=dict(overrides or {}), seed=seed, label=label,
+                      params_overrides={**base, **(overrides or {})}, seed=seed, label=label,
                       bootstrap_iterations=iterations, out_dir=out_dir)
     eng = ReplayEngine(Session, strategy_factory=factory, report_builder=build_and_write)
     return run(eng.run(args))

@@ -22,7 +22,8 @@ from app.strategies.base import Direction
 from tests.helpers import option_row, run, seed_config, with_instruments
 
 SPOT = 22600.0
-KW = dict(sl_pct=0.15, target_pct=0.30, params=TradingParams(), base_amount=20_000.0,
+KW = dict(sl_pct=0.15, target_pct=0.30, params=TradingParams(max_otm_strikes=20),  # wide ladder
+          base_amount=20_000.0,
           regime_multiplier=1.0)
 GOOD = dict(ltp=100.0, bid=99.5, ask=100.5, oi=200_000, volume=5_000)
 BAD = {                                   # strike -> the one field that fails

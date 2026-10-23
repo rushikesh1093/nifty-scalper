@@ -189,10 +189,10 @@ def test_the_old_live_fraction_affords_none_of_them(runtime_ctx, fake_redis):
     with using(with_instruments(runtime_ctx, rows)):
         old = run(option_selector.select(
             None, Direction.BUY, "NIFTY", 22600.0, sl_pct=0.15, target_pct=0.30,
-            params=TradingParams(), base_amount=before, regime_multiplier=1.0))
+            params=TradingParams(max_otm_strikes=20), base_amount=before, regime_multiplier=1.0))
         new = run(option_selector.select(
             None, Direction.BUY, "NIFTY", 22600.0, sl_pct=0.15, target_pct=0.30,
-            params=TradingParams(), base_amount=6000.0, regime_multiplier=1.0))
+            params=TradingParams(max_otm_strikes=20), base_amount=6000.0, regime_multiplier=1.0))
     assert old.candidate is None and old.rejections == {"PREMIUM_ABOVE_AFFORDABLE": 3}
     assert new.candidate is not None and new.rejections == {}
 
