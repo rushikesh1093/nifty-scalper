@@ -425,6 +425,8 @@ class PaperEngine:
                     advisory_used=float(sized.context.get("open_capital_used", 0.0)),
                     duplicate_token=selected.token,
                     duplicate_symbol=selected.symbol,
+                    direction_key=(signal.underlying,
+                                   "CE" if signal.direction.value == "BUY" else "PE"),
                     insert=_insert)
         except Exception as exc:
             # The transaction rolled back: no row exists and nothing is held.

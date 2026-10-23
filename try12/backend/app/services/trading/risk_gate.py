@@ -370,6 +370,16 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
                    f"Wait for a position to close.",
                    open_positions=open_n, max_open_positions=cfg.max_open_positions)
 
+    # 9b. one bet per direction
+    side = "CE" if signal.direction.value == "BUY" else "PE"
+    same_side = await risk_state.open_direction_count(db, rc.run_id, signal.underlying, side)
+    if same_side >= p_.max_open_per_direction:
+        return _no(Stage.RISK_GATE, ReasonCode.MAX_OPEN_POSITIONS,
+                   f"Already {same_side} open {side} position(s) on {signal.underlying} "
+                   f"(max {p_.max_open_per_direction} per direction)",
+                   direction=side, open_same_direction=same_side,
+                   max_open_per_direction=p_.max_open_per_direction)
+
     # 10. aggregate open exposure
     used = await risk_state.open_capital_used(db, rc.run_id)
     exposure_cap = cfg.open_exposure_cap_pct / 100.0 * cfg.capital
@@ -486,6 +496,7 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                 advisory_used: float, insert: Callable[[Any], Awaitable[Any]],
                 duplicate_token: Optional[str] = None,
                 duplicate_symbol: Optional[str] = None,
+                direction_key: Optional[tuple[str, str]] = None,
                 lock_timeout_s: float = LOCK_TIMEOUT_S) -> GateDecision:
     """One transaction: lock → 13a (derived count) → 13b (derived capital) →
     insert → commit. Every early return happens before the insert, with nothing
@@ -529,6 +540,17 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                 f"Open position already exists for {duplicate_symbol or duplicate_token}; duplicate entry blocked.",
                 duplicate_position_id=duplicate_exists,
             )
+
+        if direction_key is not None:                                                   # 9b again,
+            und, side = direction_key                                                   # under the lock
+            same_side = await risk_state.open_direction_count(db, run_id, und, side)
+            if same_side >= params().max_open_per_direction:
+                await db.rollback()
+                return _no(Stage.ENTRY, ReasonCode.MAX_OPEN_POSITIONS,
+                           f"Already {same_side} open {side} position(s) on {und} "
+                           f"(max {params().max_open_per_direction} per direction) while "
+                           f"this signal was in selection",
+                           direction=side, open_same_direction=same_side)
 
         count = await risk_state.derived_trade_count(db, run_id, trading_day)          # 13a
         if count >= cfg.max_trades_per_day:

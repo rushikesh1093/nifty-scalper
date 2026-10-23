@@ -81,6 +81,10 @@ class TradingParams:
     plan_min_stop_pct: float = 0.05
     # Strategies that trade the same move: at most one position a day per group.
     exclusive_strategy_groups: tuple = (("ORB_BREAKOUT", "FIRST_CANDLE_BREAKOUT"),)
+    # At most this many OPEN positions in one direction (CE or PE) on an
+    # underlying: two strategies agreeing on a move are one bet, not two
+    # (audit D6: 2 x the per-trade risk on one move exceeded the daily limit).
+    max_open_per_direction: int = 1
     trade_amount: Optional[float] = None          # demoted display cache (§9.5)
     open_exposure_cap_pct: float = 40.0
     max_open_positions: int = 3
@@ -210,6 +214,8 @@ class TradingParams:
         if not (0 < self.max_daily_loss_pct <= 100):
             v.append(f"max_daily_loss_pct={self.max_daily_loss_pct} must be in (0, 100]")
 
+        if self.max_open_per_direction < 1:
+            v.append(f"max_open_per_direction={self.max_open_per_direction} must be >= 1")
         if not (0 < self.max_risk_per_trade_pct <= 100):
             v.append(f"max_risk_per_trade_pct={self.max_risk_per_trade_pct} must be in (0, 100]")
         if not (0 < self.fixed_fraction_pct <= MAX_FIXED_FRACTION_PCT):
