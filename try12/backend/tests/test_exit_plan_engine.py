@@ -125,14 +125,39 @@ def test_generic_ladder_and_premium_target_are_off_for_plan_positions(runtime_ct
 
 def test_opposite_signal_closes_the_other_side(runtime_ctx, sqlite_db, fake_redis):
     run(seed_config(sqlite_db, used_capital=6500.0))
-    pid = _open(sqlite_db, runtime_ctx)                          # a CE
+    pid = _open(sqlite_db, runtime_ctx)                          # a VWAP_EMA_PULLBACK CE
     fake_redis.put_tick("OPT1", 103.0, age_s=1.0)
     assert run(paper_engine._close_opposite(make_signal(
-        strategy="SUPERTREND_EMA", direction=Direction.BUY))) == 0
+        strategy="VWAP_EMA_PULLBACK", direction=Direction.BUY))) == 0     # same side
     assert run(paper_engine._close_opposite(make_signal(
-        strategy="SUPERTREND_EMA", direction=Direction.SELL))) == 1
+        strategy="VWAP_EMA_PULLBACK", direction=Direction.SELL))) == 1
     pos = run(get_position(sqlite_db, pid))
     assert not pos.is_open and pos.exit_reason == xp.OPPOSITE_SIGNAL
+
+
+@pytest.mark.parametrize("other", ["SUPERTREND_EMA", "ORB_BREAKOUT"])
+def test_another_strategys_opposite_signal_leaves_the_position_open(runtime_ctx, sqlite_db,
+                                                                    fake_redis, other):
+    run(seed_config(sqlite_db, used_capital=6500.0))
+    pid = _open(sqlite_db, runtime_ctx)                          # a VWAP_EMA_PULLBACK CE
+    fake_redis.put_tick("OPT1", 103.0, age_s=1.0)
+    assert run(paper_engine._close_opposite(make_signal(
+        strategy=other, direction=Direction.SELL))) == 0
+    assert run(get_position(sqlite_db, pid)).is_open
+
+
+def test_opposite_signal_closes_only_its_own_strategys_position(runtime_ctx, sqlite_db,
+                                                                fake_redis):
+    run(seed_config(sqlite_db, used_capital=13000.0))
+    mine = _open(sqlite_db, runtime_ctx, strategy_name="SUPERTREND_EMA",
+                 exit_plan=plan(strategy="SUPERTREND_EMA", spot_t1=None,
+                                premium_target_pts=20.0, time_stop_minutes=10))
+    other = _open(sqlite_db, runtime_ctx)                        # VWAP_EMA_PULLBACK CE
+    fake_redis.put_tick("OPT1", 103.0, age_s=1.0)
+    assert run(paper_engine._close_opposite(make_signal(
+        strategy="SUPERTREND_EMA", direction=Direction.SELL))) == 1
+    assert not run(get_position(sqlite_db, mine)).is_open
+    assert run(get_position(sqlite_db, other)).is_open
 
 
 class _Stub:

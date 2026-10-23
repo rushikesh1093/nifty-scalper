@@ -169,8 +169,8 @@ class PaperEngine:
         """
         from app.services.trading.mode_manager import mode_manager
 
-        # An opposite-direction signal is an exit for what is open on this
-        # underlying, whether or not the new signal goes on to open a trade.
+        # An opposite-direction signal is an exit for the SAME strategy's open
+        # position on this underlying, whether or not it goes on to open a trade.
         await self._close_opposite(signal)
 
         # study_phase comes through ctx().control: the live row (an operator
@@ -946,12 +946,17 @@ class PaperEngine:
         return closed
 
     async def _close_opposite(self, signal: SignalEvent) -> int:
-        """Close open positions on the signal's underlying that face the other way."""
+        """Close the signalling strategy's own open positions on the signal's
+        underlying that face the other way. Other strategies' positions are left
+        alone: they run on their own timeframe and exit plan, and a 1-min
+        Supertrend flip closing a 3-min pullback or a 5-min ORB trade cut 19 of
+        their 47 trades short in a real-path backtest."""
         want = "PE" if signal.direction == Direction.BUY else "CE"
         async with sessions()() as db:
             rows = (await db.execute(select(PaperPosition).where(
                 PaperPosition.run_id == ctx().run_id,
                 PaperPosition.underlying == signal.underlying,
+                PaperPosition.strategy_name == signal.strategy_name,
                 PaperPosition.option_type == want,
                 PaperPosition.is_open == True))).scalars().all()  # noqa: E712
         closed = 0
