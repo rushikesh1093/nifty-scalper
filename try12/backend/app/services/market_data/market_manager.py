@@ -320,6 +320,7 @@ class MarketManager:
                     }
                     for row in candles
                 ]
+                candle_dicts = await self._rest_candles_to_feed_units(token, "NFO", candle_dicts)
         except Exception as exc:
             logger.debug("AngelOne seed error for token %s: %s — trying DB", token, exc)
 
@@ -417,6 +418,7 @@ class MarketManager:
                     }
                     for row in candles
                 ]
+                candle_dicts = await self._rest_candles_to_feed_units(token, exchange, candle_dicts)
                 logger.info(
                     "Seeded %d candles for %s (%s/%s) from AngelOne REST",
                     len(candle_dicts), symbol, exchange, token,
@@ -495,6 +497,48 @@ class MarketManager:
 
         if candle_dicts:
             await redis_cache.set_candles(token, "ONE_MINUTE", candle_dicts[-SEED_KEEP_CANDLES:])
+
+    async def _rest_candles_to_feed_units(self, token: str, exchange: str,
+                                          candles: list[dict]) -> list[dict]:
+        """Make REST history match the candles the live feed builds:
+          - AngelOne's historical F&O volume is in LOTS, the feed's in units
+            (quantity): on 23 Oct the same minutes differed ~65x, the NIFTY lot
+            size, so after a mid-session restart every live minute looked like a
+            volume surge to the ORB and regime volume tests. NFO volume is scaled
+            by the instrument's lot size.
+          - the still-forming current minute is dropped: the live builder emits
+            that minute when it closes, and keeping both left a duplicate."""
+        from datetime import datetime, timezone
+        from app.services.market_data.timestamps import try_normalize_candle_timestamp as _ts
+        now_min = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        out = []
+        for c in candles:
+            t = _ts(c.get("timestamp"))
+            if t is not None and t.astimezone(timezone.utc) >= now_min:
+                continue
+            out.append(c)
+        if exchange == "NFO":
+            lot = await self._lot_size(token)
+            if lot and lot > 1:
+                for c in out:
+                    c["volume"] = int((c.get("volume") or 0) * lot)
+        return out
+
+    async def _lot_size(self, token: str) -> Optional[int]:
+        cache = self.__dict__.setdefault("_lot_cache", {})
+        if token in cache:
+            return cache[token]
+        try:
+            from sqlalchemy import select
+            from app.db.models.instrument import Instrument
+            async with AsyncSessionLocal() as db:
+                lot = (await db.execute(select(Instrument.lot_size).where(
+                    Instrument.token == token).limit(1))).scalar_one_or_none()
+        except Exception as exc:
+            logger.debug("lot size lookup failed for %s: %s", token, exc)
+            lot = None
+        cache[token] = lot
+        return lot
 
     async def _nearest_futures(self) -> list[tuple[str, str, str]]:
         """(token, symbol, underlying) of the nearest-expiry NIFTY / BANKNIFTY

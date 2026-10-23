@@ -345,3 +345,24 @@ def test_spot_and_futures_are_seeded_before_the_option_watchlist():
     # and startup does not wait for the option history
     assert "asyncio.create_task(self._seed_option_history(watchlist))" in src
     assert "await self._seed_historical_ohlc(watchlist)" not in src
+
+
+# ── REST history in the feed's units; no still-forming minute ────────────────
+
+def test_rest_futures_volume_is_scaled_to_feed_units_and_the_open_minute_dropped(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    import app.services.market_data.market_manager as mm
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    rows = [{"timestamp": (now - timedelta(minutes=2)).astimezone(ist).isoformat(), "volume": 100},
+            {"timestamp": (now - timedelta(minutes=1)).astimezone(ist).isoformat(), "volume": 150},
+            {"timestamp": now.astimezone(ist).isoformat(), "volume": 20}]          # still forming
+    m = mm.MarketManager()
+
+    async def _lot(token):
+        return 65
+    monkeypatch.setattr(m, "_lot_size", _lot)
+    fut = run(m._rest_candles_to_feed_units("48704", "NFO", [dict(r) for r in rows]))
+    assert [c["volume"] for c in fut] == [6500, 9750]          # lots -> units, open minute gone
+    spot = run(m._rest_candles_to_feed_units("99926000", "NSE", [dict(r) for r in rows]))
+    assert [c["volume"] for c in spot] == [100, 150]            # spot untouched (and no lot lookup)
