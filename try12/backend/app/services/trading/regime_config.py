@@ -40,6 +40,8 @@ class RegimeConfig:
     VWAP_CROSS_CHOP_THRESHOLD: int = 8
     VOLUME_SURGE_MULTIPLIER: float = 1.5
     REGIME_TRANSITION_WINDOW: int = 2
+    # Not read by the detector: it uses TradingParams.transition_cooldown_candles
+    # (the run's knob). Kept so the regime_config row still loads.
     TRANSITION_COOLDOWN_CANDLES: int = 3
 
 

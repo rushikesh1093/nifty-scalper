@@ -113,7 +113,11 @@ class TradingParams:
     # ── caches / regime ──────────────────────────────────────────────────────
     cooldown_mirror_ttl_s: int = 120
     params_cache_ttl_s: int = 30
-    transition_cooldown_candles: int = 3
+    # Candles blocked as REGIME_TRANSITION after a regime flip; 0 = off.
+    # Off by default (23 Oct): the per-minute regime label flips ~52 times a
+    # day, so a 3-candle cooldown blocked 47% of the session and cut the
+    # 31-day backtest from 47 to 27 trades with no measurable edge removed.
+    transition_cooldown_candles: int = 0
 
     # ── entry gate ───────────────────────────────────────────────────────────
     min_rr: float = 2.0
@@ -248,12 +252,12 @@ class TradingParams:
             )
 
         c = self.transition_cooldown_candles
-        if not (1 <= c <= TRANSITION_COOLDOWN_CANDLES_MAX):
+        if not (0 <= c <= TRANSITION_COOLDOWN_CANDLES_MAX):
             v.append(
                 f"transition_cooldown_candles={c} must be in "
-                f"[1, {TRANSITION_COOLDOWN_CANDLES_MAX}]"
+                f"[0, {TRANSITION_COOLDOWN_CANDLES_MAX}] (0 = off)"
             )
-        elif not (c < _history_len(c) - 1):
+        elif c and not (c < _history_len(c) - 1):
             v.append(
                 f"transition_cooldown_candles={c} must be < history length "
                 f"{_history_len(c)} - 1"

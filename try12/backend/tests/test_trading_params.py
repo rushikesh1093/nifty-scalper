@@ -40,7 +40,7 @@ def test_section_19_1_defaults():
     assert (p.losing_streak_halt_n, p.strategy_streak_halt_n, p.post_loss_cooldown_minutes) == (3, 2, 15)
     assert (p.kelly_multiplier, p.kelly_fraction_cap_pct, p.kelly_min_trades) == (0.25, 15.0, 100)
     assert (p.cooldown_mirror_ttl_s, p.params_cache_ttl_s) == (120, 30)
-    assert p.transition_cooldown_candles == 3
+    assert p.transition_cooldown_candles == 0          # off (23 Oct)
     assert p.min_rr == 2.0
     assert p.stale_tick_seconds == 60
     assert p.entry_cutoff_buffer_min == 10
@@ -162,7 +162,7 @@ def test_partial_exit_needs_two_lots():
     assert _violations(max_lots_per_trade=1, partial_exit_enabled=False) == []
 
 
-@pytest.mark.parametrize("value", [0, 9, 12])
+@pytest.mark.parametrize("value", [-1, 9, 12])
 def test_transition_cooldown_bounds(value):
     _assert_one_naming(_violations(transition_cooldown_candles=value),
                        "transition_cooldown_candles")
@@ -170,6 +170,10 @@ def test_transition_cooldown_bounds(value):
 
 def test_transition_cooldown_seven_is_allowed():
     assert _violations(transition_cooldown_candles=7) == []
+
+
+def test_transition_cooldown_zero_means_off_and_is_allowed():
+    assert _violations(transition_cooldown_candles=0) == []
 
 
 def test_max_hold_missing_default():

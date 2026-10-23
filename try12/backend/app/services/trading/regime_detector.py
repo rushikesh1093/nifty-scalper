@@ -120,6 +120,10 @@ class RegimeDetector:
             # expiry is enabled; then the day is classified on its indicators.
             from app.runtime.context import params as _params
             classify_as_expiry = bool(is_expiry_day) and not _params().trade_on_expiry_day
+            # The run's cooldown knob (TradingParams: frozen per replay, overlaid
+            # live, exposed by the backtest launcher). 0 = no cooldown: a flip is
+            # adopted on the bar it is seen.
+            cooldown_n = _params().transition_cooldown_candles
 
             # Step 2: Build regime-specific indicators
             regime_indicators: RegimeIndicators = build_regime_indicators(
@@ -132,7 +136,7 @@ class RegimeDetector:
             if underlying not in self._regime_history:
                 self._regime_history[underlying] = (
                     await self._persistence.load_regime_history(underlying)
-                )[-_history_len(config.TRANSITION_COOLDOWN_CANDLES):]
+                )[-_history_len(cooldown_n):]
             history: list[RegimeState] = list(self._regime_history[underlying])
             previous_regime: Optional[str] = (
                 history[-1].regime if history else None
@@ -175,7 +179,7 @@ class RegimeDetector:
                 # second saw no change and the cooldown never fired (audit D3).
                 # A one-bar glitch costs one cooldown and cannot re-arm it:
                 # check_regime_transition ignores REGIME_TRANSITION entries.
-                transition_detected = self.check_regime_transition(
+                transition_detected = cooldown_n > 0 and self.check_regime_transition(
                     candidate_regime, history, config.REGIME_TRANSITION_WINDOW
                 )
 
@@ -184,12 +188,12 @@ class RegimeDetector:
                 ):
                     # Enter transition cooldown (Req 9.1, 9.5)
                     regime = "REGIME_TRANSITION"
-                    transition_cooldown_remaining = config.TRANSITION_COOLDOWN_CANDLES
+                    transition_cooldown_remaining = cooldown_n
                     logger.info(
                         "[RegimeDetector] underlying=%s REGIME_TRANSITION detected "
                         "(was %s → candidate %s); cooldown=%d candles",
                         underlying, previous_regime, candidate_regime,
-                        config.TRANSITION_COOLDOWN_CANDLES,
+                        cooldown_n,
                     )
                 else:
                     regime = candidate_regime
@@ -209,7 +213,7 @@ class RegimeDetector:
             # Step 6: Update in-memory history. It must outlast a full cooldown
             # so at least two stable entries survive it (§5, R2 finding 9).
             history.append(state)
-            history = history[-_history_len(config.TRANSITION_COOLDOWN_CANDLES):]
+            history = history[-_history_len(cooldown_n):]
             self._regime_history[underlying] = history
 
             # Step 7: Logging (Req 15.1, 15.6)
