@@ -8,7 +8,9 @@ Header reference (from official SmartAPI docs):
                      X-ClientCode:  <client_id>
                      X-FeedToken:   <feed_token>   (market data calls)
 """
+import asyncio
 import logging
+import time
 import pyotp
 import httpx
 from datetime import datetime
@@ -19,6 +21,21 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://apiconnect.angelbroking.com"
+
+# getCandleData is rate limited (about 3 requests/s per key). Bursts get HTTP 403
+# "Access denied because of exceeding access rate", which used to send the
+# startup seed straight to its (often empty) DB fallback. Space the calls out and
+# retry that answer with backoff.
+HIST_MIN_INTERVAL_S = 0.4
+HIST_RETRY_DELAYS_S = (1.5, 3.0, 6.0, 12.0)
+_hist_lock = asyncio.Lock()
+_hist_last = 0.0
+
+
+def _rate_limited(resp) -> bool:
+    if resp.status_code == 429:
+        return True
+    return resp.status_code == 403 and "exceeding access rate" in (resp.text or "").lower()
 
 # Common headers sent on every request
 _BASE = {
@@ -315,19 +332,25 @@ class AngelClient:
         from_date / to_date: "YYYY-MM-DD HH:MM"
         Returns: [[timestamp, open, high, low, close, volume], ...]
         """
+        global _hist_last
         await self.ensure_logged_in()
         http = await self._client()
-        resp = await http.post(
-            "/rest/secure/angelbroking/historical/v1/getCandleData",
-            json={
-                "exchange":    exchange,
-                "symboltoken": symbol_token,
-                "interval":    interval,
-                "fromdate":    from_date,
-                "todate":      to_date,
-            },
-            headers=_session.auth_headers,
-        )
+        body = {"exchange": exchange, "symboltoken": symbol_token, "interval": interval,
+                "fromdate": from_date, "todate": to_date}
+        for attempt in range(len(HIST_RETRY_DELAYS_S) + 1):
+            async with _hist_lock:                      # one at a time, spaced out
+                wait = HIST_MIN_INTERVAL_S - (time.monotonic() - _hist_last)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                resp = await http.post("/rest/secure/angelbroking/historical/v1/getCandleData",
+                                       json=body, headers=_session.auth_headers)
+                _hist_last = time.monotonic()
+            if not _rate_limited(resp) or attempt == len(HIST_RETRY_DELAYS_S):
+                break
+            delay = HIST_RETRY_DELAYS_S[attempt]
+            logger.info("getCandleData rate-limited (%s %s) — retry %d after %.1fs",
+                        exchange, symbol_token, attempt + 1, delay)
+            await asyncio.sleep(delay)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("status"):

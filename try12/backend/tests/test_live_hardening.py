@@ -281,3 +281,64 @@ def test_watchlist_subscribes_the_two_nearest_expiries(monkeypatch):
     out = run(mm.MarketManager()._build_watchlist())
     assert [e for u, e in asked if u == "NIFTY"] == exps[:2]        # not the third
     assert len(out) == 4                                             # 2 underlyings x 2 expiries
+
+
+# ── AngelOne historical: rate-limit retry ────────────────────────────────────
+
+class _Resp:
+    def __init__(self, code, text="", data=None):
+        self.status_code, self.text, self._data = code, text, data
+
+    def json(self):
+        return {"status": True, "data": self._data or []}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"http {self.status_code}")
+
+
+def _client_with(monkeypatch, responses):
+    import app.services.broker.angel_client as ac
+    calls, sleeps = [], []
+
+    class _Http:
+        async def post(self, url, json=None, headers=None):
+            calls.append(json)
+            return responses.pop(0)
+
+    async def _http(self):
+        return _Http()
+
+    async def _ok(self):
+        return None
+
+    async def _sleep(s):
+        sleeps.append(s)
+    monkeypatch.setattr(ac.AngelClient, "_client", _http)
+    monkeypatch.setattr(ac.AngelClient, "ensure_logged_in", _ok)
+    monkeypatch.setattr(ac.asyncio, "sleep", _sleep)
+    return ac, calls, sleeps
+
+
+def test_historical_rate_limit_is_retried_with_backoff(monkeypatch):
+    limited = "Access denied because of exceeding access rate"
+    ac, calls, sleeps = _client_with(monkeypatch, [
+        _Resp(403, limited), _Resp(403, limited), _Resp(200, data=[["t", 1, 2, 0.5, 1.5, 0]])])
+    rows = run(ac.AngelClient().get_candle_data("NSE", "99926000", "ONE_MINUTE", "a", "b"))
+    assert rows == [["t", 1, 2, 0.5, 1.5, 0]] and len(calls) == 3
+    assert [s for s in sleeps if s >= 1] == [1.5, 3.0]               # backoff, not a hammer
+
+
+def test_other_403s_are_not_retried(monkeypatch):
+    ac, calls, _ = _client_with(monkeypatch, [_Resp(403, "Invalid token")])
+    with pytest.raises(RuntimeError):
+        run(ac.AngelClient().get_candle_data("NSE", "99926000", "ONE_MINUTE", "a", "b"))
+    assert len(calls) == 1
+
+
+def test_spot_and_futures_are_seeded_before_the_option_watchlist():
+    import inspect
+    import app.services.market_data.market_manager as mm
+    src = inspect.getsource(mm.MarketManager.startup)
+    assert src.index("_seed_one_token_exchange(s_token") < src.index("_seed_historical_ohlc(watchlist)")
+    assert src.index("_nearest_futures()") < src.index("_seed_historical_ohlc(watchlist)")

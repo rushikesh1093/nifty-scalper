@@ -78,9 +78,6 @@ class MarketManager:
         watchlist = await self._build_watchlist()
         logger.info("Watchlist: %d tokens", len(watchlist))
 
-        # 5. Seed historical OHLC for watchlist tokens
-        await self._seed_historical_ohlc(watchlist)
-
         # 5b. Seed historical OHLC for SPOT underlyings (NIFTY / BANKNIFTY).
         # The strategy_runner reads spot candles from Redis
         # (`get_candles(spot_token, "ONE_MINUTE")`), but the watchlist
@@ -107,6 +104,10 @@ class MarketManager:
             except Exception as exc:
                 logger.warning("Futures OHLC seed error for %s: %s", f_symbol, exc)
             await redis_cache.set(f"fut_token:{f_name}", f_token, ttl=86400)
+
+        # 5d. Option watchlist history last: ~170 tokens, and the spot / futures
+        # history above is what the strategies cannot work without.
+        await self._seed_historical_ohlc(watchlist)
 
         # 6. Register tick handler
         market_feed.add_async_handler(self._on_tick)
@@ -259,7 +260,7 @@ class MarketManager:
         to_dt   = f"{today} 15:30"
 
         logger.info("Seeding historical OHLC for %d tokens...", len(watchlist))
-        sem = asyncio.Semaphore(10)   # max 10 concurrent requests to AngelOne
+        sem = asyncio.Semaphore(3)    # angel_client also spaces historical calls out
 
         async def _bounded(token, symbol):
             async with sem:
