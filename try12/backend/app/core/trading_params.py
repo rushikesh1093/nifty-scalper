@@ -118,6 +118,15 @@ class TradingParams:
     # day, so a 3-candle cooldown blocked 47% of the session and cut the
     # 31-day backtest from 47 to 27 trades with no measurable edge removed.
     transition_cooldown_candles: int = 0
+    # Regime-label stabiliser (app/services/trading/regime_stabilizer.py); all
+    # off by default, which leaves the label exactly as the classifier gives it.
+    regime_eval_minutes: int = 1             # 5 = classify on 5-minute closes
+    regime_hysteresis: bool = False          # ADX 18/22 and VWAP band hysteresis
+    regime_vwap_exit_pct: float = 0.35       # compression holds out to this % of VWAP
+    regime_atr_smooth: int = 0               # EMA span (evaluations) of the ATR %ile
+    regime_breakout_hold_minutes: int = 0    # keep a breakout label this long...
+    regime_breakout_fail_pts: float = 10.0   # ...unless price is back this far inside
+    regime_confirm_evals: int = 1            # evaluations a new label must persist
 
     # ── entry gate ───────────────────────────────────────────────────────────
     min_rr: float = 2.0
@@ -262,6 +271,18 @@ class TradingParams:
                 f"transition_cooldown_candles={c} must be < history length "
                 f"{_history_len(c)} - 1"
             )
+
+        if not (1 <= self.regime_eval_minutes <= 15 and 60 % self.regime_eval_minutes == 0):
+            v.append(f"regime_eval_minutes={self.regime_eval_minutes} must divide 60 "
+                     f"and be in [1, 15]")
+        if self.regime_vwap_exit_pct <= 0:
+            v.append(f"regime_vwap_exit_pct={self.regime_vwap_exit_pct} must be > 0")
+        for key in ("regime_atr_smooth", "regime_breakout_hold_minutes",
+                    "regime_breakout_fail_pts"):
+            if getattr(self, key) < 0:
+                v.append(f"{key}={getattr(self, key)} must be >= 0")
+        if self.regime_confirm_evals < 1:
+            v.append(f"regime_confirm_evals={self.regime_confirm_evals} must be >= 1")
 
         allowed = set(ALL_STRATEGY_NAMES) | {"DEFAULT"}
         mh = self.max_hold_minutes

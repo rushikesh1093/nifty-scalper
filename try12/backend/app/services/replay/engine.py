@@ -196,6 +196,8 @@ def reset_process_state() -> None:
     paper_engine._square_off_cache = None
     regime_detector._regime_history.clear()
     regime_detector._last_log_time.clear()
+    from app.services.trading.regime_stabilizer import regime_stabilizer
+    regime_stabilizer.reset()
     strategy_orchestrator._regime_cooldown.clear()
     strategy_orchestrator._flag_state.clear()
     strategy_orchestrator._current_regime.clear()

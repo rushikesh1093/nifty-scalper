@@ -33,6 +33,7 @@ from app.services.trading.regime_persistence import (
     regime_persistence as _persistence_singleton,
 )
 from app.services.trading.regime_rules import classify_regime
+from app.services.trading.regime_stabilizer import regime_stabilizer
 from app.services.trading.regime_config import RegimeConfig, reload_config_if_stale
 from app.runtime.context import ctx, now_utc
 
@@ -142,6 +143,17 @@ class RegimeDetector:
                 history[-1].regime if history else None
             )
 
+            # The label as the classifier gives it, through the (switchable,
+            # default-off) stabiliser: cadence, hysteresis, ATR smoothing,
+            # breakout latch, confirmation.
+            def _stable_label():
+                from app.runtime.context import now_ist, trading_day
+                return regime_stabilizer.step(
+                    underlying=underlying, day=trading_day(), now_ist=now_ist(),
+                    indicators=regime_indicators, config=config, p=_params(),
+                    classify=lambda ind, cfg: classify_regime(
+                        ind, underlying, classify_as_expiry, previous_regime, cfg))
+
             # Step 4: Determine if we are in (or should enter) a cooldown
             current_cooldown = (
                 history[-1].transition_cooldown_remaining if history else 0
@@ -161,17 +173,11 @@ class RegimeDetector:
                     )
                 else:
                     # Cooldown expired → classify normally
-                    regime = classify_regime(
-                        regime_indicators, underlying, classify_as_expiry,
-                        previous_regime, config
-                    )
+                    regime, regime_indicators = _stable_label()
                     transition_cooldown_remaining = 0
             else:
                 # Classify candidate regime first
-                candidate_regime = classify_regime(
-                    regime_indicators, underlying, classify_as_expiry,
-                    previous_regime, config
-                )
+                candidate_regime, regime_indicators = _stable_label()
 
                 # A flip from the last stable regime starts the cooldown on the
                 # bar it is seen (Req 9.1). 763d894 required two observations
