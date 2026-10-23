@@ -52,3 +52,6 @@ desktop.ini
 *.db
 *.sqlite
 *.sqlite3
+
+# tick retention backups (app/services/market_data/tick_retention.py)
+try12/backend/backups/

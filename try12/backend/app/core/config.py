@@ -69,6 +69,15 @@ class Settings(BaseSettings):
         "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     )
 
+    # Tick retention (app/services/market_data/tick_retention.py): ticks older
+    # than this many days are backed up to TICK_BACKUP_DIR as .csv.gz, then
+    # deleted, daily at TICK_CLEANUP_TIME_IST. A LOW DISK warning is logged
+    # below LOW_DISK_WARN_GB free.
+    TICK_RETENTION_DAYS: int = 30
+    TICK_BACKUP_DIR: str = "backups/ticks"
+    TICK_CLEANUP_TIME_IST: str = "16:05"
+    LOW_DISK_WARN_GB: float = 2.0
+
     # Candle intervals supported
     SUPPORTED_INTERVALS: list = ["ONE_MINUTE", "THREE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE"]
 
