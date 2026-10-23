@@ -340,5 +340,8 @@ def test_spot_and_futures_are_seeded_before_the_option_watchlist():
     import inspect
     import app.services.market_data.market_manager as mm
     src = inspect.getsource(mm.MarketManager.startup)
-    assert src.index("_seed_one_token_exchange(s_token") < src.index("_seed_historical_ohlc(watchlist)")
-    assert src.index("_nearest_futures()") < src.index("_seed_historical_ohlc(watchlist)")
+    assert src.index("_seed_one_token_exchange(s_token") < src.index("_seed_option_history(watchlist)")
+    assert src.index("_nearest_futures()") < src.index("_seed_option_history(watchlist)")
+    # and startup does not wait for the option history
+    assert "asyncio.create_task(self._seed_option_history(watchlist))" in src
+    assert "await self._seed_historical_ohlc(watchlist)" not in src

@@ -105,9 +105,11 @@ class MarketManager:
                 logger.warning("Futures OHLC seed error for %s: %s", f_symbol, exc)
             await redis_cache.set(f"fut_token:{f_name}", f_token, ttl=86400)
 
-        # 5d. Option watchlist history last: ~170 tokens, and the spot / futures
-        # history above is what the strategies cannot work without.
-        await self._seed_historical_ohlc(watchlist)
+        # 5d. Option watchlist history in the BACKGROUND: ~170 tokens at AngelOne's
+        # rate limit take minutes, only the option charts read it, and the spot /
+        # futures history above is what the strategies need. Startup no longer
+        # waits for it (it blocked the API for ~7 minutes on 23 Oct).
+        self._option_seed_task = asyncio.create_task(self._seed_option_history(watchlist))
 
         # 6. Register tick handler
         market_feed.add_async_handler(self._on_tick)
@@ -137,7 +139,18 @@ class MarketManager:
 
         logger.info("=== MarketManager startup complete ===")
 
+    async def _seed_option_history(self, watchlist) -> None:
+        try:
+            await self._seed_historical_ohlc(watchlist)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:                 # never takes the app down
+            logger.warning("Background option history seed failed: %s", exc)
+
     async def shutdown(self):
+        task = getattr(self, "_option_seed_task", None)
+        if task is not None and not task.done():
+            task.cancel()
         await market_feed.stop()
         await tick_writer.stop()
         await angel_client.logout()
