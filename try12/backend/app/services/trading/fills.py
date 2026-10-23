@@ -121,6 +121,28 @@ def exit_fill(trigger_price: float, ltp: Optional[float], bid, ask, age_s: Optio
     return price, source
 
 
+def plan_sl_pct(actual_entry: float, sl_pct: float, exit_plan: Optional[dict],
+                delta: Optional[float], params) -> float:
+    """The premium-stop fraction for a fill. Without a spot exit plan it is the
+    strategy's sl_pct. With one, the premium stop goes where the plan's spot
+    stop should land: buffer × |delta| × |spot_entry - spot_stop| premium
+    points below the fill (delta clamped to 0.3-0.7, 0.5 when unknown), never
+    looser than sl_pct and never closer than plan_min_stop_pct. Before this the
+    premium stop sat at sl_pct whatever the spot stop, so a near Supertrend line
+    still risked ~17 premium points against an 8-point target, and a wide
+    09:15 candle stop was never reached before the premium stop."""
+    if not exit_plan or not actual_entry or actual_entry <= 0:
+        return sl_pct
+    try:
+        dist = abs(float(exit_plan["spot_entry"]) - float(exit_plan["spot_stop"]))
+    except (KeyError, TypeError, ValueError):
+        return sl_pct
+    d = abs(delta) if delta else 0.5
+    d = min(0.7, max(0.3, d))
+    frac = params.plan_stop_buffer * d * dist / actual_entry
+    return round(min(sl_pct, max(params.plan_min_stop_pct, frac)), 6)
+
+
 def entry_levels(actual_entry: float, sl_pct: float, target_pct: float,
                  min_rr: float) -> tuple[float, float, float, bool]:
     """(stop, target, realised_rr, target_stretched) on the fill price.

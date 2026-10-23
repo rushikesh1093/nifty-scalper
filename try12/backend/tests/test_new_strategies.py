@@ -40,7 +40,7 @@ def test_first_candle_breakout_long_plan():
         sig = evaluate(FirstCandleBreakoutStrategy(), c)
     assert sig.direction == Direction.BUY
     plan = xp.ExitPlan.from_dict(sig.exit_plan)
-    assert plan.spot_stop == 21980.0                                # the 09:15 low
+    assert plan.spot_stop == 22055.0 - 50.0                         # 09:15 low capped at 50 pts
     assert plan.spot_target == 22055.0 + 1.5 * 60
     assert plan.exit_at == "14:45" and sig.sl_pct == 0.25
 
@@ -60,7 +60,7 @@ def test_first_candle_short_once_per_direction():
     with at(10):
         s = FirstCandleBreakoutStrategy()
         sig = evaluate(s, c)
-        assert sig.direction == Direction.SELL and sig.exit_plan["spot_stop"] == 22040.0
+        assert sig.direction == Direction.SELL and sig.exit_plan["spot_stop"] == 21965.0 + 50.0
         s.on_position_opened(sig)
         c2 = c + expand([(21965.0, 21970.0, 21940.0, 21945.0)], 5, OPEN + timedelta(minutes=10))
     with at(15):

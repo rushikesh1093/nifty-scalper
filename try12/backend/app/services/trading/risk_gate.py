@@ -251,6 +251,18 @@ def sizing_decision(*, fraction: FractionDecision, regime_multiplier: float,
 
 # ── phase one: checks 0-11b ──────────────────────────────────────────────────
 
+async def _group_trades_today(db, run_id: str, underlying: str, group) -> Optional[str]:
+    """The first strategy of *group* with a position entered today, else None."""
+    from app.services.trading.session_times import trading_day_bounds_utc
+    start, end = trading_day_bounds_utc(trading_day())
+    row = (await db.execute(select(PaperPosition.strategy_name).where(
+        PaperPosition.run_id == run_id, PaperPosition.underlying == underlying,
+        PaperPosition.strategy_name.in_(list(group)),
+        PaperPosition.entry_time >= start, PaperPosition.entry_time < end,
+    ).limit(1))).scalar_one_or_none()
+    return row
+
+
 async def evaluate_pre_selection(db, signal, regime_state) -> GateDecision:
     try:
         return await _pre_selection(db, signal, regime_state)
@@ -323,6 +335,13 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
                    f"{streak.consecutive_losses} consecutive losses — trading halted for the day",
                    consecutive_losses=streak.consecutive_losses,
                    position_ids=streak.triggering_position_ids)
+    for group in p_.exclusive_strategy_groups:
+        if signal.strategy_name in group:
+            taken = await _group_trades_today(db, rc.run_id, signal.underlying, group)
+            if taken:
+                return _no(Stage.RISK_GATE, ReasonCode.STRATEGY_DAILY_HALT,
+                           f"one trade a day across {'/'.join(group)}: {taken} already traded today",
+                           strategy=signal.strategy_name, group=list(group), taken=taken)
     if signal.strategy_name in streak.halted_strategies:
         return _no(Stage.RISK_GATE, ReasonCode.STRATEGY_DAILY_HALT,
                    f"{signal.strategy_name} disabled for the day after "
@@ -405,7 +424,9 @@ async def evaluate_sizing(db, signal, candidate, *, fraction: FractionDecision,
         candidate.ltp, getattr(candidate, "bid", 0), getattr(candidate, "ask", 0), age, p_)
 
     # initial risk must be positive (R6.5), checked before any capital is touched
-    sl, tgt, rr, stretched = fills.entry_levels(fill, signal.sl_pct, signal.target_pct, p_.min_rr)
+    eff_sl = fills.plan_sl_pct(fill, signal.sl_pct, getattr(signal, "exit_plan", None),
+                               getattr(candidate, "delta_est", None), p_)
+    sl, tgt, rr, stretched = fills.entry_levels(fill, eff_sl, signal.target_pct, p_.min_rr)
     initial_risk = round(fill - sl, 2)
     if signal.sl_pct <= 0 or initial_risk <= 0:
         return _no(Stage.SIZING, ReasonCode.INITIAL_RISK_NON_POSITIVE,

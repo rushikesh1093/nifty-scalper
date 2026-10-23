@@ -311,8 +311,10 @@ class PaperEngine:
         slippage = round(actual_entry - ltp, 2)
 
         # ── SL / target on the ACTUAL entry; initial risk is written once ─────
+        eff_sl = fills.plan_sl_pct(actual_entry, signal.sl_pct, signal.exit_plan,
+                                   getattr(selected, "delta_est", None), p)
         sl, tgt, rr, target_stretched = fills.entry_levels(
-            actual_entry, signal.sl_pct, signal.target_pct, p.min_rr)
+            actual_entry, eff_sl, signal.target_pct, p.min_rr)
         plan = xp.ExitPlan.from_dict(signal.exit_plan)
         if plan is not None and plan.premium_target_pts:
             # A premium-point target (Supertrend scalp) is the plan's own target

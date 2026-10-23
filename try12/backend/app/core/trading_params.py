@@ -73,6 +73,14 @@ class TradingParams:
     # Strikes allowed, counted from the ATM strike: 0 = ATM, 1 = one strike OTM.
     # Anything further OTM, or in the money, is rejected by the selector.
     max_otm_strikes: int = 1
+    # Exit-plan positions: the premium stop is placed where the plan's SPOT stop
+    # should land — plan_stop_buffer × |delta| × spot distance below the fill —
+    # never looser than the strategy's sl_pct and never closer than
+    # plan_min_stop_pct of premium. Lots are sized from that risk.
+    plan_stop_buffer: float = 1.3
+    plan_min_stop_pct: float = 0.05
+    # Strategies that trade the same move: at most one position a day per group.
+    exclusive_strategy_groups: tuple = (("ORB_BREAKOUT", "FIRST_CANDLE_BREAKOUT"),)
     trade_amount: Optional[float] = None          # demoted display cache (§9.5)
     open_exposure_cap_pct: float = 40.0
     max_open_positions: int = 3

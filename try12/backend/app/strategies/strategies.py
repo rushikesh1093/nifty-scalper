@@ -486,7 +486,8 @@ class SupertrendEMAStrategy(_PlanStrategy):
 
 class FirstCandleBreakoutStrategy(_PlanStrategy):
     """The 09:15-09:20 candle's high/low ± 10 pts, broken on a 5-min close
-    between 09:20 and 10:00. Stop: the other side of that candle. Target:
+    between 09:20 and 10:00. Stop: the other side of that candle, at most
+    MAX_STOP_PTS from entry. Target:
     1.5 × the candle's range from entry. One trade per direction a day."""
     name = StrategyName.FIRST_CANDLE_BREAKOUT.value
     sl_pct = 0.25
@@ -494,6 +495,7 @@ class FirstCandleBreakoutStrategy(_PlanStrategy):
     BAR_MINUTES = 5
     BUFFER_PTS = 10.0
     TARGET_RANGE_MULT = 1.5
+    MAX_STOP_PTS = 50.0         # the 09:15 candle is ~76 pts (median, real data): cap the stop
     LAST_BAR_END = dtime(10, 0)
     EXIT_AT = "14:45"
 
@@ -524,13 +526,15 @@ class FirstCandleBreakoutStrategy(_PlanStrategy):
         if rng <= 0:
             return None
         if c > hi + self.BUFFER_PTS and Direction.BUY not in self._taken:
-            plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c, spot_stop=lo,
+            plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c,
+                            spot_stop=round(max(lo, c - self.MAX_STOP_PTS), 2),
                             spot_target=round(c + self.TARGET_RANGE_MULT * rng, 2),
                             exit_at=self.EXIT_AT)
             return self._plan_signal(Direction.BUY, c, indicators,
                                      f"09:15 candle {lo:.1f}-{hi:.1f} broken up: close={c:.1f}", plan)
         if c < lo - self.BUFFER_PTS and Direction.SELL not in self._taken:
-            plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c, spot_stop=hi,
+            plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c,
+                            spot_stop=round(min(hi, c + self.MAX_STOP_PTS), 2),
                             spot_target=round(c - self.TARGET_RANGE_MULT * rng, 2),
                             exit_at=self.EXIT_AT)
             return self._plan_signal(Direction.SELL, c, indicators,
