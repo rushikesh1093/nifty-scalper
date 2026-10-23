@@ -120,6 +120,10 @@ class TradingParams:
     transition_cooldown_candles: int = 0
     # Regime-label stabiliser (app/services/trading/regime_stabilizer.py); all
     # off by default, which leaves the label exactly as the classifier gives it.
+    # Tested 23 Oct (tune 7 Sep-2 Oct, held out 5-22 Oct): the pick (5-min,
+    # hysteresis, ATR EMA 6, 15-min breakout hold, confirm 3) cut label flips
+    # 125 -> 7.5/day, but held-out net fell Rs18,280 -> 9,377 (+11.2R -> +7.1R):
+    # a steadier label lets more Supertrend trades through and they lose. Off.
     regime_eval_minutes: int = 1             # 5 = classify on 5-minute closes
     regime_hysteresis: bool = False          # ADX 18/22 and VWAP band hysteresis
     regime_vwap_exit_pct: float = 0.35       # compression holds out to this % of VWAP
