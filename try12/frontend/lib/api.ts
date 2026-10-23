@@ -42,7 +42,13 @@ export const triggerInstrumentSync = () =>
 
 // ── Health ────────────────────────────────────────────────────────────────────
 // /health is app-mounted (main.py), not under /api/v1 → the root instance (design §6.4).
-export interface HealthStatus { status: string; [k: string]: unknown }
+export interface HealthStatus {
+  status: string;
+  /** Free GB on the backend's drive; low_disk is true below LOW_DISK_WARN_GB. */
+  disk_free_gb?: number | null;
+  low_disk?: boolean;
+  [k: string]: unknown;
+}
 export const healthCheck = () =>
   rootHttp.get<HealthStatus>("/health").then(r => r.data);
 

@@ -248,10 +248,17 @@ async def health():
     except Exception:
         subs = 0
     status = "ok" if (redis_ok and feed_up and session_valid) else "degraded"
+    # Free space on the drive the backend runs from: a full disk stops Postgres
+    # (the ticks table grows ~1 GB a trading day). Reported, never fatal.
+    from app.services.market_data.tick_retention import free_disk_gb
+    from pathlib import Path
+    disk_free = free_disk_gb(Path("."))
     return {
         "status":          status,
         "redis":           "ok" if redis_ok else "down",
         "feed_connected":  feed_up,
         "session_valid":   session_valid,
         "subscriptions":   subs,
+        "disk_free_gb":    disk_free,
+        "low_disk":        disk_free is not None and disk_free < settings.LOW_DISK_WARN_GB,
     }

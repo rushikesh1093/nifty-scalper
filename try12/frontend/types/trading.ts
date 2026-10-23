@@ -130,6 +130,11 @@ export interface TradingConfig {
   daily_trades_count:  number;
   /** Persisted kill-switch halt (GET /trading/kill-switch for the reason). */
   trading_halted?:     boolean;
+  losing_streak_halt_n?: number;
+  post_loss_cooldown_minutes?: number;
+  kelly_min_trades?:   number;
+  /** Every resolved TradingParams field (GET /trading/config → params.resolved). */
+  params?:             { resolved?: Record<string, unknown>; cache_age_s?: number };
 }
 
 export interface CapitalSummary {

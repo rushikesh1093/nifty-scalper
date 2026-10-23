@@ -48,8 +48,14 @@ export function BackendStatusChip() {
       .filter(([k]) => k !== "status")
       .map(([k, v]) => `${k}=${String(v)}`)
       .join(" · ")}`;
+    const disk = typeof data.disk_free_gb === "number" ? data.disk_free_gb : null;
     chip = redisDown ? (
       <Badge caps={false} intent="warning" dot status="degraded" title={title}>API ok · Redis down</Badge>
+    ) : data.low_disk ? (
+      <Badge caps={false} intent="negative" dot status="low-disk"
+             title={`${title} — a full disk stops the database. Free space on the backend's drive.`}>
+        API ok · Disk {disk !== null ? `${disk.toFixed(1)} GB` : "low"}
+      </Badge>
     ) : (
       <Badge caps={false} intent="positive" dot status="ok" title={title}>API ok</Badge>
     );

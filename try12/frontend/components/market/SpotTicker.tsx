@@ -1,6 +1,6 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
-import { getTick } from "@/lib/api";
+import { getCandles, getTick } from "@/lib/api";
 import { queryKeys } from "@/lib/queryKeys";
 import { useMarketStore, selectTick } from "@/lib/store";
 import { formatIst } from "@/lib/time";
@@ -11,7 +11,7 @@ import { useStickyQueryError } from "@/hooks/useStickyQueryError";
 import { PriceText, DeltaText } from "@/components/ui/PriceText";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { ConnectionChip, type ConnectionStatus } from "@/components/ui/ConnectionChip";
-import type { FeedStatusKind } from "@/types/market";
+import type { Candle, FeedStatusKind } from "@/types/market";
 
 const SPOTS = [
   { token: "26000", label: "NIFTY 50" },
@@ -25,6 +25,15 @@ const SOCKET_TEXT: Record<TickSocketStatus, string> = {
 /** Tick `ts` is the backend's naive-UTC received_at; mark it UTC so the browser zone never applies. */
 function utcIso(ts: string): string {
   return /([zZ]|[+-]\d{2}:?\d{2})$/.test(ts) ? ts : `${ts}Z`;
+}
+
+/** High and low of the newest trading day in *candles* (timestamps carry their own offset). */
+function todayRange(candles?: Candle[]): { high: number; low: number } | null {
+  if (!candles?.length) return null;
+  const day = candles[candles.length - 1].timestamp.slice(0, 10);
+  const today = candles.filter((c) => c.timestamp.slice(0, 10) === day && c.high > 0 && c.low > 0);
+  if (!today.length) return null;
+  return { high: Math.max(...today.map((c) => c.high)), low: Math.min(...today.map((c) => c.low)) };
 }
 
 function SpotCard({ token, label }: { token: string; label: string }) {
@@ -41,11 +50,19 @@ function SpotCard({ token, label }: { token: string; label: string }) {
   const snapErr = useStickyQueryError(snap);
   const tick = live ?? snap.data;
   const dimmed = socket === "reconnecting" || socket === "down";
+  // Index ticks carry high/low = 0 (the feed's LTP mode), so the day's range comes from
+  // today's 1-min candles instead.
+  const candles = useQuery({
+    queryKey: ["spot-day-range", token],
+    queryFn: () => getCandles(token, "ONE_MINUTE", 400),
+    refetchInterval: 60_000,
+  });
+  const dayRange = todayRange(candles.data);
 
   const ltp = typeof tick?.ltp === "number" ? tick.ltp : null;
   // Index ticks in LTP mode carry high/low = 0: show "—", not a zero price.
-  const high = typeof tick?.high === "number" && tick.high > 0 ? tick.high : null;
-  const low  = typeof tick?.low === "number" && tick.low > 0 ? tick.low : null;
+  const high = typeof tick?.high === "number" && tick.high > 0 ? tick.high : dayRange?.high ?? null;
+  const low  = typeof tick?.low === "number" && tick.low > 0 ? tick.low : dayRange?.low ?? null;
   const prevClose = typeof tick?.close === "number" && tick.close > 0 ? tick.close : null;
   const change = ltp !== null && prevClose !== null ? ltp - prevClose : null;
   const pct = change !== null && prevClose ? (change / prevClose) * 100 : null;

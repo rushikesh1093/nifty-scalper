@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { getCurrentRegime } from "@/lib/api";
+import { getCurrentRegime, getRegimeHistory } from "@/lib/api";
 import { ApiError, errorMessage } from "@/lib/http";
 import { queryKeys } from "@/lib/queryKeys";
 import { useDiagnostics } from "@/hooks/useDiagnostics";
 import { useStickyQueryError } from "@/hooks/useStickyQueryError";
 import { cn } from "@/lib/utils";
+import { formatIst } from "@/lib/time";
 import { regimeLabel } from "@/components/regime/regimeMeta";
 
 // StatusBar regime chip (finding 4). A failed fetch is an error chip with Retry — never "UNKNOWN".
@@ -46,6 +47,15 @@ export function RegimeStatus() {
   const { data, isFetching, refetch, dataUpdatedAt } = query;
   const { error, isError } = useStickyQueryError(query);
   const diag = useDiagnostics();
+  // The current regime key expires 10 min after the last cycle (e.g. after the 15:05
+  // entry cutoff); then show the last regime the detector recorded, with its time.
+  const last = useQuery({
+    queryKey: queryKeys.regimeHistory(UNDERLYING, 24),
+    queryFn: () => getRegimeHistory(UNDERLYING, 24),
+    enabled: data?.source === "absent",
+    refetchInterval: 60_000,
+  });
+  const lastSpan = last.data?.length ? last.data[last.data.length - 1] : null;
 
   // One 1 s ticker for the component's lifetime (StrictMode-safe: cleared on unmount).
   // `now` stays null until mount so the first (SSR) render is neutral.
@@ -91,7 +101,13 @@ export function RegimeStatus() {
       <div className={CELL} data-testid="regime-chip" data-state="absent">
         <span aria-live="polite" className="flex items-center gap-1.5 text-text-2">
           <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-text-3" />
-          No regime yet
+          {lastSpan ? (
+            <span title="No regime is being classified now (outside the signal window or before the first cycle)">
+              Last: {regimeLabel(lastSpan.regime)} · since {formatIst(lastSpan.from)}
+            </span>
+          ) : (
+            "No regime yet"
+          )}
         </span>
       </div>
     );

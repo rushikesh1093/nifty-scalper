@@ -17,6 +17,7 @@ import { SignalDiagnosticsPanel, type DeskSidebarTab } from "@/components/tradin
 import { PositionsTable } from "@/components/trading/PositionsTable";
 import { PnLChart } from "@/components/trading/PnLChart";
 import { CapitalWidget } from "@/components/trading/CapitalWidget";
+import { RiskRules } from "@/components/trading/RiskRules";
 import { OptionSelectorWidget } from "@/components/trading/OptionSelectorWidget";
 import { DownloadPdfButton } from "@/components/trading/DownloadPdfButton";
 
@@ -142,7 +143,12 @@ export default function TradingPage() {
               ))}
             </div>
             <div id={`desk-panel-${tab}`} role="tabpanel" aria-labelledby={`desk-tab-${tab}`} className="p-4">
-              {tab === "capital" && <CapitalWidget />}
+              {tab === "capital" && (
+                <div className="space-y-4">
+                  <CapitalWidget />
+                  <RiskRules />
+                </div>
+              )}
               {tab === "strategies" && <StrategyPanel />}
               {tab === "selector" && <OptionSelectorWidget />}
             </div>

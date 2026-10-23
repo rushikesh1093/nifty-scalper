@@ -26,11 +26,16 @@ export function CurrentRegimeCard({ underlying }: { underlying: Underlying }) {
       <DataSurface query={query} skeleton={<Skeleton label="Loading current regime" />}>
         {(r, meta) => {
           if (r.source === "absent") {
+            // The current key expires 10 min after the last cycle (e.g. after the entry
+            // cutoff), so say what was last classified rather than "nothing yet".
+            const past = Array.isArray(history.data) ? history.data : [];
+            const last = past.length ? past.reduce((a, b) => (Date.parse(b.from) > Date.parse(a.from) ? b : a)) : null;
             return (
               <div data-testid="current-regime" data-state="absent">
                 <EmptyState
-                  title="No regime detected yet (cache empty)"
-                  hint="The strategy runner writes a regime once it has evaluated candles in the 09:15–15:25 IST window."
+                  title={last ? `Not classifying now · last ${regimeLabel(last.regime)} since ${formatIst(last.from)}`
+                              : "No regime detected yet"}
+                  hint="The strategy runner classifies the regime while it evaluates candles, 09:15 until the entry cutoff (15:05 IST)."
                 />
               </div>
             );
