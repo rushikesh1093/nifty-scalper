@@ -5,7 +5,6 @@ A day is TRADEABLE only when every criterion passes; otherwise it is SKIPPED
 with the FIRST failing cause, in table order:
 
   spot candles          >= 300 in the session        NO_SPOT_CANDLES / INSUFFICIENT_CANDLES
-  previous-day snapshot present                      NO_PREV_DAY_SNAPSHOT
   option tick coverage  >= replay_min_option_tick_minutes distinct session
                         minutes AND >= 20 distinct option tokens     NO_OPTION_DATA
   instrument universe   non-empty, a banded expiry, >= replay_min_strikes CE
@@ -13,10 +12,15 @@ with the FIRST failing cause, in table order:
                                     NO_INSTRUMENT_MASTER (data) / NO_BANDED_EXPIRY (policy)
   VIX                   present, or the VIX gate is recorded not-evaluated  NO_VIX
 
-``CoverageCause`` deliberately shares two spellings with ``ReasonCode``
-(INSUFFICIENT_CANDLES, NO_PREV_DAY_SNAPSHOT) at a different granularity: this
+``CoverageCause`` deliberately shares a spelling with ``ReasonCode``
+(INSUFFICIENT_CANDLES) at a different granularity: this
 enum classifies a whole day before it is replayed; the ReasonCode member is a
 per-candle CYCLE decision written by run_cycle. They are separate types.
+
+The previous-day snapshot is still reported (``prev_snapshot``) but no longer
+skips a day: no strategy reads previous-day levels, and live trading never
+required one, so requiring it here only made replay refuse real recorded days.
+Older stored reports may still name the retired NO_PREV_DAY_SNAPSHOT cause.
 
 Also here: the per-candle regime histogram over the run and the D7 finding
 when UNCLASSIFIED exceeds 40% of session candles.
@@ -46,11 +50,10 @@ from app.services.trading.session_times import trading_day_bounds_utc
 
 
 class CoverageCause(str, Enum):
-    """Day-level SKIPPED causes; one per day, first failing row wins. Shares two
-    spellings with no_trade.ReasonCode on purpose (see the module docstring)."""
+    """Day-level SKIPPED causes; one per day, first failing row wins. Shares a
+    spelling with no_trade.ReasonCode on purpose (see the module docstring)."""
     NO_SPOT_CANDLES = "NO_SPOT_CANDLES"            # zero spot candles (holiday, feed down)
     INSUFFICIENT_CANDLES = "INSUFFICIENT_CANDLES"  # some, but < 300 in the session
-    NO_PREV_DAY_SNAPSHOT = "NO_PREV_DAY_SNAPSHOT"
     NO_OPTION_DATA = "NO_OPTION_DATA"
     NO_INSTRUMENT_MASTER = "NO_INSTRUMENT_MASTER"  # data gap
     NO_BANDED_EXPIRY = "NO_BANDED_EXPIRY"          # policy exclusion (D9)
@@ -213,8 +216,6 @@ async def classify_day(db, underlying: str, day: date, params) -> DayCoverage:
         cause = CoverageCause.NO_SPOT_CANDLES
     elif cov.spot_candles < MIN_SPOT_CANDLES:
         cause = CoverageCause.INSUFFICIENT_CANDLES
-    elif cov.prev_snapshot is None:
-        cause = CoverageCause.NO_PREV_DAY_SNAPSHOT
     elif (cov.option_tick_minutes < params.replay_min_option_tick_minutes
           or cov.option_tokens_with_ticks < MIN_OPTION_TOKENS):
         cause = CoverageCause.NO_OPTION_DATA

@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 # How many strikes around ATM to subscribe (each side)
 ATM_STRIKE_RADIUS = 10
+# How many of the nearest expiries to subscribe. The option selector trades a
+# 2-14 DTE expiry, so the day before an expiry (DTE 1) it picks NEXT week's;
+# subscribing only the nearest left it with no quotes on those days.
+WATCH_EXPIRIES = 2
 # How many historical 1m candles to seed on startup
 HISTORICAL_CANDLE_LIMIT = 390  # full trading day
 # Spot / futures seed: this many calendar days back (covers a weekend plus a
@@ -179,8 +183,9 @@ class MarketManager:
     async def _build_watchlist(self) -> list[tuple[str, str]]:
         """
         Returns list of (token, symbol) for:
-          - Nifty CE/PE, nearest expiry, ATM ± ATM_STRIKE_RADIUS strikes
-          - BankNifty CE/PE, nearest expiry, ATM ± ATM_STRIKE_RADIUS strikes
+          - Nifty CE/PE, the WATCH_EXPIRIES nearest expiries, ATM ± ATM_STRIKE_RADIUS strikes
+          - BankNifty CE/PE, the same
+        Built at startup only: restart the backend each trading morning.
         """
         result = []
         async with AsyncSessionLocal() as db:
@@ -190,7 +195,6 @@ class MarketManager:
                     logger.warning("No expiries found for %s", underlying)
                     continue
 
-                nearest_expiry = expiries[0]
 
                 # Get approximate ATM from spot LTP via REST
                 spot_ltp = await self._get_spot_ltp(underlying)
@@ -215,12 +219,13 @@ class MarketManager:
                         underlying, low, high,
                     )
 
-                instruments = await get_option_tokens(
-                    db, underlying, nearest_expiry, strike_range
-                )
-                for inst in instruments:
-                    result.append((inst.token, inst.symbol))
-                    tick_writer.register_symbol(inst.token, inst.symbol)
+                for expiry in expiries[:WATCH_EXPIRIES]:
+                    instruments = await get_option_tokens(db, underlying, expiry, strike_range)
+                    for inst in instruments:
+                        result.append((inst.token, inst.symbol))
+                        tick_writer.register_symbol(inst.token, inst.symbol)
+                    logger.info("[%s] watchlist: %d options for expiry %s",
+                                underlying, len(instruments), expiry)
 
         return result
 

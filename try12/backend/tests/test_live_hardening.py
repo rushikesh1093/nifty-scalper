@@ -247,3 +247,37 @@ def test_spot_seed_asks_angelone_for_the_999_index_token(monkeypatch):
     assert asked == [("NSE", "99926000"), ("NFO", "48704")]
     assert set(stored) == {"26000", "48704"}                 # stored under the feed token
     assert stored["26000"][0]["token"] == "26000"
+
+
+# ── watchlist: the two nearest expiries ──────────────────────────────────────
+
+def test_watchlist_subscribes_the_two_nearest_expiries(monkeypatch):
+    import app.services.market_data.market_manager as mm
+    from datetime import date
+    exps = [date(2026, 10, 27), date(2026, 11, 3), date(2026, 11, 10)]
+    asked = []
+
+    async def _expiries(db, underlying, as_of=None):
+        return exps
+
+    async def _tokens(db, underlying, expiry, strike_range):
+        asked.append((underlying, expiry))
+        return [type("I", (), {"token": f"{underlying}{expiry}", "symbol": "S"})()]
+
+    async def _ltp(self, underlying):
+        return 22650.0
+
+    class _DB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(mm, "get_active_expiries", _expiries)
+    monkeypatch.setattr(mm, "get_option_tokens", _tokens)
+    monkeypatch.setattr(mm, "AsyncSessionLocal", lambda: _DB())
+    monkeypatch.setattr(mm.MarketManager, "_get_spot_ltp", _ltp)
+    out = run(mm.MarketManager()._build_watchlist())
+    assert [e for u, e in asked if u == "NIFTY"] == exps[:2]        # not the third
+    assert len(out) == 4                                             # 2 underlyings x 2 expiries
