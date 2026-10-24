@@ -497,6 +497,10 @@ class FirstCandleBreakoutStrategy(_PlanStrategy):
     TARGET_RANGE_MULT = 1.5
     MAX_STOP_PTS = 50.0         # the 09:15 candle is ~76 pts (median, real data): cap the stop
     LAST_BAR_END = dtime(10, 0)
+    # Ready at the 09:25 close (09:15-09:24 = 10 candles: the 09:15 bar and the
+    # first breakout bar). Under the old global 20-candle wait the 09:25 and
+    # 09:30 closes were never evaluated (11 of 20 breakout days broke first).
+    MIN_TODAY_CANDLES = 10
     EXIT_AT = "14:45"
 
     def __init__(self, underlying: str = "NIFTY"):

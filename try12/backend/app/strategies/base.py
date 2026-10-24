@@ -209,6 +209,10 @@ class BaseStrategy(ABC):
     sl_pct:      float = 0.10
     target_pct:  float = 0.20
 
+    # Today-only 1-min candles this strategy needs before it is evaluated;
+    # None = the runner's default (strategy_runner.MIN_TODAY_CANDLES).
+    MIN_TODAY_CANDLES: Optional[int] = None
+
     def __init__(self, underlying: str = "NIFTY"):
         self.underlying = underlying
         self._last_signal_time: Optional[datetime] = None

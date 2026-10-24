@@ -44,10 +44,18 @@ VIX_MAX           = 25.0   # above → extreme fear/erratic, hard SLs get blown
                             #  on normal volatile days, 20 was blocking good sessions)
 ATR_MIN_NIFTY     = 1.5    # Nifty 1-min ATR below this = dead chop (was 2.5 — blocked ORB window)
 ATR_MIN_BANKNIFTY = 5.0    # BankNifty moves ~3× Nifty (was 8.0)
-MIN_TODAY_CANDLES = 20     # today-only 1m candles required before strategies run:
-                            # 09:15-09:34, so the ORB can act on the 09:30-09:35 bar.
+MIN_TODAY_CANDLES = 20     # default today-only 1m candles a strategy needs before it
+                            # runs: 09:15-09:34, so the ORB can act on the 09:30-09:35
+                            # bar. A strategy may declare its own (BaseStrategy.
+                            # MIN_TODAY_CANDLES, e.g. the 09:15 breakout: 10); the
+                            # cycle starts at the smallest among the enabled ones.
                             # EMA / RSI / Supertrend / ADX warm up on the multi-day
                             # history, not on today's candles alone.
+
+
+def _readiness(strat) -> int:
+    """Today-only candles *strat* needs (read at call time: tests patch the default)."""
+    return getattr(strat, "MIN_TODAY_CANDLES", None) or MIN_TODAY_CANDLES
 EXPIRY_MIN_SL_PCT = 0.15   # on expiry day skip ALL strategies with sl_pct < 15%
                             # Raised from 0.08 — a 10% SL on a cheap OTM option
                             # (e.g. ₹23 LTP → SL at ₹20.70) is blown by a single
@@ -404,23 +412,37 @@ class StrategyRunner:
             return False
         candle_ts = str(candles[-1].get("timestamp", ""))
 
-        if len(candles) < MIN_TODAY_CANDLES:
+        enabled = [s for s in self._strategies.get(underlying, []) if flags.get(s.name, True)]
+        need = min((_readiness(s) for s in enabled), default=MIN_TODAY_CANDLES)
+        if len(candles) < need:
             # Not enough today-only candles yet — market just opened or no data.
             # Do NOT fall back to multi-day candles: that would corrupt ORB high/low
             # (computed from today's first 15 candles) and the intraday VWAP reset.
             logger.debug(
                 "[%s] Only %d today-candles available (need %d) — skipping this cycle",
-                underlying, len(candles), MIN_TODAY_CANDLES,
+                underlying, len(candles), need,
             )
             self._queue_cycle_gate(
                 tally, underlying, candle_ts, ReasonCode.INSUFFICIENT_CANDLES,
-                f"Only {len(candles)} today-candles (need {MIN_TODAY_CANDLES})",
-                candles=len(candles), required=MIN_TODAY_CANDLES,
+                f"Only {len(candles)} today-candles (need {need})",
+                candles=len(candles), required=need,
             )
             return True
 
         # Compute indicators once, share with all strategies
         indicators = compute_all(candles)
+        if indicators.get("atr") is None and len(history) >= 15:
+            # Before 14 of today's candles ATR(14) is undefined, and the ATR floor
+            # below would read 0 and block the early 09:15-breakout closes. Use
+            # the last bars of the multi-day history (yesterday's tail + today).
+            import numpy as _np
+            from app.strategies.indicators import atr as _atr
+            tail = history[-40:]
+            a = _atr(_np.array([float(c["high"]) for c in tail]),
+                     _np.array([float(c["low"]) for c in tail]),
+                     _np.array([float(c["close"]) for c in tail]), 14)
+            if len(a) and _np.isfinite(a[-1]):
+                indicators["atr"] = float(a[-1])
 
         # ── Spot volume EMA — inject BEFORE any gates or strategy calls ───────
         # Rolling average of spot volume stored in Redis ("avg_vol:spot:{underlying}").
@@ -544,6 +566,8 @@ class StrategyRunner:
         # The merged flags are the only gate (the detector-owned cooldown is
         # expressed through the REGIME_TRANSITION rule enabling nothing).
         for strat in self._strategies.get(underlying, []):
+            if len(candles) < _readiness(strat):
+                continue            # not ready yet today: neither evaluated nor a rejection
             if not final_flags.get(strat.name, False):
                 if not flags.get(strat.name, True):
                     self._queue_strategy_gate(tally, underlying, strat.name,
