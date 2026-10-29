@@ -132,11 +132,21 @@ def _prev_day():
     return rows
 
 
+def _pivot(today_candles=()):
+    """A PivotBounceStrategy given yesterday's levels the way the runner does."""
+    from app.runtime.context import trading_day
+    from app.services.market_data import prev_session as ps
+
+    s = PivotBounceStrategy()
+    res = ps.resolve(trading_day(), _prev_day())
+    s.set_prev_session(trading_day(), res.levels, res.reason)
+    s.history = _prev_day() + list(today_candles)
+    return s
+
+
 def test_pivots_from_the_previous_session():
     with at(30):
-        s = PivotBounceStrategy()
-        s.history = _prev_day()
-        assert s.pivots() == {"S1": 21900.0, "PP": 22000.0, "R1": 22100.0}
+        assert _pivot().pivots() == {"S1": 21900.0, "PP": 22000.0, "R1": 22100.0}
 
 
 def test_pivot_bounce_long_at_pp_targets_r1():
@@ -145,8 +155,7 @@ def test_pivot_bounce_long_at_pp_targets_r1():
             (22004.0, 22016.0, 21995.0, 22012.0)]                    # dips to PP, closes up
     c = expand(bars, 3)
     with at(24):
-        s = PivotBounceStrategy()
-        s.history = _prev_day() + c
+        s = _pivot(c)
         sig = run(s.evaluate(c, {}))
     assert sig.direction == Direction.BUY
     plan = sig.exit_plan
@@ -160,8 +169,7 @@ def test_pivot_rejection_short_at_r1_targets_pp():
             (22096.0, 22105.0, 22080.0, 22085.0)]                    # pokes R1, closes down
     c = expand(bars, 3)
     with at(24):
-        s = PivotBounceStrategy()
-        s.history = _prev_day() + c
+        s = _pivot(c)
         sig = run(s.evaluate(c, {}))
     assert sig.direction == Direction.SELL
     assert sig.exit_plan["spot_stop"] == 22115.0 and sig.exit_plan["spot_target"] == 22000.0

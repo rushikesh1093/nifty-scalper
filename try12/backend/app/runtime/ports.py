@@ -32,6 +32,9 @@ class MarketDataPort(Protocol):           # THE COMPLETE cache surface for tradi
     async def set(self, key: str, value: Any, ttl: int = 60) -> None: ...
     async def delete(self, key: str) -> None: ...
     async def publish_signal(self, strategy: str, signal: dict) -> None: ...   # matches redis_client
+    # Optional, live only (RedisMarketData): get_daily_candles(token, day) -> the
+    # broker's ONE_DAY rows before *day*, or None. The runner reads it with getattr,
+    # so the replay port, which has none, never reaches the broker.
 
 
 class RegimeConfigPort(Protocol):

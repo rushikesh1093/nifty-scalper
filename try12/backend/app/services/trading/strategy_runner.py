@@ -142,7 +142,9 @@ class StrategyRunner:
         Called on startup and at 9:00 daily. The daily trade count is DERIVED from
         persisted positions (risk_state, design §9.2), so nothing is reset here:
         a restart cannot clear it, and replay calls this once per replayed day
-        without writing trading_config. No strategy needs previous-day levels.
+        without writing trading_config. Also resolves the previous session's
+        H/L/C for the strategies that need it (PIVOT_BOUNCE), retrying a day
+        whose earlier attempt found no levels.
         """
         # Reset the signal aggregator cooldown map so yesterday's last-acted
         # timestamps don't suppress the first valid signals of the new session.
@@ -150,6 +152,53 @@ class StrategyRunner:
         signal_aggregator.reset()
         logger.info("Signal aggregator cleared for new session.")
         await self._restore_strategy_state()
+        for underlying in list(self._strategies):
+            await self._ensure_prev_session(underlying, retry_missing=True)
+
+    async def _ensure_prev_session(self, underlying: str, retry_missing: bool = False) -> None:
+        """Give the strategies that declare NEEDS_PREV_SESSION today's previous-
+        session H/L/C (app.services.market_data.prev_session). Resolved once per
+        trading day, independent of the rolling candle cache; *retry_missing*
+        tries again when today's attempt found none. The broker's daily candle
+        comes through the optional MarketDataPort.get_daily_candles, which only
+        the live port has, so replay never calls the broker. Never raises."""
+        from app.services.market_data import prev_session as ps
+
+        day = trading_day()
+        needy = [s for s in self._strategies.get(underlying, [])
+                 if getattr(s, "NEEDS_PREV_SESSION", False)]
+        due = [s for s in needy if getattr(s, "_levels_day", None) != day
+               or (retry_missing and s.prev_session_problem() is not None)]
+        if not due:
+            return
+        token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
+        try:
+            cached = await market().get_candles(token, "ONE_MINUTE", 500)
+            try:
+                async with sessions()() as db:
+                    stored = await ps.db_minute_candles(db, token, day)
+            except Exception as exc:
+                logger.warning("[%s] previous-session levels: ohlc read failed: %s",
+                               underlying, exc)
+                stored = []
+            fetch_daily = getattr(market(), "get_daily_candles", None)   # optional port method
+            daily = await fetch_daily(token, day) if fetch_daily is not None else None
+            result = ps.resolve(day, [*stored, *(cached or [])], daily)
+        except Exception as exc:
+            result = ps.PrevSessionResult(None, f"previous-session lookup failed: "
+                                                f"{type(exc).__name__}: {exc}")
+        for s in due:
+            s.set_prev_session(day, result.levels, result.reason)
+        names = ", ".join(s.name for s in due)
+        if result.note:
+            logger.warning("[%s] previous-session levels: %s", underlying, result.note)
+        lv = result.levels
+        if lv is not None:
+            logger.info("[%s] previous session %s for %s: H=%.2f L=%.2f C=%.2f (source=%s, %s)",
+                        underlying, lv.day, names, lv.high, lv.low, lv.close, lv.source,
+                        lv.detail)
+        else:
+            logger.warning("[%s] %s disabled today: %s", underlying, names, result.reason)
 
     async def _restore_strategy_state(self) -> None:
         """Rebuild each strategy's per-day state (open count, ORB trades and
@@ -565,9 +614,18 @@ class StrategyRunner:
         # ── Run strategies ────────────────────────────────────────────────────
         # The merged flags are the only gate (the detector-owned cooldown is
         # expressed through the REGIME_TRANSITION rule enabling nothing).
+        await self._ensure_prev_session(underlying)       # no-op once resolved today
         for strat in self._strategies.get(underlying, []):
             if len(candles) < _readiness(strat):
                 continue            # not ready yet today: neither evaluated nor a rejection
+            if getattr(strat, "NEEDS_PREV_SESSION", False) and flags.get(strat.name, True):
+                problem = strat.prev_session_problem()
+                if problem is not None:
+                    # one STRATEGY_GATE row a day (state change), not one per minute
+                    self._queue_strategy_gate(tally, underlying, strat.name,
+                                              ReasonCode.PREV_SESSION_UNAVAILABLE,
+                                              f"{strat.name}: {problem}")
+                    continue
             if not final_flags.get(strat.name, False):
                 if not flags.get(strat.name, True):
                     self._queue_strategy_gate(tally, underlying, strat.name,
