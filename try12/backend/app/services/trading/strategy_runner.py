@@ -76,6 +76,7 @@ class StrategyRunner:
         self._seen_day: Optional[date] = None
         self._strategy_gate_last: dict[tuple, Optional[str]] = {}
         self._cache_warned_at: float = float("-inf")
+        self._readiness: dict = {}    # underlying → session_readiness.Readiness (last check)
 
     async def start(self):
         self._running = True
@@ -92,6 +93,7 @@ class StrategyRunner:
 
         # Pre-market setup
         await self._pre_market_setup()
+        await self.check_session_readiness()
 
         # Start loops
         self._run_task  = asyncio.create_task(self._candle_loop())
@@ -199,6 +201,77 @@ class StrategyRunner:
                         lv.detail)
         else:
             logger.warning("[%s] %s disabled today: %s", underlying, names, result.reason)
+
+    # ── Session readiness ─────────────────────────────────────────────────────
+
+    def _levels_state(self, underlying: str) -> tuple:
+        """(levels dict or None, problem or None, levels day or None) of the
+        strategy that needs the previous session; (None, None, None) without one."""
+        for s in self._strategies.get(underlying, []):
+            if getattr(s, "NEEDS_PREV_SESSION", False):
+                problem = s.prev_session_problem()
+                lv = getattr(s, "_prev", None) if problem is None else None
+                if lv is None:
+                    return None, problem, None
+                return ({"day": lv.day.isoformat(), "high": lv.high, "low": lv.low,
+                         "close": lv.close, "source": lv.source}, None, lv.day)
+        return None, None, None
+
+    async def check_session_readiness(self) -> dict:
+        """Check the candle history of every underlying that runs strategies
+        (app.services.market_data.session_readiness), log one summary line each
+        (WARNING per finding) and keep the result for the status endpoints.
+        Called by start() and the 09:00 pre-market step of the live loops.
+        Never raises; returns {underlying: Readiness}."""
+        from app.services.market_data import prev_session as ps
+        from app.services.market_data import session_readiness as rd
+
+        try:
+            now, day = now_ist(), trading_day()
+        except Exception as exc:
+            logger.warning("Session readiness check skipped: %s", exc)
+            return {}
+        for underlying, strategies in self._strategies.items():
+            if not strategies:
+                continue                    # BANKNIFTY runs no strategies
+            token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
+            try:
+                cache = list(await market().get_candles(token, "ONE_MINUTE", 500) or [])
+                try:
+                    async with sessions()() as db:
+                        stored = await ps.db_minute_candles(db, token, day)
+                except Exception as exc:
+                    logger.warning("[%s] session readiness: ohlc read failed: %s", underlying, exc)
+                    stored = []
+                levels, problem, levels_day = self._levels_state(underlying)
+                rep = rd.build(underlying, now,
+                               rd.check_prev_session(day, [*stored, *cache], cache, levels_day),
+                               rd.check_today(now, cache), levels, problem)
+            except Exception as exc:
+                logger.warning("[%s] session readiness check failed: %s", underlying, exc)
+                continue
+            self._readiness[underlying] = rep
+            if rep.ok:
+                logger.info("%s", rep.summary())
+            else:
+                logger.warning("%s", rep.summary())
+                for w in rep.warnings:
+                    logger.warning("[%s] readiness %s: %s", underlying, w["code"], w["message"])
+        return dict(self._readiness)
+
+    def session_readiness(self, underlying: str, now: datetime,
+                          cache: Optional[list] = None):
+        """Today's last readiness check of *underlying* (None when there is none
+        for *now*'s day), with the today/buffer part redone from *cache* when given."""
+        from app.services.market_data import session_readiness as rd
+
+        rep = self._readiness.get(underlying)
+        if rep is None or rep.day != now.astimezone(rep.checked_at.tzinfo).date():
+            return None
+        if cache is None:
+            return rep
+        levels, problem, _ = self._levels_state(underlying)
+        return rd.refresh(rep, now, cache, levels, problem)
 
     async def _restore_strategy_state(self) -> None:
         """Rebuild each strategy's per-day state (open count, ORB trades and
@@ -807,6 +880,7 @@ class StrategyRunner:
                 # 9:00 IST pre-market setup
                 if ist_h == 9 and ist_m == 0:
                     await self._pre_market_setup()
+                    await self.check_session_readiness()
                     await asyncio.sleep(120)
 
                 await asyncio.sleep(30)

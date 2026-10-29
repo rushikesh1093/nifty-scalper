@@ -259,6 +259,20 @@ async def health():
         from app.core.alerts import alert
         alert("low_disk", f"Low disk: {disk_free:.1f} GB free (warning below "
                           f"{settings.LOW_DISK_WARN_GB:.0f} GB)", throttle_s=3600)
+    # Today's session-readiness check (startup / 09:00), as last run; never fatal.
+    # GET /api/v1/trading/signals/diagnostics has the live, refreshed version.
+    readiness: dict = {}
+    try:
+        from datetime import datetime
+        from app.services.market_data.timestamps import IST
+        from app.services.trading.strategy_runner import strategy_runner
+        for u in ("NIFTY", "BANKNIFTY"):
+            rep = strategy_runner.session_readiness(u, datetime.now(IST))
+            if rep is not None:
+                readiness[u] = {"ok": rep.ok, "checked_at": rep.checked_at.isoformat(),
+                                "warnings": [w["code"] for w in rep.warnings]}
+    except Exception:
+        readiness = {}
     return {
         "status":          status,
         "redis":           "ok" if redis_ok else "down",
@@ -267,6 +281,7 @@ async def health():
         "subscriptions":   subs,
         "disk_free_gb":    disk_free,
         "low_disk":        low_disk,
+        "readiness":       readiness,
     }
 
 

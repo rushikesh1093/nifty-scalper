@@ -594,6 +594,7 @@ async def get_signal_diagnostics():
             "last_candle_at": None, "regime": None, "regime_allows_trading": None,
         }
         extra: dict = {}
+        all_c = None
         try:
             if not redis_ok:
                 raise _SkipProbe
@@ -617,6 +618,14 @@ async def get_signal_diagnostics():
             pass
         except Exception as exc:
             _probe_failed(f"CANDLES_PROBE_{u}", exc)
+        try:
+            # the runner's startup / 09:00 readiness check, its today part redone now
+            rd = _sr.strategy_runner.session_readiness(u, now_ist, all_c)
+            if rd is not None:
+                info["readiness"] = rd.as_dict()
+                extra["readiness_warnings"] = rd.warnings
+        except Exception as exc:
+            _probe_failed(f"READINESS_PROBE_{u}", exc)
         try:
             if redis_ok:
                 raw = await redis_cache._r().get(f"regime:{u}:current")
