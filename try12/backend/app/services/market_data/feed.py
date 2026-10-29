@@ -72,6 +72,20 @@ MAX_RECONNECTS      = 0        # 0 = unlimited — feed must never give up perma
 # AngelOne keeps the old WS session alive for ~30s after disconnect.
 # On a 429 we must wait long enough for them to clean it up before re-connecting.
 RECONNECT_429_DELAY = 35    # seconds — first pause after a 429
+# A connection that closes sooner than this counts as a failed attempt: it backs
+# off and the next attempt logs in fresh (the tokens may be what was refused).
+STABLE_CONNECTION_S = 60
+
+
+def _needs_fresh_login(exc: BaseException) -> bool:
+    """True when a connect failure means AngelOne refused the session itself:
+    HTTP 429 (old session still held), 401 or 403 (token rejected). Network
+    errors (DNS, timeouts, resets) do not: the session is still good."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in (401, 403, 429):
+        return True
+    text = str(exc)
+    return any(f"HTTP {c}" in text for c in (401, 403, 429))
 
 
 # Exchange type constants (official)
@@ -262,6 +276,7 @@ class MarketFeed:
         self._reconnect_count:  int  = 0
         self._down_alerted:     bool = False
         self._last_was_429:     bool = False   # flag set when previous attempt got 429
+        self._force_login:      bool = False   # next attempt logs in fresh instead of reusing
         self._hb_task:          Optional[asyncio.Task] = None
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -311,26 +326,45 @@ class MarketFeed:
         Reconnect loop that runs for as long as the feed is running.
         MAX_RECONNECTS=0 means unlimited retries so a transient network outage
         never permanently kills market data mid-session.
-        Counter resets to 0 after every successful stable connection (>5 min)
-        so a brief blip doesn't consume the burst budget.
+
+        Each attempt reuses the current AngelOne session when it is valid
+        (ensure_logged_in: no AngelOne call at all) and logs in fresh only when
+        there is a reason: the previous attempt was refused with 429/401/403, or
+        the last connection closed within STABLE_CONNECTION_S. A fresh login per
+        attempt (the old behaviour) made every network blip cost a TOTP login.
+        A 429 still gets a new feed_token: AngelOne holds the old WS session for
+        ~30 s, and a new token makes it open a new slot.
         """
         while self._running:
             try:
-                # Always force a fresh login on every (re)connect attempt so we
-                # get a new feed_token.  AngelOne's 429 means the old session is
-                # still alive on their side; a new token forces them to create a
-                # new slot rather than reject the stale one.
-                await angel_client.login()
+                if self._force_login:
+                    await angel_client.login()
+                else:
+                    await angel_client.ensure_logged_in()
+                self._force_login = False
                 self._last_was_429 = False
+                opened_at = time.monotonic()
                 await self._connect()
-                # _connect() returns only when the WS closes — reset burst counter
-                # only if the connection lasted more than 5 minutes (300s).
-                # Short-lived connections (likely errors) keep the backoff pressure.
-                self._reconnect_count = 0
+                # _connect() returns when the WS closes. A connection that held is
+                # a success; one that closed right away counts as a failed attempt.
+                lasted = time.monotonic() - opened_at
+                if not self._running:            # stop() closed it: not a failure
+                    break
+                if lasted >= STABLE_CONNECTION_S:
+                    self._reconnect_count = 0
+                    continue
+                self._reconnect_count += 1
+                self._force_login = True
+                delay = min(RECONNECT_BASE * self._reconnect_count, 120)
+                logger.warning(
+                    "Feed connection closed after %.0fs; reconnecting in %ds with a fresh "
+                    "login (attempt %d)...", lasted, delay, self._reconnect_count)
+                await asyncio.sleep(delay)
             except Exception as exc:
                 self._reconnect_count += 1
                 exc_str = str(exc)
                 is_429  = "429" in exc_str
+                self._force_login = is_429 or _needs_fresh_login(exc)
 
                 if is_429:
                     delay = RECONNECT_429_DELAY if self._reconnect_count == 1 \

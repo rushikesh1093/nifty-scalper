@@ -187,6 +187,7 @@ class AngelClient:
         _session.logged_in_at  = datetime.now()
 
         logger.info("✅ AngelOne login OK")   # credential values are never logged (R1.7)
+        await self._persist_to_redis()        # every new session is cached, in one format
         return _session
 
     async def refresh_tokens(self) -> AngelSession:
@@ -214,7 +215,39 @@ class AngelClient:
             _session.feed_token = data["data"]["feedToken"]
         _session.logged_in_at  = datetime.now()
         logger.info("AngelOne tokens refreshed.")
+        await self._persist_to_redis()
         return _session
+
+    async def session_works(self) -> bool:
+        """True when AngelOne accepts the current JWT (one getProfile call).
+
+        Age alone cannot tell: a login elsewhere (another script, or the AngelOne
+        web/app) can invalidate a token that is still young. Network errors
+        propagate; the caller decides."""
+        if not _session.jwt_token:
+            return False
+        http = await self._client()
+        resp = await http.get("/rest/secure/angelbroking/user/v1/getProfile",
+                              headers=_session.auth_headers)
+        try:
+            data = resp.json()
+        except Exception:
+            return False
+        return resp.status_code == 200 and bool(data.get("status"))
+
+    async def resume_or_login(self) -> AngelSession:
+        """Startup: reuse the session cached in Redis when it is still valid and
+        AngelOne still accepts it; otherwise log in. A restart therefore costs no
+        login while the cached session works, and still fixes a dead session."""
+        try:
+            if (await self._restore_from_redis() and _session.is_valid()
+                    and await self.session_works()):
+                logger.info("AngelOne session reused from Redis (%.1f h old).",
+                            (_session.age_s() or 0) / 3600)
+                return _session
+        except Exception as exc:
+            logger.warning("Cached AngelOne session could not be checked (%s); logging in.", exc)
+        return await self.login()
 
     async def keep_alive(self) -> bool:
         """Renew an existing session once it is older than SESSION_RENEW_AGE_S.
@@ -235,7 +268,6 @@ class AngelClient:
                 await self.login()
         else:
             await self.login()
-        await self._persist_to_redis()
         return True
 
     async def run_session_keeper(self, interval_s: float = SESSION_CHECK_INTERVAL_S):
@@ -280,14 +312,12 @@ class AngelClient:
 
         if _session.refresh_token:
             try:
-                await self.refresh_tokens()
-                await self._persist_to_redis()
+                await self.refresh_tokens()      # persists to Redis itself
                 return _session
             except Exception as e:
                 logger.warning("Token refresh failed (%s) — re-logging in.", e)
 
-        await self.login()
-        await self._persist_to_redis()
+        await self.login()                       # persists to Redis itself
         return _session
 
     async def _persist_to_redis(self):
