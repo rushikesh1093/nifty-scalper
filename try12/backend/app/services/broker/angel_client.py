@@ -32,6 +32,14 @@ _hist_lock = asyncio.Lock()
 _hist_last = 0.0
 
 
+# Session lifetime. AngelOne sessions last about 8 h; we treat one as expired at
+# 7 h, and the session keeper (run_session_keeper) renews an existing session
+# once it is 6 h old, checking every 5 min, so it never reaches the 7 h limit.
+SESSION_MAX_AGE_S = 7 * 3600
+SESSION_RENEW_AGE_S = 6 * 3600
+SESSION_CHECK_INTERVAL_S = 300
+
+
 def _rate_limited(resp) -> bool:
     if resp.status_code == 429:
         return True
@@ -82,11 +90,20 @@ class AngelSession:
             "x-feed-token":  self.feed_token or "",
         }
 
-    def is_valid(self) -> bool:
+    def age_s(self) -> Optional[float]:
+        """Seconds since the tokens were issued; None when there is no session."""
         if not self.jwt_token or not self.logged_in_at:
-            return False
-        elapsed = (datetime.now() - self.logged_in_at).total_seconds()
-        return elapsed < 7 * 3600   # refresh before 8-hour expiry
+            return None
+        return (datetime.now() - self.logged_in_at).total_seconds()
+
+    def is_valid(self) -> bool:
+        age = self.age_s()
+        return age is not None and age < SESSION_MAX_AGE_S
+
+    def needs_renewal(self) -> bool:
+        """True when a session exists and is old enough for the keeper to renew."""
+        age = self.age_s()
+        return age is not None and age >= SESSION_RENEW_AGE_S
 
 
 def set_credentials(api_key: str, client_id: str, password: str, totp_secret: str) -> None:
@@ -193,9 +210,56 @@ class AngelClient:
 
         _session.jwt_token     = data["data"]["jwtToken"]
         _session.refresh_token = data["data"]["refreshToken"]
+        if data["data"].get("feedToken"):
+            _session.feed_token = data["data"]["feedToken"]
         _session.logged_in_at  = datetime.now()
         logger.info("AngelOne tokens refreshed.")
         return _session
+
+    async def keep_alive(self) -> bool:
+        """Renew an existing session once it is older than SESSION_RENEW_AGE_S.
+
+        It never creates the first session: startup and the feed log in, and a
+        keeper that retried a failing login every few minutes could get the
+        account locked. Uses the refresh token when there is one (refresh_tokens
+        itself falls back to a full login when AngelOne refuses it), otherwise a
+        TOTP login. Returns True when it renewed, False when there was nothing to
+        do. Raises when neither works (network down, bad credentials)."""
+        if not _session.needs_renewal():
+            return False
+        if _session.refresh_token:
+            try:
+                await self.refresh_tokens()
+            except Exception as exc:
+                logger.warning("AngelOne token refresh failed (%s); logging in again.", exc)
+                await self.login()
+        else:
+            await self.login()
+        await self._persist_to_redis()
+        return True
+
+    async def run_session_keeper(self, interval_s: float = SESSION_CHECK_INTERVAL_S):
+        """Check the session every *interval_s* (first check immediately) and renew
+        it before it goes stale. Runs until cancelled. A failure is logged, alerted
+        (throttled) and retried at the next check."""
+        from app.core.alerts import alert, CRITICAL, INFO, WARNING
+        failures = 0
+        while True:
+            try:
+                if await self.keep_alive():
+                    logger.info("AngelOne session renewed by the session keeper.")
+                if failures:
+                    alert("session_ok", f"AngelOne session renewed after {failures} "
+                          f"failed attempt(s)", level=INFO)
+                failures = 0
+            except Exception as exc:
+                failures += 1
+                logger.error("AngelOne session renewal failed (attempt %d): %s", failures, exc)
+                alert("session_renew_failed",
+                      f"AngelOne session renewal failed ({str(exc)[:120]}); "
+                      f"retrying every {int(interval_s)}s",
+                      level=CRITICAL if failures >= 3 else WARNING, throttle_s=1800)
+            await asyncio.sleep(interval_s)
 
     async def ensure_logged_in(self) -> AngelSession:
         """
@@ -259,12 +323,18 @@ class AngelClient:
             data = json.loads(raw)
             if not data.get("jwt_token"):
                 return False
+            ts = data.get("logged_in_at")
+            cached_at = datetime.fromisoformat(ts) if ts else None
+            # The feed logs in on every reconnect without writing Redis, so the
+            # cached copy can be older than the tokens in memory: never go back.
+            if _session.jwt_token and _session.logged_in_at and (
+                    cached_at is None or cached_at <= _session.logged_in_at):
+                return False
             _session.jwt_token     = data["jwt_token"]
             _session.refresh_token = data.get("refresh_token")
             _session.feed_token    = data.get("feed_token")
             _session.client_code   = data.get("client_code")
-            ts = data.get("logged_in_at")
-            _session.logged_in_at  = datetime.fromisoformat(ts) if ts else None
+            _session.logged_in_at  = cached_at
             return True
         except Exception as e:
             logger.debug("Could not restore session from Redis: %s", e)
