@@ -3,7 +3,7 @@ Regime rules and classification logic.
 
 Provides:
   RegimeRule       — NamedTuple defining strategy/direction/sizing per regime.
-  REGIME_RULES     — Dict mapping all 13 regime names to their RegimeRule (§6.2).
+  REGIME_RULES     — Dict mapping all 14 regime names to their RegimeRule (§6.2).
   NEVER_ENABLED, POSITION_MULTIPLIERS — the declared sets startup checks 3-4 assert.
   get_regime_rule  — Retrieve a rule with dynamic ATR-based size adjustment.
   classify_regime  — Classify the current regime using a strict 9-priority order.
@@ -49,7 +49,7 @@ class RegimeRule(NamedTuple):
 
 
 # ── REGIME_RULES (design §6.2) ───────────────────────────────────────────────
-# 13 keys: 7 tradeable regimes, 5 no-trade regimes and the legacy UNKNOWN
+# 14 keys: 8 tradeable regimes, 5 no-trade regimes and the legacy UNKNOWN
 # alias. Every strategy is enabled somewhere (NEVER_ENABLED is empty) and
 # every multiplier is in POSITION_MULTIPLIERS. Startup checks 2-5 assert all
 # of that (app/services/trading/startup_checks.py).
@@ -128,6 +128,13 @@ REGIME_RULES: dict[str, RegimeRule] = {
         notes="Sideways: trend and momentum entries whipsaw here; only the "
               "opening-range break may fire",
     ),
+    "RANGE_BOUND": RegimeRule(
+        enabled_strategies=_RANGE,
+        allowed_directions=_BOTH, position_multiplier=1.0,
+        notes="Low ADX and few VWAP crosses at any ATR percentile — emitted only "
+              "with TradingParams.regime_range_bound, for minutes that would "
+              "otherwise be UNCLASSIFIED; the range strategies of RANGE_NORMAL_VOL",
+    ),
     # ── No-trade regimes (D7) ────────────────────────────────────────────────
     "HIGH_VOL_CHOP": RegimeRule(
         enabled_strategies=_NONE, allowed_directions=_NONE, position_multiplier=0.0,
@@ -201,6 +208,7 @@ def classify_regime(
     is_expiry_day: bool,
     previous_regime: Optional[str],  # noqa: F841  — transition handled externally
     config: "RegimeConfig",
+    range_bound: bool = False,
 ) -> str:
     """
     Classify the current market regime using a strict 9-priority order.
@@ -217,7 +225,9 @@ def classify_regime(
     8.  TREND_HIGH_VOL        — ADX > trend_thr AND high ATR%ile
     9.  LOW_VOL_COMPRESSION   — low ATR%ile AND price hugs VWAP
     10. RANGE_NORMAL_VOL      — ADX < range_thr AND normal ATR%ile
-    11. UNCLASSIFIED          — no conditions matched
+    11. RANGE_BOUND           — only when *range_bound*: ADX < range_thr AND
+                                vwap_crosses < chop threshold, any ATR%ile
+    12. UNCLASSIFIED          — no conditions matched
 
     Parameters
     ----------
@@ -231,6 +241,9 @@ def classify_regime(
         Not used directly; regime transition is detected externally.
     config:
         ``RegimeConfig`` holding all detection thresholds.
+    range_bound:
+        ``TradingParams.regime_range_bound``. False (default) keeps the
+        original fall-through to UNCLASSIFIED.
 
     Returns
     -------
@@ -390,6 +403,10 @@ def classify_regime(
         regime = "LOW_VOL_COMPRESSION"
     elif range_normal_vol:
         regime = "RANGE_NORMAL_VOL"
+    elif (range_bound and range_adx
+          and indicators.vwap_cross_count < config.VWAP_CROSS_CHOP_THRESHOLD):
+        # A quiet range outside the normal ATR band (or far from VWAP with low ATR)
+        regime = "RANGE_BOUND"
     else:
         # An ordinary tape that matched no condition — not a failure (§6.2)
         regime = "UNCLASSIFIED"

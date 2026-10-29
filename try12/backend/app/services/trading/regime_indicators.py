@@ -207,6 +207,7 @@ def build_regime_indicators(
     indicators: dict,
     config,  # RegimeConfig — typed loosely to avoid circular import
     history: Optional[list[dict]] = None,
+    atr_pct_lookback: int = 20,
 ) -> RegimeIndicators:
     """
     Assemble a ``RegimeIndicators`` instance from candle data and pre-computed
@@ -224,6 +225,8 @@ def build_regime_indicators(
                     ATR percentile are computed on it, so the regime is
                     classifiable from the open instead of after ~34 candles;
                     the VWAP cross count stays on today's session.
+        atr_pct_lookback: ATR values the percentile ranks against
+                    (TradingParams.regime_atr_pct_lookback; 20 = the original).
 
     Returns:
         Populated ``RegimeIndicators`` dataclass.
@@ -256,7 +259,7 @@ def build_regime_indicators(
 
     # Compute regime-specific indicators
     adx_val = compute_adx(highs, lows, closes)
-    atr_pct = compute_atr_percentile(atr_val, trend_src)
+    atr_pct = compute_atr_percentile(atr_val, trend_src, period=atr_pct_lookback)
     vwap_crosses = compute_vwap_cross_count(candles, vwap_val)
 
     return RegimeIndicators(

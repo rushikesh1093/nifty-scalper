@@ -11,7 +11,8 @@ returns exactly what ``classify`` returns.
   regime_eval_minutes          classify only when an N-minute bar closes (clock
                                minute % N == 0); hold the label in between
   regime_hysteresis            stay in a trend down to ADX_RANGE_THRESHOLD, in a
-                               range up to ADX_TREND_THRESHOLD, in compression
+                               range (RANGE_NORMAL_VOL or RANGE_BOUND) up to
+                               ADX_TREND_THRESHOLD, in compression
                                out to regime_vwap_exit_pct from VWAP
   regime_atr_smooth            EMA of the ATR percentile over N evaluations
   regime_breakout_hold_minutes keep a breakout label this long unless price
@@ -30,6 +31,7 @@ from datetime import date, datetime, timedelta
 from typing import Callable, Optional
 
 TREND = frozenset({"BULL_TREND_NORMAL_VOL", "BEAR_TREND_NORMAL_VOL", "TREND_HIGH_VOL"})
+RANGE = frozenset({"RANGE_NORMAL_VOL", "RANGE_BOUND"})
 BULL_BO, BEAR_BO = "BREAKOUT_EVENT_BULLISH", "BREAKOUT_EVENT_BEARISH"
 IMMEDIATE = frozenset({"EXPIRY_DAY", "DETECTOR_ERROR"})
 # a latched breakout yields to these (and to the opposite breakout)
@@ -96,7 +98,7 @@ class RegimeStabilizer:
         if p.regime_hysteresis and st.adopted is not None:
             if st.adopted in TREND:
                 cfg = replace(config, ADX_TREND_THRESHOLD=config.ADX_RANGE_THRESHOLD)
-            elif st.adopted == "RANGE_NORMAL_VOL":
+            elif st.adopted in RANGE:
                 cfg = replace(config, ADX_RANGE_THRESHOLD=config.ADX_TREND_THRESHOLD)
             elif st.adopted == "LOW_VOL_COMPRESSION":
                 cfg = replace(config, VWAP_PROXIMITY_PERCENT=max(

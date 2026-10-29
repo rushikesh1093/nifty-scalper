@@ -68,11 +68,12 @@ def test_regime_rules_only_name_canonical_strategies():
 
 # ── Bug 2, map half (design §6.2-6.4, R3.4-R3.7) ─────────────────────────────
 
-THIRTEEN_REGIMES = {
+FOURTEEN_REGIMES = {
     "BULL_TREND_NORMAL_VOL", "BEAR_TREND_NORMAL_VOL", "TREND_HIGH_VOL",
     "BREAKOUT_EVENT_BULLISH", "BREAKOUT_EVENT_BEARISH", "LOW_VOL_COMPRESSION",
     "RANGE_NORMAL_VOL", "HIGH_VOL_CHOP", "REGIME_TRANSITION", "EXPIRY_DAY",
     "UNCLASSIFIED", "DETECTOR_ERROR", "UNKNOWN",
+    "RANGE_BOUND",      # Part 3: emitted only with TradingParams.regime_range_bound
 }
 
 
@@ -83,9 +84,9 @@ def test_every_strategy_is_enabled_in_some_regime():
     assert NEVER_ENABLED == frozenset()
 
 
-def test_regime_rules_have_exactly_13_keys():
+def test_regime_rules_have_exactly_14_keys():
     from app.services.trading.regime_rules import REGIME_RULES
-    assert set(REGIME_RULES) == THIRTEEN_REGIMES
+    assert set(REGIME_RULES) == FOURTEEN_REGIMES
 
 
 def test_multipliers_are_in_the_declared_set():
@@ -223,7 +224,7 @@ def test_strategy_map_endpoint(runtime_ctx, monkeypatch):
     _merge(monkeypatch, "REGIME_TRANSITION", {"SUPERTREND_EMA": False})
     body = run(get_strategy_map())
     assert body["multiplier_set"] == [0.0, 0.5, 1.0] and body["never_enabled"] == []
-    assert {r["regime"] for r in body["regimes"]} == THIRTEEN_REGIMES
+    assert {r["regime"] for r in body["regimes"]} == FOURTEEN_REGIMES
     nifty = next(c for c in body["current"] if c["underlying"] == "NIFTY")
     reasons = {s["name"]: s["reason"] for s in nifty["strategies"]}
     assert reasons["SUPERTREND_EMA"] == "user_disabled"

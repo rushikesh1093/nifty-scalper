@@ -34,6 +34,7 @@ FORBIDDEN_KEYS: dict[str, str] = {
 
 TRADE_AMOUNT_TOLERANCE = 500.0     # ₹ — display cache vs fixed_fraction × capital
 MAX_HOLD_MINUTES_MAX = 374         # one session is 375 one-minute candles
+REGIME_ATR_PCT_LOOKBACK_MAX = 486  # 500 cached candles - 14 for the ATR(14) warm-up
 MAX_FIXED_FRACTION_PCT = 100.0     # % of capital one trade may be sized on (the only bound):
                                    # up to all of it. Exposure, daily-loss and lot caps still apply.
 
@@ -125,12 +126,23 @@ class TradingParams:
     # 125 -> 7.5/day, but held-out net fell Rs18,280 -> 9,377 (+11.2R -> +7.1R):
     # a steadier label lets more Supertrend trades through and they lose. Off.
     regime_eval_minutes: int = 1             # 5 = classify on 5-minute closes
-    regime_hysteresis: bool = False          # ADX 18/22 and VWAP band hysteresis
+    # ADX 18/22 and VWAP band hysteresis: a trend holds down to ADX 18, a range
+    # (RANGE_NORMAL_VOL or RANGE_BOUND) up to ADX 22, so the dead zone keeps
+    # the previous label instead of flipping to UNCLASSIFIED.
+    regime_hysteresis: bool = False
     regime_vwap_exit_pct: float = 0.35       # compression holds out to this % of VWAP
     regime_atr_smooth: int = 0               # EMA span (evaluations) of the ATR %ile
     regime_breakout_hold_minutes: int = 0    # keep a breakout label this long...
     regime_breakout_fail_pts: float = 10.0   # ...unless price is back this far inside
     regime_confirm_evals: int = 1            # evaluations a new label must persist
+    # ATR values the ATR percentile ranks against (regime_indicators). 20 is the
+    # original rank (5% steps); 375 = one session. The runner reads the last 500
+    # one-minute candles and ATR(14) needs 14 of them, so 486 is the most.
+    regime_atr_pct_lookback: int = 20
+    # True: a minute the classifier leaves UNCLASSIFIED with ADX below
+    # ADX_RANGE_THRESHOLD and fewer VWAP crosses than the chop threshold is
+    # RANGE_BOUND (the range strategies), whatever the ATR percentile.
+    regime_range_bound: bool = False
 
     # ── entry gate ───────────────────────────────────────────────────────────
     min_rr: float = 2.0
@@ -287,6 +299,9 @@ class TradingParams:
                 v.append(f"{key}={getattr(self, key)} must be >= 0")
         if self.regime_confirm_evals < 1:
             v.append(f"regime_confirm_evals={self.regime_confirm_evals} must be >= 1")
+        if not (5 <= self.regime_atr_pct_lookback <= REGIME_ATR_PCT_LOOKBACK_MAX):
+            v.append(f"regime_atr_pct_lookback={self.regime_atr_pct_lookback} must be in "
+                     f"[5, {REGIME_ATR_PCT_LOOKBACK_MAX}]")
 
         allowed = set(ALL_STRATEGY_NAMES) | {"DEFAULT"}
         mh = self.max_hold_minutes
