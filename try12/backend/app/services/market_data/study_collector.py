@@ -2,19 +2,18 @@
 Market Study Data Collector.
 Runs during the 20-22 day observation period.
   - Every 5 minutes: captures intraday feature snapshot
-  - Every 5 minutes: refreshes option chain REST snapshot → Redis (populates IV)
+  - Every 5 minutes: builds the option chain from the feed's ticks → Redis + DB (IV implied)
   - EOD: builds daily summary (OI, PCR, VIX, max pain, OHLC)
 """
 import asyncio
 import logging
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, time as dtime, timedelta, timezone
 from typing import Optional
 
 import httpx
 
 from app.db.base import AsyncSessionLocal
 from app.db.models.market_study import IntradayMarketFeature, MarketDailySnapshot, VIXData
-from app.services.broker.angel_client import angel_client
 from app.services.cache.redis_client import redis_cache
 from app.strategies.indicators import compute_all, cpr
 from app.core.config import settings
@@ -25,7 +24,8 @@ from app.services.trading import session_times
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_INTERVAL      = 300    # 5 minutes in seconds
-OPTION_CHAIN_INTERVAL  = 300    # refresh option chain REST snapshot every 5 minutes
+OPTION_CHAIN_INTERVAL  = 300    # refresh the option chain every 5 minutes
+CHAIN_STRIKE_RADIUS    = 10     # strikes each side of ATM (the feed subscribes the same)
 VIX_TOKEN              = settings.VIX_TOKEN  # India VIX token (centralised in config)
 
 
@@ -34,7 +34,7 @@ class StudyCollector:
     def __init__(self, chain_source=None):
         self._running            = False
         # Option-chain source: async (name, expiry_str, strike_str) -> raw chain.
-        # None = angel_client.get_option_chain, resolved at call time.
+        # None = built from the live feed's ticks (chain_snapshots.chain_from_ticks).
         self._chain_source       = chain_source
         self._chain_fail_streak  = 0     # consecutive intervals with a failing underlying
         self._chain_lock:       Optional[asyncio.Lock] = None
@@ -349,7 +349,8 @@ class StudyCollector:
     async def _fetch_option_chain(self, underlying: str,
                                   now: Optional[datetime] = None) -> cs.ChainFetchOutcome:
         """
-        Fetch the AngelOne option chain REST snapshot for the nearest expiry,
+        Build the option chain for the nearest expiry (from the feed's ticks, or
+        the injected source),
         write it to Redis via redis_cache.set_option_chain() and, during market
         hours, persist it to option_chain_snapshots (one set per 300 s bucket).
         Never raises: every failure is returned as a ChainFetchOutcome status.
@@ -380,7 +381,7 @@ class StudyCollector:
             ]
           }
         """
-        from app.services.broker.instrument_sync import get_active_expiries
+        from app.services.broker.instrument_sync import get_active_expiries, get_option_tokens
 
         Outcome = cs.ChainFetchOutcome
         if now is None:
@@ -412,27 +413,45 @@ class StudyCollector:
         step    = 50 if underlying == "NIFTY" else 100
         atm     = round(spot_ltp / step) * step if spot_ltp else 0
 
-        # Use AngelOne's option chain REST endpoint (requires login)
-        # The endpoint accepts: name, expirydate (DD-Mon-YYYY), strikeprice
-        source = self._chain_source or angel_client.get_option_chain
-        try:
-            expiry_str   = expiry.strftime("%d-%b-%Y").upper()  # e.g. "26-SEP-2024"
-            strike_param = str(int(atm)) if atm else "0"
-            raw_chain    = await source(underlying, expiry_str, strike_param)
-        except Exception as exc:
-            return Outcome(underlying, cs.classify_fetch_error(exc),
-                           f"expiry={expiry}: {type(exc).__name__}: {exc}")
+        if self._chain_source is None:
+            # Built from the live feed's ticks of the subscribed strikes, IV implied
+            # from their prices. (The REST "optionChain" endpoint this used to call
+            # is not part of AngelOne's API: every call returned an empty body.)
+            if not spot_ltp or not atm:
+                return Outcome(underlying, cs.NO_SPOT, f"expiry={expiry}: no spot LTP")
+            try:
+                async with AsyncSessionLocal() as db:
+                    insts = await get_option_tokens(
+                        db, underlying, expiry,
+                        (atm - CHAIN_STRIKE_RADIUS * step, atm + CHAIN_STRIKE_RADIUS * step))
+                ticks = {str(i.token): await redis_cache.get_tick(str(i.token)) for i in insts}
+            except Exception as exc:
+                return Outcome(underlying, cs.DB_ERROR, f"chain from ticks: {exc!r}")
+            close = datetime.combine(expiry, dtime(15, 30), tzinfo=session_times.IST)
+            strikes_out = cs.chain_from_ticks(insts, ticks, spot_ltp, close, now)
+            if not strikes_out:
+                return Outcome(underlying, cs.NO_TICKS,
+                               f"expiry={expiry}: no fresh tick for {len(insts)} options")
+        else:
+            # An injected REST-shaped source (tests, or a future broker endpoint)
+            try:
+                expiry_str   = expiry.strftime("%d-%b-%Y").upper()  # e.g. "26-SEP-2024"
+                strike_param = str(int(atm)) if atm else "0"
+                raw_chain    = await self._chain_source(underlying, expiry_str, strike_param)
+            except Exception as exc:
+                return Outcome(underlying, cs.classify_fetch_error(exc),
+                               f"expiry={expiry}: {type(exc).__name__}: {exc}")
 
-        try:
-            strikes_out = cs.normalise_chain(raw_chain)
-        except Exception as exc:
-            return Outcome(underlying, cs.UNPARSEABLE, f"normalise failed: {exc!r}")
-        if not strikes_out:
-            return Outcome(
-                underlying, cs.UNPARSEABLE,
-                "no parseable strikes; keys=%s" % (
-                    list(raw_chain.keys()) if isinstance(raw_chain, dict) else type(raw_chain)),
-            )
+            try:
+                strikes_out = cs.normalise_chain(raw_chain)
+            except Exception as exc:
+                return Outcome(underlying, cs.UNPARSEABLE, f"normalise failed: {exc!r}")
+            if not strikes_out:
+                return Outcome(
+                    underlying, cs.UNPARSEABLE,
+                    "no parseable strikes; keys=%s" % (
+                        list(raw_chain.keys()) if isinstance(raw_chain, dict) else type(raw_chain)),
+                )
 
         chain_doc = {
             "underlying": underlying,
