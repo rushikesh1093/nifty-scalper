@@ -9,7 +9,7 @@ Call market_manager.startup() from FastAPI lifespan.
 """
 import asyncio
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +43,41 @@ SEED_KEEP_CANDLES = 500
 # short feed tokens (26000 / 26009 / 26017) return SUCCESS with zero candles.
 # Candles are still stored under the feed token, which is what everything reads.
 INDEX_HISTORICAL_TOKENS = {"26000": "99926000", "26009": "99926009", "26017": "99926017"}
+
+
+async def fill_ohlc_gaps(candles: list[dict], exchange: str) -> int:
+    """Write REST history into the ohlc table for minutes it does not have yet.
+    Minutes lost while the backend was down or the feed dropped otherwise stay
+    missing there for good (readiness: PREV_SESSION_INCOMPLETE / TODAY_CANDLE_GAPS).
+    Never overwrites a live candle; never raises. Returns the rows offered."""
+    from app.db.models.ohlc import OHLC
+    from app.services.market_data.timestamps import try_normalize_candle_timestamp as _ts
+    rows = []
+    for c in candles:
+        t = _ts(c.get("timestamp"))
+        if t is None:
+            continue
+        rows.append({"token": c["token"], "symbol": c["symbol"], "exchange": exchange,
+                     "interval": c.get("interval", "ONE_MINUTE"),
+                     "timestamp": t.astimezone(timezone.utc),
+                     "open": float(c["open"]), "high": float(c["high"]), "low": float(c["low"]),
+                     "close": float(c["close"]), "volume": int(c.get("volume") or 0)})
+    if not rows:
+        return 0
+    try:
+        async with AsyncSessionLocal() as db:
+            if db.bind.dialect.name == "postgresql":
+                from sqlalchemy.dialects.postgresql import insert
+            else:
+                from sqlalchemy.dialects.sqlite import insert
+            for k in range(0, len(rows), 500):
+                await db.execute(insert(OHLC).values(rows[k:k + 500]).on_conflict_do_nothing(
+                    index_elements=["token", "interval", "timestamp"]))
+            await db.commit()
+        return len(rows)
+    except Exception as exc:
+        logger.warning("ohlc gap fill failed for %s: %s", rows[0]["symbol"], exc)
+        return 0
 
 
 class MarketManager:
@@ -420,6 +455,7 @@ class MarketManager:
                     "Seeded %d candles for %s (%s/%s) from AngelOne REST",
                     len(candle_dicts), symbol, exchange, token,
                 )
+                await fill_ohlc_gaps(candle_dicts, exchange)
             else:
                 logger.info(
                     "No historical candles from AngelOne for %s — will try DB fallback",
