@@ -3,7 +3,7 @@ Pure helpers for GET /trading/signals/diagnostics — no I/O, no clock reads.
 
 The route gathers a state snapshot (dict); this module derives the session-window
 predicate and the blocker list from it, so the taxonomy is unit-testable without
-a DB, Redis or a running feed. Codes mirror backend/scripts/diagnose_blockers.py.
+a DB, Redis or a running feed.
 """
 from __future__ import annotations
 
