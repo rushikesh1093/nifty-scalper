@@ -212,6 +212,53 @@ def signal_quality(rows: list[dict]) -> dict:
     }
 
 
+_INT = {"entry_idx", "exit_idx"}
+_FLOAT = {"plan_entry", "entry", "stop0", "target", "risk_pts", "exit_px", "r_gross", "hold_min",
+          "mfe_r", "mae_r"}
+_BOOL = {"ambiguous", "f_transition", "f_expiry", "expiry"}
+
+
+def _typed(row: dict) -> dict:
+    out = {}
+    for k, v in row.items():
+        if v == "" or v is None:
+            out[k] = None
+        elif k in _BOOL:
+            out[k] = v == "True"
+        elif k in _INT:
+            out[k] = int(v)
+        elif k in _FLOAT or k.startswith("f_") or k in ("r_gross",):
+            try:
+                out[k] = float(v)
+            except ValueError:
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
+
+def load_results(out: Path, th: dict) -> tuple[dict, dict]:
+    """Trade rows (typed) per variant, exit rows, and Trade objects for the
+    baselines (option replay), read back from the CSVs."""
+    fields = {f.name for f in sim.Trade.__dataclass_fields__.values()} - {"features"}
+
+    def read(vid, with_exits):
+        p = out / f"trades_{vid}.csv"
+        rows = [_typed(r) for r in csv.DictReader(p.open(encoding="utf-8"))] if p.stat().st_size else []
+        for r in rows:
+            r["f_regime"] = None if r.get("f_regime") is None else str(r["f_regime"])
+        trades = [sim.Trade(**{k: r[k] for k in fields if k in r}) for r in rows] if with_exits else []
+        return {"rows": rows, "exits": [], "trades": trades}
+
+    base = {s[0]: read(s[0], True) for s in baseline_specs()}
+    var = {s[0]: read(s[0], False) for s in variant_specs(th)}
+    p = out / "exit_variants.csv"
+    for e in (_typed(r) for r in csv.DictReader(p.open(encoding="utf-8"))):
+        e["r_gross"] = float(e["r_gross"])
+        base[e["variant"]]["exits"].append(e)
+    return base, var
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
@@ -220,6 +267,8 @@ def main(argv=None) -> int:
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--start"); ap.add_argument("--end")
     ap.add_argument("--design-months", type=int, default=DESIGN_MONTHS)
+    ap.add_argument("--analyse-only", action="store_true",
+                    help="skip the simulation; re-analyse the CSVs already in --out")
     a = ap.parse_args(argv)
     t0 = time.time()
     out = Path(a.out)
@@ -235,18 +284,22 @@ def main(argv=None) -> int:
     (out / "data_quality.json").write_text(json.dumps(ds.quality, indent=1))
     print(f"[research] {len(ds.sessions)} sessions, design window ends {design_end}", flush=True)
 
-    base = run_specs(baseline_specs(), ds, a.workers, with_exits=True)
-    th = design_thresholds(base, design_end)
-    (out / "thresholds.json").write_text(json.dumps(th, indent=1))
-    print(f"[research] baselines done {time.time() - t0:.0f}s thresholds {th}", flush=True)
-    var = run_specs(variant_specs(th), ds, a.workers, with_exits=False)
+    if not a.analyse_only:
+        base = run_specs(baseline_specs(), ds, a.workers, with_exits=True)
+        th = design_thresholds(base, design_end)
+        (out / "thresholds.json").write_text(json.dumps(th, indent=1))
+        print(f"[research] baselines done {time.time() - t0:.0f}s thresholds {th}", flush=True)
+        var = run_specs(variant_specs(th), ds, a.workers, with_exits=False)
+        print(f"[research] variants done {time.time() - t0:.0f}s", flush=True)
+        for vid, o in {**base, **var}.items():
+            _write_csv(out / f"trades_{vid}.csv", o["rows"])
+        _write_csv(out / "exit_variants.csv", [e for o in base.values() for e in o["exits"]])
+    # The analysis always reads the written CSVs back, so --analyse-only (new
+    # cost model, new statistics) reproduces it without re-simulating.
+    th = json.loads((out / "thresholds.json").read_text())
+    base, var = load_results(out, th)
     allv = {**base, **var}
-    print(f"[research] variants done {time.time() - t0:.0f}s", flush=True)
-
     spec_strategy = {s[0]: s[1] for s in baseline_specs() + variant_specs(th)}
-    for vid, o in allv.items():
-        _write_csv(out / f"trades_{vid}.csv", o["rows"])
-    _write_csv(out / "exit_variants.csv", [e for o in base.values() for e in o["exits"]])
 
     summary = {"cost_models": {k: asdict(v) for k, v in wf.COST_MODELS.items()},
                "primary_cost_model": wf.PRIMARY_COST, "design_end": design_end, "variants": {}}

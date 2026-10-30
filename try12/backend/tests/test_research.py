@@ -170,7 +170,7 @@ def test_metrics_drawdown_streak_and_cluster_bootstrap():
 
 def test_costs_scale_with_hold_and_expiry():
     m = wf.COST_MODELS["MEASURED"]
-    assert m.pts(60, True) > m.pts(60, False) > m.pts(0, False) == m.fixed_pts
+    assert m.pts(60, True) == m.pts(60, False) > m.pts(0, False) == m.fixed_pts
     r = wf.apply_costs({"r_gross": 1.0, "risk_pts": 20.0, "hold_min": 60, "expiry": False}, m)
     assert r["r_net"] == pytest.approx(1.0 - (2.6 + 1.5) / 20.0)
 

@@ -44,13 +44,15 @@ class CostModel:
 
 
 # MEASURED: recorded quotes, 11 sessions Oct 2026 (options.execution_study):
-# round-trip spread ~0.8 pts, charges ~Rs 63/lot ~= 1.8 pts, decay 1.5 / 4.5
-# pts per hour (non-expiry / expiry; the non-expiry figure is rounded UP from a
-# noisy ~0.4-1.0 because 11 sessions cannot pin down theta).
+# round-trip spread ~0.8 pts, charges ~Rs 63/lot ~= 1.8 pts, decay 1.5 pts per
+# hour (rounded UP from a noisy ~0.4-1.0: 11 sessions cannot pin down theta).
+# The live selector never buys the 0-1 DTE series (dte_bands NIFTY 2-7, 8-14),
+# so the 0-DTE decay measured on expiry days (~4.3 pts/h) does not apply to
+# live trades: on an expiry day they hold next week's contract.
 # HARSH: the earlier research's 4 pts + 4 pts/h.
 COST_MODELS = {
     "ZERO": CostModel("ZERO", 0.0, 0.0, 0.0),
-    "MEASURED": CostModel("MEASURED", 2.6, 1.5, 4.5),
+    "MEASURED": CostModel("MEASURED", 2.6, 1.5, 1.5),
     "HARSH": CostModel("HARSH", 4.0, 4.0, 4.0),
 }
 PRIMARY_COST = "MEASURED"
