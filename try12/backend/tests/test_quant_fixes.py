@@ -136,3 +136,18 @@ def test_brokerage_is_flat_per_order():
     assert fills.brokerage(0, p) == 0.0
     per_lot = TradingParams(brokerage_flat_per_order=False)
     assert fills.brokerage(3, per_lot) == 60.0
+
+
+def test_risk_cap_counts_the_round_trip_costs_of_a_stopped_lot(runtime_ctx):
+    """Regression (QUANT_SYSTEM_AUDIT F-2): the per-trade risk cap compared only
+    stop distance x lot size with the budget, so a lot whose stop loss fitted
+    exactly was taken although brokerage and charges pushed the real loss over."""
+    import dataclasses
+    rc = dataclasses.replace(runtime_ctx, cfg=dataclasses.replace(
+        runtime_ctx.cfg, capital=21_000.0, max_lots_per_trade=3, open_exposure_cap_pct=100.0))
+    with using(rc):
+        cost = fills.expected_round_trip_cost(100.0, 65, 1, TradingParams())
+    assert cost > 0
+    # budget 12.5% of 21,000 = 2,625; two lots of a 20-point stop lose 2,600 before costs
+    s = _size(rc, fill=100.0, risk=20.0)
+    assert s.lots == 1 and s.binding_clamp == "max_risk_per_trade"

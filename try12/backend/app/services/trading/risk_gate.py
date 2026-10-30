@@ -208,7 +208,9 @@ def sizing_decision(*, fraction: FractionDecision, regime_multiplier: float,
     applied here exactly once, to the deployed amount. *initial_risk* is the
     premium points lost per contract if the premium stop is hit; with it the
     lots are also capped so that loss stays within max_risk_per_trade_pct of
-    capital (clamp ``max_risk_per_trade``)."""
+    capital (clamp ``max_risk_per_trade``). The loss counted per lot is the
+    stop distance plus that lot's round-trip brokerage and charges
+    (fills.expected_round_trip_cost): a stopped trade pays both."""
     cfg = ctx().cfg
     clamps = list(fraction.clamps)
     trade_amount = round_to_500(fraction.base_amount * regime_multiplier)
@@ -228,7 +230,8 @@ def sizing_decision(*, fraction: FractionDecision, regime_multiplier: float,
     _clamp(cfg.max_lots_per_trade, "max_lots_per_trade")
     if initial_risk is not None and initial_risk > 0 and lot_size > 0:
         risk_budget = params().max_risk_per_trade_pct / 100.0 * cfg.capital
-        _clamp(int(risk_budget // (initial_risk * lot_size)), "max_risk_per_trade")
+        cost_per_lot_rt = fills.expected_round_trip_cost(expected_entry_fill, lot_size, 1, params())
+        _clamp(int(risk_budget // (initial_risk * lot_size + cost_per_lot_rt)), "max_risk_per_trade")
     if cost_per_lot > 0:
         _clamp(int(max(available_capital, 0.0) // cost_per_lot), "available_capital")
         headroom = cfg.open_exposure_cap_pct / 100.0 * cfg.capital - open_exposure
