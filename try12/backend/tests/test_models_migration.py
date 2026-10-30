@@ -71,7 +71,7 @@ def test_migration_chain_0010_to_0013():
         assert callable(mod.upgrade) and callable(mod.downgrade)
         prev = rev
     heads = sorted(p.name for p in VERSIONS.glob("*.py"))
-    assert heads[-1] == "0014_position_exit_plan.py"
+    assert heads[-1] == "0016_trade_log_fields.py"
 
 
 def test_migration_0014_adds_the_exit_plan_column():
@@ -80,6 +80,23 @@ def test_migration_0014_adds_the_exit_plan_column():
     assert callable(mod.upgrade) and callable(mod.downgrade)
     from app.db.models.paper_trade import PaperPosition
     assert PaperPosition.__table__.c.exit_plan.nullable is True
+
+
+def test_migration_0015_creates_paper_spreads():
+    mod = _load("0015_paper_spreads.py")
+    assert (mod.revision, mod.down_revision) == ("0015", "0014")
+    assert callable(mod.upgrade) and callable(mod.downgrade)
+    from app.db.models.paper_spread import PaperSpread
+    cols = set(PaperSpread.__table__.c.keys())
+    assert {"strategy_name", "trading_day", "legs", "credit_pts", "max_loss", "net_pnl"} <= cols
+
+
+def test_migration_0016_adds_the_trade_log_columns():
+    mod = _load("0016_trade_log_fields.py")
+    assert (mod.revision, mod.down_revision) == ("0016", "0015")
+    from app.db.models.paper_trade import PaperPosition
+    for name in ("spot_entry", "spot_exit", "delta_at_entry", "iv_entry", "iv_exit"):
+        assert PaperPosition.__table__.c[name].nullable is True
 
 
 def test_exit_plan_round_trips(sqlite_db):

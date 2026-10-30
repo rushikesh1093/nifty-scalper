@@ -483,18 +483,6 @@ class AngelClient:
         resp.raise_for_status()
         return resp.json().get("data", {}).get("fetched", []) or []
 
-    async def get_option_chain(self, name: str, expiry_date: str, strike_price: str) -> dict:
-        """Option chain for a given underlying, expiry, and center strike."""
-        await self.ensure_logged_in()
-        http = await self._client()
-        resp = await http.get(
-            "/rest/secure/angelbroking/market/v1/optionChain",
-            params={"name": name, "expirydate": expiry_date, "strikeprice": strike_price},
-            headers=_session.auth_headers,
-        )
-        resp.raise_for_status()
-        return resp.json().get("data", {}) or {}
-
     # ─────────────────────────────────────────────────────────────────────────
     # Orders — PAPER TRADING ONLY (design §13, R1.2)
     #

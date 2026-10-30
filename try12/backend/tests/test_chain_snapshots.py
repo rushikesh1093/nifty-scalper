@@ -280,3 +280,59 @@ def test_normalise_chain_unparseable():
     assert cs.normalise_chain({}) == []
     assert cs.normalise_chain({"data": "x"}) == []
     assert cs.normalise_chain(None) == []
+
+
+# (6) the chain built from the live feed's ticks (the default source) ─────────
+
+def test_implied_vol_recovers_the_volatility_of_a_black_scholes_price():
+    for call in (True, False):
+        for vol in (0.10, 0.18, 0.35):
+            price = cs._bs_price(22600.0, 22650.0, 5 / 365, vol, call)
+            assert cs.implied_vol(price, 22600.0, 22650.0, 5 / 365, call) == pytest.approx(vol * 100, abs=0.05)
+
+
+def test_implied_vol_none_without_time_value_or_inputs():
+    assert cs.implied_vol(100.0, 22700.0, 22600.0, 5 / 365, True) is None     # = intrinsic
+    assert cs.implied_vol(0.0, 22600.0, 22600.0, 5 / 365, True) is None
+    assert cs.implied_vol(50.0, 22600.0, 22600.0, 0.0, True) is None
+
+
+def _opt_rows(strikes, expiry=EXPIRY):
+    from tests.helpers import option_row
+    return [option_row(k, expiry, kind=kind, token=f"T{k}{kind}") for k in strikes for kind in ("CE", "PE")]
+
+
+def test_chain_from_ticks_keeps_fresh_ticks_and_implies_iv():
+    now = IN_SESSION
+    close = datetime(2026, 9, 8, 10, 0, tzinfo=UTC)
+    fresh = (now - timedelta(seconds=5)).replace(tzinfo=None).isoformat()
+    stale = (now - timedelta(seconds=600)).replace(tzinfo=None).isoformat()
+    ticks = {"T22600CE": {"ltp": 120.0, "best_bid": 119.5, "best_ask": 120.5, "oi": 900, "volume": 40, "ts": fresh},
+             "T22600PE": {"ltp": 110.0, "best_bid": 109.5, "best_ask": 110.5, "ts": stale}}
+    out = cs.chain_from_ticks(_opt_rows([22600]), ticks, 22610.0, close, now)
+    assert [(s["token"], s["option_type"], s["oi"]) for s in out] == [("T22600CE", "CE", 900)]
+    assert 5 < out[0]["iv"] < 60
+
+
+def test_collector_builds_the_chain_from_ticks_by_default(chain_env, sqlite_db, monkeypatch, fake_redis):
+    rc, written = chain_env
+    import app.services.broker.instrument_sync as isync
+    rows = _opt_rows(range(22100, 23150, 50))
+
+    async def _tokens(db, name, expiry, strike_range=None):
+        lo, hi = strike_range
+        return [r for r in rows if name == "NIFTY" and lo <= r.strike <= hi]
+
+    monkeypatch.setattr(isync, "get_option_tokens", _tokens)
+    for r in rows:
+        mid = max(cs._bs_price(22610.0, r.strike, 7 / 365, 0.15, r.option_type.value == "CE"), 1.0)
+        fake_redis.put_tick(r.token, ltp=mid, bid=mid - 0.25, ask=mid + 0.25, oi=5000)
+    out = run(StudyCollector()._fetch_option_chain("NIFTY"))
+    assert out.status == "OK" and out.strikes == 42 and out.rows_written == 42
+    chain = written[0][2]
+    atm = [s for s in chain["strikes"] if s["strike"] == 22600 and s["option_type"] == "CE"][0]
+    assert atm["iv"] == pytest.approx(15.0, abs=1.5)        # calendar time to 15:30 on expiry vs 7/365
+    assert run(_count(sqlite_db)) == 42
+
+    bn = run(StudyCollector()._fetch_option_chain("BANKNIFTY"))
+    assert bn.status == cs.NO_TICKS

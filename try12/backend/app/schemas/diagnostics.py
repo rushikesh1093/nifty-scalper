@@ -29,6 +29,31 @@ class PositionsProbe(BaseModel):
     today_total: Optional[int] = None
 
 
+class ReadinessWarning(BaseModel):
+    code:    str
+    message: str
+
+
+class ReadinessProbe(BaseModel):
+    """Session readiness (app.services.market_data.session_readiness)."""
+    ok:                       bool
+    checked_at:               str
+    prev_session_day:         Optional[str]  = None
+    prev_session_candles:     int
+    prev_session_expected:    int
+    prev_session_in_buffer:   int
+    today_candles:            int
+    today_expected:           int
+    today_missing:            int
+    today_gaps:               list[str]      = []
+    buffer_size:              int
+    out_of_session_in_buffer: int
+    pre_open_today:           int
+    levels:                   Optional[dict] = None
+    levels_problem:           Optional[str]  = None
+    warnings:                 list[ReadinessWarning] = []
+
+
 class UnderlyingProbe(BaseModel):
     underlying:            str
     spot:                  Optional[float] = None
@@ -40,6 +65,7 @@ class UnderlyingProbe(BaseModel):
     regime:                Optional[str]   = None
     regime_allows_trading: Optional[bool]  = None
     prev_day_snapshot:     Optional[str]   = None
+    readiness:             Optional[ReadinessProbe] = None
 
 
 class VixProbe(BaseModel):

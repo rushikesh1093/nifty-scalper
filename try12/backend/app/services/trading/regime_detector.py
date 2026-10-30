@@ -128,8 +128,11 @@ class RegimeDetector:
 
             # Step 2: Build regime-specific indicators
             regime_indicators: RegimeIndicators = build_regime_indicators(
-                candles, indicators, config, history=history
+                candles, indicators, config, history=history,
+                atr_pct_lookback=_params().regime_atr_pct_lookback,
             )
+            # Passed only when on, so the default call is the original one.
+            classify_kw = {"range_bound": True} if _params().regime_range_bound else {}
 
             # Step 3: Previous states. After a restart the in-memory history is
             # empty, so rehydrate once from Redis; load_regime_history drops
@@ -152,7 +155,8 @@ class RegimeDetector:
                     underlying=underlying, day=trading_day(), now_ist=now_ist(),
                     indicators=regime_indicators, config=config, p=_params(),
                     classify=lambda ind, cfg: classify_regime(
-                        ind, underlying, classify_as_expiry, previous_regime, cfg))
+                        ind, underlying, classify_as_expiry, previous_regime, cfg,
+                        **classify_kw))
 
             # Step 4: Determine if we are in (or should enter) a cooldown
             current_cooldown = (

@@ -603,7 +603,7 @@ class EMARSIPullback15mStrategy(_PlanStrategy):
 # ─── 6. Pivot point bounce (3-min) ───────────────────────────────────────────
 
 class PivotBounceStrategy(_PlanStrategy):
-    """Previous session's floor pivots: PP = (H+L+C)/3, R1 = 2PP-L, S1 = 2PP-H.
+    """Previous trading session's floor pivots: PP = (H+L+C)/3, R1 = 2PP-L, S1 = 2PP-H.
     CE: a 3-min candle dips to S1 or PP from above and closes bullish above it.
     PE: a candle pokes up to R1 or PP from below and closes bearish below it.
     09:30-14:00. Stop 15 pts beyond the level; target the next pivot."""
@@ -615,28 +615,38 @@ class PivotBounceStrategy(_PlanStrategy):
     WINDOW = (dtime(9, 30), dtime(14, 0))
     EXIT_AT = "14:45"
 
+    # The runner resolves the previous session's H/L/C once a day
+    # (app.services.market_data.prev_session) and hands it over with
+    # set_prev_session; the rolling candle cache is never read for it.
+    NEEDS_PREV_SESSION = True
+
     def __init__(self, underlying: str = "NIFTY"):
         super().__init__(underlying)
         self._used: set = set()
+        self._levels_day = None            # trading day the levels below were resolved for
+        self._prev = None                  # prev_session.PrevSession, or None
+        self._prev_reason: Optional[str] = "previous-session levels not resolved yet"
 
     def restore_day(self, positions: list) -> None:
         super().restore_day(positions)
         self._used = set()
 
+    def set_prev_session(self, for_day, levels, reason: Optional[str] = None) -> None:
+        """Levels (a PrevSession, or None with *reason*) for trading day *for_day*."""
+        self._levels_day, self._prev = for_day, levels
+        self._prev_reason = None if levels is not None else (reason or "no previous-session levels")
+
+    def prev_session_problem(self) -> Optional[str]:
+        """Why the strategy cannot trade today for want of levels, or None."""
+        if self._levels_day != trading_day():
+            return "previous-session levels not resolved for today"
+        return self._prev_reason
+
     def pivots(self) -> Optional[dict]:
-        """PP/R1/S1 from the last complete session before today in history."""
-        today = trading_day()
-        prev = [c for c in (self.history or []) if (dt := _ts(c)) is not None and dt.date() < today
-                and dtime(9, 15) <= _t(dt) < dtime(15, 30)]
-        if not prev:
+        """PP/R1/S1 from the previous trading session's high, low and close."""
+        if self.prev_session_problem() is not None:
             return None
-        day = max(_ts(c).date() for c in prev)
-        sess = [c for c in prev if _ts(c).date() == day]
-        if len(sess) < 300:                           # need (almost) the whole session
-            return None
-        h = max(float(c["high"]) for c in sess)
-        l = min(float(c["low"]) for c in sess)
-        cl = float(sess[-1]["close"])
+        h, l, cl = self._prev.high, self._prev.low, self._prev.close
         pp = (h + l + cl) / 3
         return {"S1": round(2 * pp - h, 2), "PP": round(pp, 2), "R1": round(2 * pp - l, 2)}
 

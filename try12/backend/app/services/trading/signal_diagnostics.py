@@ -3,7 +3,7 @@ Pure helpers for GET /trading/signals/diagnostics — no I/O, no clock reads.
 
 The route gathers a state snapshot (dict); this module derives the session-window
 predicate and the blocker list from it, so the taxonomy is unit-testable without
-a DB, Redis or a running feed. Codes mirror backend/scripts/diagnose_blockers.py.
+a DB, Redis or a running feed.
 """
 from __future__ import annotations
 
@@ -63,7 +63,8 @@ def derive_blockers(state: dict) -> list[dict]:
       strategies: {total, enabled},
       underlyings: [{underlying, candles_today, candles_required, atr, atr_min, regime,
                      regime_allows_trading, in_cooldown, prev_day_snapshot,
-                     lot_cost, atm_premium, lot_size, lot_cost_unavailable}],
+                     lot_cost, atm_premium, lot_size, lot_cost_unavailable,
+                     readiness_warnings: [{code, message}]}],
       probe_errors: [{code, detail}]
     Returns [] when nothing blocks signal generation or trade conversion.
     """
@@ -122,6 +123,10 @@ def derive_blockers(state: dict) -> list[dict]:
                                f"Regime {u.get('regime')} permits no strategies.", underlying=name,
                                detail=f"regime_rules.py gives {u.get('regime')} an empty enabled_strategies set. "
                                       "No signal can convert to a trade while this regime holds."))
+
+        for w in u.get("readiness_warnings") or []:
+            blockers.append(_b(w.get("code", "READINESS"), "warning", w.get("message", ""),
+                               underlying=name, detail="session readiness check"))
 
         if u.get("in_cooldown") is True:
             blockers.append(_b("REGIME_TRANSITION_COOLDOWN", "warning",
