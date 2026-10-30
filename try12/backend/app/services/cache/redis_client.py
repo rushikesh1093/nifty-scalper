@@ -10,7 +10,8 @@ Key schema:
   option_chain:{underlying}:{expiry} → JSON (full option chain snapshot)
   positions                      → JSON list of open positions
   order_book                     → JSON list of today's orders
-  session:angel                  → JSON (JWT, refresh, feed tokens)
+  session:angel                  → JSON (JWT, refresh, feed tokens, logged_in_at);
+                                   written and read only by angel_client
 """
 import json
 import logging
@@ -33,7 +34,6 @@ TTL_OHLC         = 4 * 86400  # OHLC candles — 4 days, so yesterday's session 
 TTL_OPTION_CHAIN = 30       # Option chain — very fresh
 TTL_POSITIONS    = 10       # Positions — near real-time
 TTL_ORDER_BOOK   = 10
-TTL_SESSION      = 7 * 3600  # Session tokens — 7 hours
 
 
 class RedisCache:
@@ -141,16 +141,6 @@ class RedisCache:
     async def get_order_book(self) -> list[dict]:
         val = await self._r().get("order_book")
         return json.loads(val) if val else []
-
-    # ── Session tokens ────────────────────────────────────────────────────────
-
-    async def set_angel_session(self, jwt: str, refresh: str, feed: str):
-        data = {"jwt": jwt, "refresh": refresh, "feed": feed}
-        await self._r().setex("session:angel", TTL_SESSION, json.dumps(data))
-
-    async def get_angel_session(self) -> Optional[dict]:
-        val = await self._r().get("session:angel")
-        return json.loads(val) if val else None
 
     # ── Pub/Sub for real-time frontend push ───────────────────────────────────
 

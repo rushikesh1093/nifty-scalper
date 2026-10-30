@@ -119,23 +119,14 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Strategy runner startup error: %s", exc, exc_info=True)
 
-    # ── Proactive JWT token refresh every 6 hours ─────────────────────────────
-    # AngelOne sessions expire after 8 hours. Without a refresh task the token
-    # will expire mid-session (e.g. app started at 8 AM → token dies at 4 PM).
-    # We refresh every 6 hours so there is always a 2-hour safety margin.
-    async def _token_refresh_loop():
-        import asyncio as _asyncio
-        while True:
-            await _asyncio.sleep(6 * 3600)   # 6 hours
-            try:
-                from app.services.broker.angel_client import angel_client as _ac
-                await _ac.ensure_logged_in()
-                logger.info("Proactive JWT token refresh completed.")
-            except Exception as _e:
-                logger.error("Proactive JWT token refresh failed: %s", _e)
-
+    # ── AngelOne session keeper ───────────────────────────────────────────────
+    # Checks the session every 5 min and renews it once it is 6 h old, so it never
+    # passes the 7 h validity limit (the old loop slept 6 h before its first check
+    # and then only acted on an already-expired session). It renews; it never
+    # makes the first login (market_manager.startup and the feed do that).
     import asyncio as _asyncio
-    _token_refresh_task = _asyncio.create_task(_token_refresh_loop())
+    from app.services.broker.angel_client import angel_client as _ac
+    _token_refresh_task = _asyncio.create_task(_ac.run_session_keeper())
 
     # ── Admin key posture (design §17.4, §20.1) ───────────────────────────────
     from app.api.guards import ADMIN_ONLY_ENDPOINTS, admin_key_configured

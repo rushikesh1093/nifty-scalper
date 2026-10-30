@@ -59,15 +59,10 @@ class MarketManager:
                 "ANGEL_TOTP_SECRET in your .env file."
             )
 
-        # 1. Login to AngelOne
-        await angel_client.login()
-        logger.info("AngelOne login OK")
-
-        # 2. Cache session tokens in Redis
-        from app.services.broker.angel_client import _session
-        await redis_cache.set_angel_session(
-            _session.jwt_token, _session.refresh_token, _session.feed_token
-        )
+        # 1-2. AngelOne session: reuse the one cached in Redis when AngelOne still
+        # accepts it, otherwise log in (login() caches the new session itself).
+        await angel_client.resume_or_login()
+        logger.info("AngelOne session ready")
 
         # 3. Sync instrument master
         async with AsyncSessionLocal() as db:
@@ -153,7 +148,9 @@ class MarketManager:
             task.cancel()
         await market_feed.stop()
         await tick_writer.stop()
-        await angel_client.logout()
+        # No logout here: the session stays cached in Redis so the next start can
+        # reuse it (resume_or_login) instead of logging in again. It expires on its
+        # own; POST /api/v1/auth/logout still ends it explicitly.
         logger.info("MarketManager shutdown complete.")
 
     # ── Tick handler ──────────────────────────────────────────────────────────
