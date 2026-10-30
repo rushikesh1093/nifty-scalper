@@ -42,6 +42,23 @@ def baseline_specs() -> list[tuple]:
             ("PV_BASE", "PIVOT_BOUNCE", "PivotBounceStrategy", {})]
 
 
+def new_specs() -> list[tuple]:
+    """The candidates of docs/NEW_STRATEGY_PREREGISTRATION.md (one rule each)."""
+    return [("SQUEEZE", "VOL_SQUEEZE_BREAKOUT", "VolSqueezeBreakout", {}),
+            ("TREND_DAY", "TREND_DAY_CONTINUATION", "TrendDayContinuation", {}),
+            ("GAP_FADE", "GAP_FADE", "GapFade", {}),
+            ("VWAP_REV", "VWAP_EXTREME_REVERSION", "VWAPExtremeReversion", {})]
+
+
+def _cls(cls_name: str):
+    from app.research import new_strategies, variants
+    from app.strategies import strategies
+    for mod in (variants, new_strategies, strategies):
+        if hasattr(mod, cls_name):
+            return getattr(mod, cls_name)
+    raise KeyError(cls_name)
+
+
 def variant_specs(th: dict) -> list[tuple]:
     return [
         ("FCB_STRONG", "FIRST_CANDLE_BREAKOUT", "FCBStrong",
@@ -66,9 +83,7 @@ def variant_specs(th: dict) -> list[tuple]:
 
 
 def _factory(cls_name: str, kwargs: dict):
-    from app.research import variants
-    from app.strategies import strategies
-    cls = getattr(variants, cls_name, None) or getattr(strategies, cls_name)
+    cls = _cls(cls_name)
     return lambda: cls(**kwargs)
 
 
@@ -77,9 +92,7 @@ def _task(args) -> dict:
     spec, chunk, tail, prev, with_exits = args
     vid, _strategy, cls_name, kwargs = spec
     from app.research.features import make_feature_fn
-    import app.strategies.strategies as S
-    from app.research import variants as V
-    bar = getattr(getattr(V, cls_name, None) or getattr(S, cls_name), "BAR_MINUTES", 1)
+    bar = getattr(_cls(cls_name), "BAR_MINUTES", 1)
     trades = sim.run_days(_factory(cls_name, kwargs), chunk, tail, prev, vid,
                           feature_fn=make_feature_fn(bar))
     by_day = {str(s.day): s for s in chunk}
@@ -237,7 +250,7 @@ def _typed(row: dict) -> dict:
     return out
 
 
-def load_results(out: Path, th: dict) -> tuple[dict, dict]:
+def load_results(out: Path, base_specs: list, var_specs: list) -> tuple[dict, dict]:
     """Trade rows (typed) per variant, exit rows, and Trade objects for the
     baselines (option replay), read back from the CSVs."""
     fields = {f.name for f in sim.Trade.__dataclass_fields__.values()} - {"features"}
@@ -250,8 +263,8 @@ def load_results(out: Path, th: dict) -> tuple[dict, dict]:
         trades = [sim.Trade(**{k: r[k] for k in fields if k in r}) for r in rows] if with_exits else []
         return {"rows": rows, "exits": [], "trades": trades}
 
-    base = {s[0]: read(s[0], True) for s in baseline_specs()}
-    var = {s[0]: read(s[0], False) for s in variant_specs(th)}
+    base = {s[0]: read(s[0], True) for s in base_specs}
+    var = {s[0]: read(s[0], False) for s in var_specs}
     p = out / "exit_variants.csv"
     for e in (_typed(r) for r in csv.DictReader(p.open(encoding="utf-8"))):
         e["r_gross"] = float(e["r_gross"])
@@ -267,6 +280,9 @@ def main(argv=None) -> int:
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--start"); ap.add_argument("--end")
     ap.add_argument("--design-months", type=int, default=DESIGN_MONTHS)
+    ap.add_argument("--suite", choices=("live", "new"), default="live",
+                    help="live: the five live strategies and their variants; new: the "
+                         "pre-registered candidates (docs/NEW_STRATEGY_PREREGISTRATION.md)")
     ap.add_argument("--analyse-only", action="store_true",
                     help="skip the simulation; re-analyse the CSVs already in --out")
     a = ap.parse_args(argv)
@@ -284,12 +300,14 @@ def main(argv=None) -> int:
     (out / "data_quality.json").write_text(json.dumps(ds.quality, indent=1))
     print(f"[research] {len(ds.sessions)} sessions, design window ends {design_end}", flush=True)
 
+    base_specs = baseline_specs() if a.suite == "live" else new_specs()
     if not a.analyse_only:
-        base = run_specs(baseline_specs(), ds, a.workers, with_exits=True)
-        th = design_thresholds(base, design_end)
+        base = run_specs(base_specs, ds, a.workers, with_exits=True)
+        th = (design_thresholds(base, design_end) if a.suite == "live"
+              else {"design_end": design_end, "suite": "new", "method": "pre-registered constants"})
         (out / "thresholds.json").write_text(json.dumps(th, indent=1))
         print(f"[research] baselines done {time.time() - t0:.0f}s thresholds {th}", flush=True)
-        var = run_specs(variant_specs(th), ds, a.workers, with_exits=False)
+        var = run_specs(variant_specs(th), ds, a.workers, with_exits=False) if a.suite == "live" else {}
         print(f"[research] variants done {time.time() - t0:.0f}s", flush=True)
         for vid, o in {**base, **var}.items():
             _write_csv(out / f"trades_{vid}.csv", o["rows"])
@@ -297,12 +315,15 @@ def main(argv=None) -> int:
     # The analysis always reads the written CSVs back, so --analyse-only (new
     # cost model, new statistics) reproduces it without re-simulating.
     th = json.loads((out / "thresholds.json").read_text())
-    base, var = load_results(out, th)
+    var_specs = variant_specs(th) if a.suite == "live" else []
+    base, var = load_results(out, base_specs, var_specs)
     allv = {**base, **var}
-    spec_strategy = {s[0]: s[1] for s in baseline_specs() + variant_specs(th)}
+    spec_strategy = {s[0]: s[1] for s in base_specs + var_specs}
+    strategies = list(dict.fromkeys(s[1] for s in base_specs))
 
     summary = {"cost_models": {k: asdict(v) for k, v in wf.COST_MODELS.items()},
-               "primary_cost_model": wf.PRIMARY_COST, "design_end": design_end, "variants": {}}
+               "primary_cost_model": wf.PRIMARY_COST, "design_end": design_end, "suite": a.suite,
+               "base_variants": [s[0] for s in base_specs], "variants": {}}
     for vid, o in sorted(allv.items()):
         rows = o["rows"]
         ent = {"strategy": spec_strategy[vid], "signal_quality": signal_quality(rows)}
@@ -351,13 +372,13 @@ def main(argv=None) -> int:
     wfo = {"protocol": wf.__doc__, "criteria": wf.criteria_dict(), "design_end": design_end,
            "folds_definition": wf.folds(months, design_end), "strategies": {}}
     status = {}
-    for strat in STRATEGIES:
+    for strat in strategies:
         cands = {vid: o["rows"] for vid, o in allv.items() if spec_strategy[vid] == strat}
         wfo["strategies"][strat] = {}
         for cm in wf.COST_MODELS.values():
             costed = {vid: _costed(rows, cm) for vid, rows in cands.items()}
             res = wf.walk_forward(costed, months, design_end)
-            base_vid = next(v for v in cands if v.endswith("_BASE"))
+            base_vid = next(s[0] for s in base_specs if s[1] == strat)
             design_exp = summary["variants"][base_vid][cm.name]["design"].get("expectancy_r")
             st, why = wf.classify_status(res["oos"], design_exp, res["folds_traded"],
                                          res["folds_positive"])
@@ -386,7 +407,7 @@ def main(argv=None) -> int:
 
     (out / "summary.json").write_text(json.dumps(summary, indent=1, default=str))
     cfg = {"thresholds": th, "cost_models": summary["cost_models"],
-           "specs": baseline_specs() + variant_specs(th), "exit_variants": sim.EXIT_VARIANTS,
+           "specs": base_specs + var_specs, "suite": a.suite, "exit_variants": sim.EXIT_VARIANTS,
            "criteria": wf.criteria_dict(), "design_months": a.design_months}
     manifest = {**git_commit(), "dataset": ds.identifier(),
                 "options_dataset": ({"file": Path(a.options_db).name,

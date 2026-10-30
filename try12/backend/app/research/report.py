@@ -86,7 +86,9 @@ def build(out_dir: str) -> str:
          "MFE", "MAE", "hold min"], rows))
 
     # breakdowns for baselines
-    for strat, vid in BASE.items():
+    bases = s.get("base_variants") or list(BASE.values())
+    for vid in bases:
+        strat = s["variants"][vid]["strategy"]
         b = s["variants"][vid]["breakdowns_post_design"]
         lines = []
         for dim in ("side", "regime", "vol", "trend_align", "time_of_day", "weekday", "expiry",
