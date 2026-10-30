@@ -75,7 +75,7 @@ Cost models used in the performance report (spot points per round trip):
 
 ## 3. Experiment B: the same trades on recorded quotes
 
-See the generated table in STRATEGY_PERFORMANCE_REPORT §6 (`option_replay.csv`): every
+See the table "Experiment B — recorded-quote option replay" in STRATEGY_PERFORMANCE_REPORT (`research_results/option_replay.csv`): every
 baseline trade whose day has recorded quotes, entered at the ask of the fill minute and
 exited at the bid of the exit minute, ATM and 1 OTM, with charges at the trade date's lot
 size. A trade whose contract has no valid quote in either minute is reported
@@ -83,7 +83,7 @@ size. A trade whose contract has no valid quote in either minute is reported
 
 ## 4. Where losses come from (A vs B)
 
-Experiment A (report §2) shows the underlying signals are at or below zero R **before any
+Experiment A (STRATEGY_PERFORMANCE_REPORT, first table) shows the underlying signals are at or below zero R **before any
 cost**. Option execution adds ~2.6 points per trade plus decay; on these strategies' stop
 distances that is 0.05-0.3 R per trade. **Losses originate in signal quality; execution
 cost converts a zero edge into a reliable loss.** Better execution (cheaper contracts,
