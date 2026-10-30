@@ -183,6 +183,23 @@ def implied_vol(price: float, spot: float, strike: float, years: float,
     return round((lo + hi) / 2 * 100, 2)
 
 
+def option_greeks(price: float, spot: float, strike: float, expiry: date, now: datetime,
+                  call: bool) -> tuple[Optional[float], Optional[float]]:
+    """(IV in percent, delta) of an option at *price*, calendar time to 15:30 IST on
+    *expiry*; (None, None) when IV cannot be implied. Delta is signed (PE < 0)."""
+    from app.services.trading.session_times import IST
+    from datetime import time as _t
+    close = datetime.combine(expiry, _t(15, 30), tzinfo=IST)
+    years = max(0.0, (close - now).total_seconds()) / (365.0 * 86400.0)
+    iv = implied_vol(price, spot, strike, years, call) if years > 0 else None
+    if iv is None:
+        return None, None
+    vol = iv / 100
+    d1 = (math.log(spot / strike) + 0.5 * vol * vol * years) / (vol * math.sqrt(years))
+    delta = _ncdf(d1) if call else _ncdf(d1) - 1.0
+    return iv, round(delta, 4)
+
+
 def chain_from_ticks(instruments, ticks: dict, spot: float, expiry_close: datetime,
                      now: datetime, max_age_s: float = 120.0) -> list[dict]:
     """The option chain from the live feed's ticks, in normalise_chain's format.

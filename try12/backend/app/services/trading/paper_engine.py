@@ -115,6 +115,20 @@ def _position_direction(pos: PaperPosition) -> Direction:
     return Direction.SELL if (pos.option_type or "").upper() == "PE" else Direction.BUY
 
 
+def _greeks(price, spot, strike, expiry, option_type, now) -> tuple:
+    """(IV %, delta) for the trade log; (None, None) on any problem. Never raises:
+    the log must not be able to block or break an entry or an exit."""
+    try:
+        if not price or not spot or not strike or expiry is None:
+            return None, None
+        from app.services.market_data.chain_snapshots import option_greeks
+        kind = getattr(option_type, "value", option_type)
+        return option_greeks(float(price), float(spot), float(strike), expiry, now, kind == "CE")
+    except Exception as exc:
+        logger.debug("[PaperEngine] greeks unavailable: %s", exc)
+        return None, None
+
+
 def _quote(tick: Optional[dict]) -> tuple:
     """(best_bid, best_ask, age_s) of a tick, for fills.*"""
     tick = tick or {}
@@ -365,6 +379,10 @@ class PaperEngine:
                                "Kill switch activated during entry", selection=result)
             return False
 
+        spot_entry = getattr(signal, "spot_price", None) or None
+        iv_entry, delta_entry = _greeks(actual_entry, spot_entry, selected.strike,
+                                        selected.expiry, selected.option_type, now_utc())
+
         # ── Entry section: lock → 13a → 13b → insert → commit ─────────────────
         pos = PaperPosition(
             strategy_name   = signal.strategy_name,
@@ -406,6 +424,9 @@ class PaperEngine:
             original_quantity = qty,
             original_lots     = lots,
             exit_plan         = plan.to_dict() if plan is not None else None,
+            spot_entry        = spot_entry,
+            delta_at_entry    = delta_entry,
+            iv_entry          = iv_entry,
         )
 
         async def _insert(db: AsyncSession) -> int:
@@ -1189,6 +1210,12 @@ class PaperEngine:
                 cost_per_unit = (total_brok + total_charges) / original_qty
                 r_multiple_net = (evw - pos.actual_entry - cost_per_unit) / pos.initial_risk
             exit_time = now_utc()
+            try:
+                spot_exit = await market().get_ltp(_spot_token(pos.underlying))
+            except Exception:
+                spot_exit = None
+            iv_exit, _ = _greeks(actual_exit, spot_exit, pos.strike, pos.expiry,
+                                 pos.option_type, exit_time)
             entry_utc = pos.entry_time
             if entry_utc is not None and entry_utc.tzinfo is None:
                 entry_utc = entry_utc.replace(tzinfo=timezone.utc)
@@ -1211,6 +1238,8 @@ class PaperEngine:
                 r_multiple          = r_multiple,
                 r_multiple_net      = r_multiple_net,
                 hold_minutes        = hold_minutes,
+                spot_exit           = spot_exit,
+                iv_exit             = iv_exit,
             )
             close_stmt = (update(PaperPosition)
                           .where(PaperPosition.id == pos_id, PaperPosition.is_open == True)  # noqa: E712

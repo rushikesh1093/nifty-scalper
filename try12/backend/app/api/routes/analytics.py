@@ -130,6 +130,28 @@ async def get_metrics(
     return out
 
 
+@router.get("/strategy-report")
+async def strategy_report(
+    run_id: str = Depends(run_id_query),
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    include_trades: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-strategy report from the trade log: win rate, average win / loss,
+    expectancy before and after charges, exit reasons, expiry day vs other days,
+    P&L by entry hour (app.services.metrics.strategy_report)."""
+    from app.services.metrics import strategy_report as sr
+    d_from, d_to = date_range(date_from, date_to)
+    log = await sr.load_closed(db, run_id, d_from, d_to)
+    out = {"run_id": run_id, "date_from": date_from, "date_to": date_to,
+           "report": sr.build_report(log)}
+    if include_trades:
+        out["trades"] = _jsonable(log)
+    if not log:
+        out["empty_reason"] = EMPTY_REASON
+    return out
+
+
 @router.get("/metrics/by/{dimension}")
 async def get_metrics_by(
     dimension: str,

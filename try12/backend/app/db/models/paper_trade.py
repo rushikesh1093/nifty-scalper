@@ -186,6 +186,12 @@ class PaperPosition(Base):
     entry_indicators        = Column(JSON,    nullable=True)   # indicator snapshot at entry
     # Spot exit plan (exit_plan.ExitPlan.to_dict()); NULL = generic premium ladder
     exit_plan               = Column(JSON,    nullable=True)
+    # migration 0016: the trade log's market context (chain_snapshots.option_greeks)
+    spot_entry              = Column(Float,   nullable=True)
+    spot_exit               = Column(Float,   nullable=True)
+    delta_at_entry          = Column(Float,   nullable=True)
+    iv_entry                = Column(Float,   nullable=True)   # percent
+    iv_exit                 = Column(Float,   nullable=True)
 
     __table_args__ = (
         Index("ix_pp_strategy_open",   "strategy_name", "is_open"),
