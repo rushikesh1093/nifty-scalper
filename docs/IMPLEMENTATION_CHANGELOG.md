@@ -50,3 +50,12 @@ dropped, missing quote → UNAVAILABLE).
 * Frontend: no change (the IS / validation / OOS / live-paper split is delivered as
   separate tables in the reports, not as a dashboard view; see the walk-forward report's
   limitations).
+
+## Verification
+
+* Backend: `python -m pytest -q` → **1,177 passed, 1 skipped** (8 min 15 s), including the
+  21 new research tests and the 3 new regression tests.
+* Frontend: not built. No frontend file changed, and `node_modules` is not installed in
+  this checkout (the package has no test script).
+* Research run: `docs/research_results/manifest.json` (simulation at `55521bf`, analysis at
+  `04b03ef`, dataset SHA-256 `100c0580…cbee7`, config hash `a13f3a5d…`).
