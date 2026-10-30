@@ -39,6 +39,10 @@ ST_FLIP         = "ST_FLIP"
 OPPOSITE_SIGNAL = "OPPOSITE_SIGNAL"
 SESSION_EXIT    = "SESSION_EXIT"         # the strategy's own square-off time
 
+# The fill-table reason for a spot-plan TARGET (recorded as TARGET): a market
+# exit at the bid, unlike the premium TARGET limit (fills.exit_fill).
+SPOT_TARGET_FILL = "SPOT_TARGET"
+
 # One-shot (non-closing) actions
 T1_PARTIAL      = "T1_PARTIAL"
 BREAKEVEN       = "BREAKEVEN"
