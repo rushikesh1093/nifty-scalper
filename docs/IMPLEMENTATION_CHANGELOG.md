@@ -92,3 +92,24 @@ already seen, so these are "less bad" changes, not evidence of profit.
   at different times and the one-position rule frees up later entries.
 * Not changed: ORB_BREAKOUT, PIVOT_BOUNCE (no exit beat the live one in every year),
   SUPERTREND_EMA (every exit stays negative every year; recommended off).
+
+## Efficiency test and forward-evidence check (follow-up)
+
+**Cost-to-risk entry filter: tested, not adopted.** Costs are ~2.6 spot points a trade,
+so tight-stop trades pay the most in R. Skipping trades whose fixed cost exceeds
+0.06-0.13R of the plan risk was tested on the baseline trades by year (MEASURED costs).
+It improves no strategy in every year except SUPERTREND_EMA, which stays negative
+(best: -0.03 / -0.09 / -0.02R on ~130 trades a year). It hurts PIVOT_BOUNCE (wider stops do
+worse there) and is mixed for ORB. There is no general efficiency rule here that the data
+supports, so nothing was changed.
+
+**Forward evidence on paper trades: added.** `GET /api/v1/analytics/strategy-evidence`
+(`app/services/metrics/strategy_evidence.py`) applies the research promotion gates
+(`PromotionCriteria`: ≥ 100 trades on ≥ 60 sessions, net-R expectancy > 0 with the
+session-bootstrap CI above 0, PF ≥ 1.2, positive without the best session, drawdown ≥ -25R,
+≥ half of months positive) to the run's closed paper trades. Trades entered before the
+strategy's last rule change (`RULE_SINCE`: FCB and EMA_RSI from 31 Oct 2026) do not count,
+and trades without a recorded R are excluded and counted. Statuses:
+`INSUFFICIENT_EVIDENCE`, `DISABLED_FOR_RESEARCH`, `PASSES_GATES`. It advises; it never
+switches a flag. The trade log rows (`/strategy-report`) now include `r_gross` / `r_net`.
+Tests: `tests/test_strategy_evidence.py`.

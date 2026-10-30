@@ -152,6 +152,25 @@ async def strategy_report(
     return out
 
 
+@router.get("/strategy-evidence")
+async def strategy_evidence(run_id: str = Depends(run_id_query),
+                            db: AsyncSession = Depends(get_db)):
+    """Forward evidence per strategy from this run's closed paper trades, counted
+    only since each strategy's current rules went live, against the research
+    promotion gates (app.services.metrics.strategy_evidence). Advice only: no
+    flag is changed."""
+    from app.research.walkforward import criteria_dict
+    from app.services.metrics import strategy_evidence as se
+    from app.services.metrics import strategy_report as sr
+    log = await sr.load_closed(db, run_id)
+    out = {"run_id": run_id, "criteria": criteria_dict(),
+           "rule_since": {k: str(v) for k, v in se.RULE_SINCE.items()},
+           "strategies": _jsonable(se.evaluate(log))}
+    if not log:
+        out["empty_reason"] = EMPTY_REASON
+    return out
+
+
 @router.get("/metrics/by/{dimension}")
 async def get_metrics_by(
     dimension: str,

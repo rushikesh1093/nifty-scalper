@@ -90,6 +90,8 @@ def trade_log_row(pos, seq: int = 1) -> dict:
         "slippage": slippage,
         "net_pnl": round(pos.net_pnl or 0.0, 2),
         "quantity": qty,
+        "r_gross": getattr(pos, "r_multiple", None),
+        "r_net": getattr(pos, "r_multiple_net", None),
     }
 
 
