@@ -34,15 +34,36 @@ def test_seven_strategies_are_registered():
 FIRST = (22000.0, 22040.0, 21980.0, 22010.0)          # range 60
 
 
-def test_first_candle_breakout_long_plan():
+def test_first_candle_breakout_long_plan(monkeypatch):
     c = expand([FIRST, (22010.0, 22060.0, 22005.0, 22055.0)], 5)     # close > 22040 + 10
     with at(10):
         sig = evaluate(FirstCandleBreakoutStrategy(), c)
     assert sig.direction == Direction.BUY
     plan = xp.ExitPlan.from_dict(sig.exit_plan)
     assert plan.spot_stop == 22055.0 - 50.0                         # 09:15 low capped at 50 pts
-    assert plan.spot_target == 22055.0 + 1.5 * 60
-    assert plan.exit_at == "14:45" and sig.sl_pct == 0.25
+    # ATR-chandelier exit: no target, no 14:45 exit; trail starts at the entry
+    assert plan.spot_target is None and plan.exit_at is None and sig.sl_pct == 0.25
+    assert plan.trail_atr > 0 and plan.trail_extreme == 22055.0
+    assert plan.last_bar_start.startswith("2026-09-01T09:24")         # 1-min exits from 09:25
+    monkeypatch.setattr(FirstCandleBreakoutStrategy, "TRAIL_EXIT", False)
+    with at(10):
+        old = xp.ExitPlan.from_dict(evaluate(FirstCandleBreakoutStrategy(), c).exit_plan)
+    assert old.spot_target == 22055.0 + 1.5 * 60 and old.exit_at == "14:45" and old.trail_atr is None
+
+
+def test_first_candle_chandelier_trails_and_never_loosens():
+    plan = xp.ExitPlan(strategy="FIRST_CANDLE_BREAKOUT", side="BUY", spot_entry=22055.0,
+                       spot_stop=22005.0, trail_atr=15.0, trail_extreme=22055.0)
+    assert xp.chandelier_update(plan, 22060.0, 22050.0)              # 22060 - 2 x 15 = 22030
+    assert plan.spot_stop == 22030.0 and plan.trail_extreme == 22060.0
+    xp.chandelier_update(plan, 22100.0, 22080.0)
+    assert plan.spot_stop == 22070.0
+    xp.chandelier_update(plan, 22090.0, 22040.0)                     # lower high: stop stays
+    assert plan.spot_stop == 22070.0 and plan.trail_extreme == 22100.0
+    short = xp.ExitPlan(strategy="FIRST_CANDLE_BREAKOUT", side="SELL", spot_entry=22000.0,
+                        spot_stop=22050.0, trail_atr=10.0, trail_extreme=22000.0)
+    xp.chandelier_update(short, 21995.0, 21950.0)
+    assert short.spot_stop == 21970.0 and short.trail_extreme == 21950.0
 
 
 def test_first_candle_needs_the_10_point_buffer_and_ends_at_1000():
@@ -104,9 +125,17 @@ def test_ema_rsi_pullback_long(monkeypatch):
     plan = xp.ExitPlan.from_dict(sig.exit_plan)
     risk = plan.spot_entry - plan.spot_stop
     assert plan.spot_stop == pytest.approx(pull[2])      # the pullback candle's low
-    assert plan.spot_t1 == pytest.approx(plan.spot_entry + risk, abs=0.01)
-    assert plan.spot_target == pytest.approx(plan.spot_entry + 2 * risk, abs=0.01)
-    assert plan.exit_at == "14:45"
+    assert risk > 0
+    # Supertrend-trail exit: no T1 / T2 / 14:45 exit
+    assert plan.spot_t1 is None and plan.spot_target is None and plan.exit_at is None
+    monkeypatch.setattr(EMARSIPullback15mStrategy, "TRAIL_EXIT", False)
+    with at(90):
+        s = EMARSIPullback15mStrategy()
+        s.history = hist + today
+        old = xp.ExitPlan.from_dict(run(s.evaluate(today, {})).exit_plan)
+    assert old.spot_t1 == pytest.approx(old.spot_entry + risk, abs=0.01)
+    assert old.spot_target == pytest.approx(old.spot_entry + 2 * risk, abs=0.01)
+    assert old.exit_at == "14:45"
 
 
 def test_ema_rsi_pullback_needs_the_rsi_touch(monkeypatch):

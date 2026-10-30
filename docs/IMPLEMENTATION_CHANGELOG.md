@@ -69,3 +69,26 @@ dropped, missing quote → UNAVAILABLE).
   (one trade a day, valid plans, no look-ahead, monotone trail, gap-fade scenario).
 * Result: **none passes**, so none is registered in `build_strategies`
   (`docs/NEW_STRATEGY_RESULTS.md`).
+
+## Exit changes to two live strategies (follow-up, at the user's request)
+
+Only changes that improved the live rule **in each of the three years** after costs
+(MEASURED) were made. Selection was among six exit engines already reported, on data
+already seen, so these are "less bad" changes, not evidence of profit.
+
+| Strategy | Change | Net R per year, old exit (Y1 / Y2 / Y3) | Net R per year, new live code via harness |
+|---|---|---|---|
+| FIRST_CANDLE_BREAKOUT | 1.5 × range target and 14:45 exit → ATR chandelier: stop trails the best price since entry minus 2 × 5-min ATR(14) at the signal, on every 1-min close; held to 15:15 | -0.147 / +0.003 / -0.196 | +0.020 / +0.040 / -0.070 (post-design -0.011, CI -0.150..+0.143) |
+| EMA_RSI_PULLBACK_15M | T1 1R + T2 2R + 14:45 exit → stop trails the 5-min Supertrend(10, 3) line; a 5-min close with the Supertrend against the trade exits; held to 15:15 | -0.311 / -0.045 / -0.083 | -0.092 / +0.120 / +0.042 (post-design +0.083, CI -0.062..+0.246, PF 1.26) |
+
+* Files: `app/strategies/strategies.py` (`TRAIL_EXIT` class flag on both; `False` restores the
+  old exits), `app/services/trading/exit_plan.py` (optional `trail_atr`, `trail_extreme`;
+  `chandelier_update`). Stored plans without the new fields load unchanged. EMA_RSI plans
+  made under the old exit keep their T1/T2 exits.
+* Tests: `tests/test_new_strategies.py` (new plans, the old plans with `TRAIL_EXIT = False`,
+  chandelier monotonic for both sides), `tests/test_stop_sizing_groups.py`.
+* Parity check: `docs/research_results/parity_live_exits.json`. The FCB figures match the
+  research exit variant exactly. EMA_RSI trades 9-16 more times a year, because trades end
+  at different times and the one-position rule frees up later entries.
+* Not changed: ORB_BREAKOUT, PIVOT_BOUNCE (no exit beat the live one in every year),
+  SUPERTREND_EMA (every exit stays negative every year; recommended off).

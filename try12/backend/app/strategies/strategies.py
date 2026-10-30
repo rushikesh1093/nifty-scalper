@@ -487,8 +487,16 @@ class SupertrendEMAStrategy(_PlanStrategy):
 class FirstCandleBreakoutStrategy(_PlanStrategy):
     """The 09:15-09:20 candle's high/low ± 10 pts, broken on a 5-min close
     between 09:20 and 10:00. Stop: the other side of that candle, at most
-    MAX_STOP_PTS from entry. Target:
-    1.5 × the candle's range from entry. One trade per direction a day."""
+    MAX_STOP_PTS from entry. One trade per direction a day.
+
+    Exit (TRAIL_EXIT, since 30 Oct 2026): no fixed target; the stop trails the
+    best price since entry minus 2 × the 5-min ATR(14) at the signal (an ATR
+    chandelier, on every 1-min close), held to the session square-off.
+    Research on the same entries, net of option costs, per year
+    (docs/STRATEGY_PERFORMANCE_REPORT.md, exit variants): 1.5 × range target
+    and 14:45 exit -0.147 / +0.003 / -0.196 R; chandelier +0.019 / +0.039 /
+    -0.070 R. Less bad in every year; not shown to be profitable.
+    TRAIL_EXIT = False restores the target and the 14:45 exit."""
     name = StrategyName.FIRST_CANDLE_BREAKOUT.value
     sl_pct = 0.25
     target_pct = 0.50
@@ -502,6 +510,7 @@ class FirstCandleBreakoutStrategy(_PlanStrategy):
     # 09:30 closes were never evaluated (11 of 20 breakout days broke first).
     MIN_TODAY_CANDLES = 10
     EXIT_AT = "14:45"
+    TRAIL_EXIT = True
 
     def __init__(self, underlying: str = "NIFTY"):
         super().__init__(underlying)
@@ -530,19 +539,37 @@ class FirstCandleBreakoutStrategy(_PlanStrategy):
         if rng <= 0:
             return None
         if c > hi + self.BUFFER_PTS and Direction.BUY not in self._taken:
-            plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c,
-                            spot_stop=round(max(lo, c - self.MAX_STOP_PTS), 2),
-                            spot_target=round(c + self.TARGET_RANGE_MULT * rng, 2),
-                            exit_at=self.EXIT_AT)
+            plan = self._exit_plan("BUY", c, round(max(lo, c - self.MAX_STOP_PTS), 2),
+                                   round(c + self.TARGET_RANGE_MULT * rng, 2), last)
             return self._plan_signal(Direction.BUY, c, indicators,
                                      f"09:15 candle {lo:.1f}-{hi:.1f} broken up: close={c:.1f}", plan)
         if c < lo - self.BUFFER_PTS and Direction.SELL not in self._taken:
-            plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c,
-                            spot_stop=round(min(hi, c + self.MAX_STOP_PTS), 2),
-                            spot_target=round(c - self.TARGET_RANGE_MULT * rng, 2),
-                            exit_at=self.EXIT_AT)
+            plan = self._exit_plan("SELL", c, round(min(hi, c + self.MAX_STOP_PTS), 2),
+                                   round(c - self.TARGET_RANGE_MULT * rng, 2), last)
             return self._plan_signal(Direction.SELL, c, indicators,
                                      f"09:15 candle {lo:.1f}-{hi:.1f} broken down: close={c:.1f}", plan)
+        return None
+
+    def _exit_plan(self, side: str, c: float, stop: float, target: float, bar: dict) -> ExitPlan:
+        if not self.TRAIL_EXIT:
+            return ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=stop,
+                            spot_target=target, exit_at=self.EXIT_AT)
+        b5 = resample(self.history or [], 5)
+        a = atr(np.array([b["high"] for b in b5]), np.array([b["low"] for b in b5]),
+                np.array([b["close"] for b in b5]), 14) if len(b5) >= 15 else np.array([np.nan])
+        trail_atr = float(a[-1]) if np.isfinite(a[-1]) and a[-1] > 0 else abs(c - stop)
+        # 1-min bar exits start with the candle after the signal bar
+        return ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=stop,
+                        trail_atr=round(trail_atr, 2), trail_extreme=c,
+                        last_bar_start=(bar["end"] - timedelta(minutes=1)).isoformat())
+
+    def candle_exit(self, plan, candles, indicators) -> Optional[str]:
+        """ATR chandelier: every completed 1-min candle not yet seen."""
+        if not plan.trail_atr:
+            return None
+        bars = resample(candles, 1)
+        for i in _new_bars(plan, bars):
+            xp.chandelier_update(plan, bars[i]["high"], bars[i]["low"])
         return None
 
 
@@ -551,8 +578,15 @@ class FirstCandleBreakoutStrategy(_PlanStrategy):
 class EMARSIPullback15mStrategy(_PlanStrategy):
     """15-min EMA 9 > 21 (21 < 9 for PE); RSI pulls back into 40-50 (50-60);
     the next candle(s) close back across EMA 9 between 09:30 and 13:00. Stop:
-    the pullback candle's low (high). T1 1R books half and moves the stop to
-    entry, T2 2R closes the rest."""
+    the pullback candle's low (high).
+
+    Exit (TRAIL_EXIT, since 30 Oct 2026): no T1/T2; on every completed 5-min
+    bar the stop trails the 5-min Supertrend(10, 3) line (only tightening) and
+    a bar with the Supertrend against the trade exits at its close; held to the
+    session square-off. Research on the same entries, net of option costs, per
+    year: T1/T2/14:45 -0.311 / -0.045 / -0.083 R; Supertrend trail -0.147 /
+    +0.171 / +0.083 R. Better in every year; the first year still lost.
+    TRAIL_EXIT = False restores T1 1R (stop to entry), T2 2R and the 14:45 exit."""
     name = StrategyName.EMA_RSI_PULLBACK_15M.value
     sl_pct = 0.20
     target_pct = 0.40
@@ -561,6 +595,8 @@ class EMARSIPullback15mStrategy(_PlanStrategy):
     TOUCH_LOOKBACK = 3            # the RSI touch may be up to 3 bars before the trigger
     WINDOW = (dtime(9, 30), dtime(13, 0))
     EXIT_AT = "14:45"
+    TRAIL_EXIT = True
+    TRAIL_BAR_MINUTES, ST_PERIOD, ST_MULT = 5, 10, 3.0
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
         bars = self._bars(candles)                        # multi-day history
@@ -591,12 +627,39 @@ class EMARSIPullback15mStrategy(_PlanStrategy):
             risk = sgn * (c - stop)
             if risk <= 0:
                 continue
-            plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2),
-                            spot_t1=round(c + sgn * risk, 2), spot_target=round(c + sgn * 2 * risk, 2),
-                            exit_at=self.EXIT_AT)
+            if self.TRAIL_EXIT:
+                # 5-min bar exits start with the bar after the 15-min signal bar
+                plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2),
+                                last_bar_start=(last["end"] - timedelta(
+                                    minutes=self.TRAIL_BAR_MINUTES)).isoformat())
+            else:
+                plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2),
+                                spot_t1=round(c + sgn * risk, 2),
+                                spot_target=round(c + sgn * 2 * risk, 2), exit_at=self.EXIT_AT)
             return self._plan_signal(direction, c, indicators,
                                      f"15m EMA9/21 trend, RSI {r[k]:.1f} pullback, close {c:.1f} "
                                      f"across EMA9 {e9[t]:.1f}", plan)
+        return None
+
+    def candle_exit(self, plan, candles, indicators) -> Optional[str]:
+        """Supertrend(10, 3) trail on completed 5-min bars. A plan with T1 /
+        target / exit_at (made with TRAIL_EXIT off) keeps those exits only."""
+        if plan.spot_t1 is not None or plan.spot_target is not None or plan.exit_at:
+            return None
+        bars = resample(self.history or candles, self.TRAIL_BAR_MINUTES)
+        if len(bars) < self.ST_PERIOD + 5:
+            return None
+        new = _new_bars(plan, bars)
+        if not new:
+            return None
+        st = supertrend(np.array([b["high"] for b in bars]), np.array([b["low"] for b in bars]),
+                        np.array([b["close"] for b in bars]), self.ST_PERIOD, self.ST_MULT)
+        for i in new:
+            if np.isnan(st.supertrend[i]):
+                continue
+            if int(st.direction[i]) != plan.sign:
+                return xp.ST_FLIP
+            xp.tighten_stop(plan, round(float(st.supertrend[i]), 2))
         return None
 
 

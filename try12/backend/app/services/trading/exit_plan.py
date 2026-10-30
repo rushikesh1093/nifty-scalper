@@ -19,6 +19,8 @@ breakeven_trigger   move the stop to entry, nothing booked (ORB at 50% of target
 premium_target_pts  full exit when the option gains this many rupees (Supertrend)
 time_stop_minutes   full exit after this hold time, whatever the price
 t1_done / breakeven_done   one-shot flags, written back by paper_engine
+trail_atr / trail_extreme  ATR chandelier trail: the stop follows the best
+                    price since entry minus 2 × trail_atr (chandelier_update)
 
 Candle-close exits (EMA 9 trail, VWAP hard exit, Supertrend flip) need bars,
 so they live on the strategy (``BaseStrategy.candle_exit``) and are run by the
@@ -70,6 +72,14 @@ class ExitPlan:
     last_bar_start:      Optional[str] = None
     # The strategy's own square-off, IST "HH:MM" (earlier than the session's).
     exit_at:             Optional[str] = None
+    # ATR chandelier trail (FIRST_CANDLE_BREAKOUT): the 5-min ATR(14) at the
+    # signal and the best spot price since entry (chandelier_update). None = off.
+    trail_atr:           Optional[float] = None
+    trail_extreme:       Optional[float] = None
+    # ATR chandelier trail (FIRST_CANDLE_BREAKOUT): the 5-min ATR(14) at the
+    # signal and the best spot price seen since entry. None = no chandelier.
+    trail_atr:           Optional[float] = None
+    trail_extreme:       Optional[float] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -152,6 +162,38 @@ def move_stop_to_entry(plan: ExitPlan) -> ExitPlan:
         return plan          # stop is already past entry in our favour
     plan.spot_stop = plan.spot_entry
     return plan
+
+
+CHANDELIER_ATR_MULT = 2.0
+
+
+def chandelier_update(plan: ExitPlan, high: float, low: float) -> bool:
+    """One completed candle for an ATR-chandelier plan: the best price since
+    entry moves with the candle, and the stop trails CHANDELIER_ATR_MULT ×
+    trail_atr behind it, only ever tightening. True if the stop moved."""
+    if not plan.trail_atr:
+        return False
+    best = high if plan.side == "BUY" else low
+    if plan.trail_extreme is None or reached(plan.side, best, plan.trail_extreme):
+        plan.trail_extreme = best
+    level = round(plan.trail_extreme - plan.sign * CHANDELIER_ATR_MULT * plan.trail_atr, 2)
+    return tighten_stop(plan, level)
+
+
+CHANDELIER_ATR_MULT = 2.0
+
+
+def chandelier_update(plan: ExitPlan, high: float, low: float) -> bool:
+    """One completed candle for an ATR-chandelier plan: the best price since
+    entry follows the candle, and the stop trails CHANDELIER_ATR_MULT ×
+    trail_atr behind it, only ever tightening. True if the stop moved."""
+    if not plan.trail_atr:
+        return False
+    best = high if plan.side == "BUY" else low
+    if plan.trail_extreme is None or reached(plan.side, best, plan.trail_extreme):
+        plan.trail_extreme = best
+    level = round(plan.trail_extreme - plan.sign * CHANDELIER_ATR_MULT * plan.trail_atr, 2)
+    return tighten_stop(plan, level)
 
 
 def tighten_stop(plan: ExitPlan, level: Optional[float]) -> bool:
