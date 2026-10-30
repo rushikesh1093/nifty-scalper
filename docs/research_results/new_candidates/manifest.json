@@ -1,0 +1,98 @@
+{
+ "commit": "6d528d576831ba17595ed89abcc19e256e0f2b31",
+ "dirty": false,
+ "dataset": {
+  "file": "nifty_history.db",
+  "sha256": "100c05802bb7d1b09925086f4052bf53fe7d81268fdded24972b37e9569cbee7",
+  "first_day": "2023-10-23",
+  "last_day": "2026-10-23",
+  "sessions": 728
+ },
+ "options_dataset": {
+  "file": "live_options.db",
+  "sha256": "d7ad4a642788de58cd73821f038590a1a25b44991d52ddd9056bf2c9d578c6a8"
+ },
+ "date_range": [
+  "2023-10-23",
+  "2026-10-23"
+ ],
+ "config_hash": "8e691ed4cc4d64187edd997a60f5f578d3b94b00c9389652a6960bbd0201ecb4",
+ "config": {
+  "thresholds": {
+   "design_end": "2024-09-30",
+   "suite": "new",
+   "method": "pre-registered constants"
+  },
+  "cost_models": {
+   "ZERO": {
+    "name": "ZERO",
+    "fixed_pts": 0.0,
+    "decay_pts_per_hour": 0.0,
+    "expiry_decay_pts_per_hour": 0.0
+   },
+   "MEASURED": {
+    "name": "MEASURED",
+    "fixed_pts": 2.6,
+    "decay_pts_per_hour": 1.5,
+    "expiry_decay_pts_per_hour": 1.5
+   },
+   "HARSH": {
+    "name": "HARSH",
+    "fixed_pts": 4.0,
+    "decay_pts_per_hour": 4.0,
+    "expiry_decay_pts_per_hour": 4.0
+   }
+  },
+  "specs": [
+   [
+    "SQUEEZE",
+    "VOL_SQUEEZE_BREAKOUT",
+    "VolSqueezeBreakout",
+    {}
+   ],
+   [
+    "TREND_DAY",
+    "TREND_DAY_CONTINUATION",
+    "TrendDayContinuation",
+    {}
+   ],
+   [
+    "GAP_FADE",
+    "GAP_FADE",
+    "GapFade",
+    {}
+   ],
+   [
+    "VWAP_REV",
+    "VWAP_EXTREME_REVERSION",
+    "VWAPExtremeReversion",
+    {}
+   ]
+  ],
+  "suite": "new",
+  "exit_variants": [
+   "LIVE",
+   "A_FIXED_2R",
+   "B_BE1R_2R",
+   "C_BE1R_ATR_TRAIL",
+   "D_SWING_TRAIL",
+   "E_ATR_CHANDELIER",
+   "F_ST5_TRAIL"
+  ],
+  "criteria": {
+   "min_trades": 100,
+   "preferred_trades": 200,
+   "min_sessions": 60,
+   "min_profit_factor": 1.2,
+   "max_drawdown_r": -25.0,
+   "min_positive_fold_share": 0.5,
+   "require_ci_lower_above": 0.0
+  },
+  "design_months": 12
+ },
+ "execution_model_version": "spot-pessimistic-path-v1",
+ "cost_model_version": "spot-points-v2 (ZERO/MEASURED/HARSH)",
+ "bootstrap_seed": 20261030,
+ "python": "3.12.4",
+ "runtime_s": 106.2
+}

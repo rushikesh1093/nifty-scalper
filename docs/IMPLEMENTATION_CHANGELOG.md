@@ -59,3 +59,13 @@ dropped, missing quote → UNAVAILABLE).
   this checkout (the package has no test script).
 * Research run: `docs/research_results/manifest.json` (simulation at `55521bf`, analysis at
   `04b03ef`, dataset SHA-256 `100c0580…cbee7`, config hash `a13f3a5d…`).
+
+## New candidate strategies (follow-up)
+
+* Pre-registered four candidates before testing (`docs/NEW_STRATEGY_PREREGISTRATION.md`):
+  VOL_SQUEEZE_BREAKOUT, TREND_DAY_CONTINUATION, GAP_FADE, VWAP_EXTREME_REVERSION.
+* Implemented as live-shaped classes in `app/research/new_strategies.py`, with
+  `python -m app.research.cli --suite new`; tests in `tests/test_new_candidates.py`
+  (one trade a day, valid plans, no look-ahead, monotone trail, gap-fade scenario).
+* Result: **none passes**, so none is registered in `build_strategies`
+  (`docs/NEW_STRATEGY_RESULTS.md`).
