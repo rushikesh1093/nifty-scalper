@@ -29,9 +29,11 @@ from tests.helpers import (
 )
 
 
-def _synthetic_candles(n=60, seed=7):
+def _synthetic_candles(day_ist: datetime, n=60, seed=7):
+    """*n* 1-min candles from 09:15 IST on *day_ist*'s date (the test's frozen
+    clock, never the wall clock: the result must not depend on when it runs)."""
     rnd = random.Random(seed)
-    start = datetime.now().replace(hour=9, minute=15, second=0, microsecond=0)
+    start = day_ist.replace(hour=9, minute=15, second=0, microsecond=0, tzinfo=None)
     price, out = 22600.0, []
     for i in range(n):
         drift = 1.2 + rnd.uniform(-2.5, 2.5)          # gentle uptrend with noise
@@ -48,7 +50,9 @@ def _synthetic_candles(n=60, seed=7):
     return out
 
 
-def test_offline_signal_to_closed_position(sqlite_db, fake_redis, monkeypatch, capsys):
+def test_offline_signal_to_closed_position(runtime_ctx, sqlite_db, fake_redis, monkeypatch, capsys):
+    # runtime_ctx: a FrozenClock (and FakeRedis tick ages on it), so cooldown
+    # TTLs, tick staleness and the trading day do not move with the wall clock.
     run(seed_config(sqlite_db))
     pin_ist_time(monkeypatch, dtime(11, 0))
     monkeypatch.setattr(SignalBus, "_handlers", [paper_engine.handle_signal])
@@ -56,9 +60,13 @@ def test_offline_signal_to_closed_position(sqlite_db, fake_redis, monkeypatch, c
                         regime_detector.get_current_regime)   # in-memory, no Redis
 
     # ── 1. Candles → detector → orchestrator, candle by candle ───────────────
-    candles = _synthetic_candles()
+    candles = _synthetic_candles(runtime_ctx.clock.now_ist())
     regimes, active = [], 0
+    open_ist = runtime_ctx.clock.now_ist().replace(hour=9, minute=15, second=0, microsecond=0)
     for n in range(25, len(candles) + 1):
+        # the clock stands just after candle n closed, as in the live loop (regime
+        # rows are keyed by that timestamp; a wall clock could repeat one)
+        runtime_ctx.clock.set(open_ist + timedelta(minutes=n, seconds=1))
         window = candles[:n]
         ind = compute_all(window)
         flags, state = run(strategy_runner._detect_and_merge_regime(
