@@ -46,14 +46,23 @@ def label_series(ds: data.Dataset) -> list[dict]:
             out.append({"day": str(s.day), "t": today[j]["end"].strftime("%H:%M"), "label": r["label"],
                         "structure": r["structure"], "vol": r["vol"], "transition": r["transition"],
                         "fwd_move_atr": (nxt[-1]["close"] - c0) / r["atr5"],
-                        "fwd_range_atr": (max(b["high"] for b in nxt) - min(b["low"] for b in nxt)) / r["atr5"]})
+                        "fwd_range_atr": (max(b["high"] for b in nxt) - min(b["low"] for b in nxt)) / r["atr5"],
+                        "fwd_range_pts": max(b["high"] for b in nxt) - min(b["low"] for b in nxt)})
         tail = (tail + s.candles)[-500:]
     return out
 
 
-def _stats(vals):
-    return {"n": len(vals), "mean": round(statistics.mean(vals), 4) if vals else None,
-            "se": round(statistics.stdev(vals) / len(vals) ** 0.5, 4) if len(vals) > 1 else None}
+def _stats(rows, key):
+    """Mean of *key* and its standard error from per-SESSION means (the
+    30-min windows overlap, so bar-level errors would be ~2.5x too small)."""
+    by = defaultdict(list)
+    for r in rows:
+        by[r["day"]].append(r[key])
+    vals = [v for r in rows for v in (r[key],)]
+    dm = [statistics.mean(v) for v in by.values()]
+    return {"n": len(vals), "sessions": len(dm),
+            "mean": round(statistics.mean(vals), 4) if vals else None,
+            "se_session": round(statistics.stdev(dm) / len(dm) ** 0.5, 4) if len(dm) > 1 else None}
 
 
 def validate(rows: list[dict], design_end: str) -> dict:
@@ -70,9 +79,11 @@ def validate(rows: list[dict], design_end: str) -> dict:
                "label_changes_per_hour": round(changes / max(1, len(rs)) * 12, 3),
                "mean_run_bars": round(statistics.mean(runs), 2) if runs else None,
                "transition_share": round(sum(r["transition"] for r in rs) / max(1, len(rs)), 4),
-               "fwd_move_atr_by_label": {k: _stats([r["fwd_move_atr"] for r in rs if r["label"] == k])
+               "fwd_move_atr_by_label": {k: _stats([r for r in rs if r["label"] == k], "fwd_move_atr")
                                          for k in regime.LABELS},
-               "fwd_range_atr_by_vol": {k: _stats([r["fwd_range_atr"] for r in rs if r["vol"] == k])
+               "fwd_range_pts_by_vol": {k: _stats([r for r in rs if r["vol"] == k], "fwd_range_pts")
+                                        for k in ("LOW", "NORMAL", "HIGH")},
+               "fwd_range_atr_by_vol": {k: _stats([r for r in rs if r["vol"] == k], "fwd_range_atr")
                                         for k in ("LOW", "NORMAL", "HIGH")}}
         res["periods"][name] = per
     return res
