@@ -355,8 +355,8 @@ class AngelClient:
                 return False
             ts = data.get("logged_in_at")
             cached_at = datetime.fromisoformat(ts) if ts else None
-            # The feed logs in on every reconnect without writing Redis, so the
-            # cached copy can be older than the tokens in memory: never go back.
+            # The tokens in memory may be newer than the cached copy (a login whose
+            # Redis write failed, or another process wrote earlier): never go back.
             if _session.jwt_token and _session.logged_in_at and (
                     cached_at is None or cached_at <= _session.logged_in_at):
                 return False
