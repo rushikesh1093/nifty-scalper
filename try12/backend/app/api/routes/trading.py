@@ -369,6 +369,16 @@ async def daily_stats():
     return await mode_manager.get_daily_stats()
 
 
+# ── Expiry-day iron fly (separate paper book) ─────────────────────────────────
+
+@router.get("/iron-fly")
+async def iron_fly_book():
+    """The expiry-day iron fly paper book: today's spread with live mark-to-market,
+    recent history and a summary (app.services.trading.iron_fly)."""
+    from app.services.trading.iron_fly import iron_fly_paper
+    return await iron_fly_paper.snapshot()
+
+
 # ── Signals ───────────────────────────────────────────────────────────────────
 
 @router.get("/signals")

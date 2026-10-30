@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     NIFTY_TOKEN: str = "26000"          # NSE Nifty 50 spot token
     BANKNIFTY_TOKEN: str = "26009"      # NSE BankNifty spot token
     VIX_TOKEN: str = "26017"            # India VIX token on NSE
+
+    # Expiry-day iron fly paper trading (app/services/trading/iron_fly.py): a
+    # separate paper book; False stops it opening new spreads.
+    IRON_FLY_PAPER_ENABLED: bool = True
     INSTRUMENT_DUMP_URL: str = (
         "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     )

@@ -116,6 +116,8 @@ async def lifespan(app: FastAPI):
         await study_collector.start()
         from app.services.market_data.tick_retention import tick_retention
         await tick_retention.start()
+        from app.services.trading.iron_fly import iron_fly_paper
+        await iron_fly_paper.start()
     except Exception as exc:
         logger.error("Strategy runner startup error: %s", exc, exc_info=True)
 
@@ -169,6 +171,8 @@ async def lifespan(app: FastAPI):
     await study_collector.stop()
     from app.services.market_data.tick_retention import tick_retention
     await tick_retention.stop()
+    from app.services.trading.iron_fly import iron_fly_paper
+    await iron_fly_paper.stop()
     await market_manager.shutdown()
     await redis_cache.disconnect()
     app.state.runtime_context = None    # nothing may run against a shut-down context
