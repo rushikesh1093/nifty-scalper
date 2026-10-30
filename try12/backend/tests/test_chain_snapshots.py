@@ -336,3 +336,10 @@ def test_collector_builds_the_chain_from_ticks_by_default(chain_env, sqlite_db, 
 
     bn = run(StudyCollector()._fetch_option_chain("BANKNIFTY"))
     assert bn.status == cs.NO_TICKS
+
+
+def test_the_cached_chain_outlives_the_rebuild_interval():
+    """The chain is rebuilt every OPTION_CHAIN_INTERVAL; a shorter Redis TTL left the
+    option selector without IV for most of every interval."""
+    from app.services.cache import redis_client
+    assert redis_client.TTL_OPTION_CHAIN > 2 * sc_mod.OPTION_CHAIN_INTERVAL

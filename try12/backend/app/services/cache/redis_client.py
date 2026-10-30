@@ -31,7 +31,7 @@ TTL_OHLC         = 4 * 86400  # OHLC candles — 4 days, so yesterday's session 
                             # weekend) survives overnight: the strategies' EMA / RSI /
                             # Supertrend / ADX warm up on it. Lists are trimmed to 500
                             # candles, so memory stays bounded.
-TTL_OPTION_CHAIN = 30       # Option chain — very fresh
+TTL_OPTION_CHAIN = 660      # Option chain: rebuilt every 300 s; outlives one missed rebuild
 TTL_POSITIONS    = 10       # Positions — near real-time
 TTL_ORDER_BOOK   = 10
 
