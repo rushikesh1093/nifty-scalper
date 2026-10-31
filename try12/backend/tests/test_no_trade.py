@@ -203,6 +203,7 @@ def test_publish_returns_false_when_the_recorder_fails(monkeypatch, caplog):
 
 # ── orchestrator returns the code ────────────────────────────────────────────
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_should_allow_signal_returns_a_code(runtime_ctx):
     from app.services.trading.no_trade import ReasonCode
     from app.services.trading.regime_persistence import RegimeState
@@ -458,6 +459,7 @@ def test_a_strategy_in_its_own_cooldown_is_recorded_once_per_episode(
 
 # ── R12.8a: every gate type fires; the rows alone explain the empty book ────
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_r12_8a_every_gate_type_fires_and_the_rows_account_for_no_trades(
         quiet_runner, sqlite_db, runtime_ctx, monkeypatch):
     """A synthetic session with zero trades. Each stage-level gate fires at least

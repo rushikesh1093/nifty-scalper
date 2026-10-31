@@ -112,6 +112,16 @@ class TradingParams:
     kelly_min_trades: int = 100
 
     # ── caches / regime ──────────────────────────────────────────────────────
+    # False (since 31 Oct 2026): the regime runs in SHADOW: it is detected,
+    # logged and persisted every candle, but its map no longer enables or
+    # disables strategies, restricts directions or scales size; the user's
+    # strategy flags decide. A detector failure (DETECTOR_ERROR / no state)
+    # still blocks, as broken data must. Reason: on three years of NIFTY the
+    # map did not separate better from worse trades for any strategy (it
+    # blocked the better 09:15-breakout trades in every year) and its
+    # volatility axis did not predict the next 30 minutes' range
+    # (docs/REGIME_REDESIGN.md). True restores the regime_rules map.
+    regime_gating: bool = False
     cooldown_mirror_ttl_s: int = 120
     params_cache_ttl_s: int = 30
     # Candles blocked as REGIME_TRANSITION after a regime flip; 0 = off.
@@ -135,10 +145,13 @@ class TradingParams:
     regime_breakout_hold_minutes: int = 0    # keep a breakout label this long...
     regime_breakout_fail_pts: float = 10.0   # ...unless price is back this far inside
     regime_confirm_evals: int = 1            # evaluations a new label must persist
-    # ATR values the ATR percentile ranks against (regime_indicators). 20 is the
-    # original rank (5% steps); 375 = one session. The runner reads the last 500
-    # one-minute candles and ATR(14) needs 14 of them, so 486 is the most.
-    regime_atr_pct_lookback: int = 20
+    # ATR values the ATR percentile ranks against (regime_indicators). 375 = one
+    # session. The runner reads the last 500 one-minute candles and ATR(14)
+    # needs 14 of them, so 486 is the most. 486 since 31 Oct 2026: against the
+    # last 20 minutes (the old 20) the percentile had no relation to the next
+    # 30 minutes' range (Spearman -0.02 / -0.01 / +0.01 by year, 2023-26); against
+    # 486 it does every year (+0.35 / +0.37 / +0.24; HIGH ~68 pts vs LOW ~44 pts).
+    regime_atr_pct_lookback: int = 486
     # True: a minute the classifier leaves UNCLASSIFIED with ADX below
     # ADX_RANGE_THRESHOLD and fewer VWAP crosses than the chop threshold is
     # RANGE_BOUND (the range strategies), whatever the ATR percentile.

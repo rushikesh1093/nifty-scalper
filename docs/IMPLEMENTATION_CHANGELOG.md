@@ -113,3 +113,25 @@ and trades without a recorded R are excluded and counted. Statuses:
 `INSUFFICIENT_EVIDENCE`, `DISABLED_FOR_RESEARCH`, `PASSES_GATES`. It advises; it never
 switches a flag. The trade log rows (`/strategy-report`) now include `r_gross` / `r_net`.
 Tests: `tests/test_strategy_evidence.py`.
+
+## Regime off for trading, regime v2 in shadow, option archive (31 Oct 2026)
+
+At the user's request ("if regime is not working keep it off rather than in trade, and
+redesign"). Details: [REGIME_REDESIGN.md](REGIME_REDESIGN.md), [DATA_FIXES.md](DATA_FIXES.md).
+
+* `TradingParams.regime_gating = False` (new, default): the regime is detected and
+  persisted but does not enable or disable strategies, restrict direction, size, or create
+  no-trade candles. A detector failure and the `trade_on_expiry_day = False` policy are
+  still enforced. `True` restores the old map.
+* `regime_atr_pct_lookback` 20 → 486: the 20-value rank had no relation to the next 30
+  minutes' range (Spearman ≈ 0 every year). The 486-value rank predicts it every year.
+* `services/trading/regime_v2.py` + `GET /api/v1/regime/v2`: the volatility bucket and
+  opening-range side. Gates nothing.
+* `app/research/live_regime_eval.py`: replays the live classifier and map over history
+  (allowed vs blocked by year, label predictiveness, v2 by strategy).
+* `app/research/option_archive.py`: permanent per-minute NIFTY/BANKNIFTY option archive
+  (bid/ask/OI/volume) from Postgres (read-only) and tick backups. First build: 19 sessions.
+  `options.Quotes` reads it.
+* Tests: `tests/test_regime_shadow.py`, archive test in `tests/test_research.py`; the
+  tests that specify the old map run under the new `v1_regime` fixture with every
+  assertion unchanged (one default assertion updated, 20 → 486).

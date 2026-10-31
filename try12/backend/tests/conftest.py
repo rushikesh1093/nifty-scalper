@@ -204,3 +204,26 @@ def pytest_report_header(config):
         return (f"WARNING: backend path is {len(str(root))} chars; Windows' 260-char limit "
                 "breaks the migration tests here. Run from a short path "
                 "(e.g. C:/Users/<you>/Downloads/try12fin).")
+
+
+@pytest.fixture
+def v1_regime(monkeypatch):
+    """The regime as it was before 31 Oct 2026: the regime_rules map gates
+    strategies, directions and size (regime_gating=True) and the ATR percentile
+    ranks against 20 values. For the tests that specify that map; an explicit
+    regime_atr_pct_lookback in a test's own params is left alone."""
+    import dataclasses
+    import app.runtime.context as rc
+    import app.services.trading.strategy_orchestrator as so
+    import app.services.trading.strategy_runner as sr
+    from app.core.trading_params import TradingParams
+
+    real = rc.params
+    default_lookback = TradingParams().regime_atr_pct_lookback
+
+    def v1_params():
+        p = real()
+        lb = 20 if p.regime_atr_pct_lookback == default_lookback else p.regime_atr_pct_lookback
+        return dataclasses.replace(p, regime_gating=True, regime_atr_pct_lookback=lb)
+    for mod in (rc, so, sr):
+        monkeypatch.setattr(mod, "params", v1_params)

@@ -35,6 +35,12 @@ from app.strategies.names import ALL_STRATEGY_NAMES
 from app.runtime.context import ctx, now_utc, params
 from app.services.trading.no_trade import ReasonCode
 
+DETECTOR_ERROR = "DETECTOR_ERROR"      # the detector's fail-closed regime
+# Regimes enforced even in shadow mode (regime_gating False): a detector that
+# cannot classify (broken data), and EXPIRY_DAY, which exists only when the
+# operator chose trade_on_expiry_day = False - a policy, not a regime opinion.
+ENFORCED_REGIMES = frozenset({DETECTOR_ERROR, "EXPIRY_DAY"})
+
 logger = logging.getLogger(__name__)
 
 # Closed set of per-strategy reasons (design §6.5)
@@ -90,8 +96,11 @@ class StrategyOrchestrator:
         rule = get_regime_rule(regime, atr_pct)
 
         # ── Build base flags from rule ────────────────────────────────────────
+        # Shadow mode (params().regime_gating False): every strategy is left to
+        # the user's flags; only ENFORCED_REGIMES still disable them all.
+        gating = params().regime_gating or regime in ENFORCED_REGIMES
         flags: dict[str, bool] = {
-            name: (name in rule.enabled_strategies)
+            name: (name in rule.enabled_strategies) if gating else True
             for name in ALL_STRATEGY_NAMES
         }
 
@@ -203,7 +212,9 @@ class StrategyOrchestrator:
         Requirements: 12.2
         """
         try:
-            regime = self._current_regime.get(underlying, "DETECTOR_ERROR")
+            regime = self._current_regime.get(underlying, DETECTOR_ERROR)
+            if not params().regime_gating and regime not in ENFORCED_REGIMES:
+                return 1.0                       # shadow mode: the regime sizes nothing
             rule = get_regime_rule(regime)
             return rule.position_multiplier
         except Exception as exc:
@@ -237,6 +248,8 @@ class StrategyOrchestrator:
 
         underlying = signal.underlying
         regime = regime_state.regime
+        if not params().regime_gating and regime not in ENFORCED_REGIMES:
+            return True, None, ""                # shadow mode: no direction rule
         atr_pct = regime_state.indicators.atr_percentile
         rule = get_regime_rule(regime, atr_pct)
 

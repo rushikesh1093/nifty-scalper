@@ -258,3 +258,31 @@ def test_option_replay_buys_the_ask_sells_the_bid_and_reports_missing(quotes_db)
     assert rows[0]["exit_fill"] <= 109.7 and rows[0]["lot"] == 65
     assert rows[0]["net_rs"] == pytest.approx(rows[0]["gross_rs"] - rows[0]["charges_rs"])
     assert rows[1]["status"] == "UNAVAILABLE" and "exit" in rows[1]["reason"]
+
+
+# ── option archive ──────────────────────────────────────────────────────────
+
+def test_archive_parses_symbols_and_keeps_only_session_minutes(tmp_path):
+    from datetime import timezone as tz
+    from app.research import option_archive as oa
+    assert oa.parse_symbol("NIFTY03NOV2622050CE") == ("NIFTY", "2026-11-03", 22050.0, "CE")
+    assert oa.parse_symbol("BANKNIFTY29SEP2656500PE") == ("BANKNIFTY", "2026-09-29", 56500.0, "PE")
+    assert oa.parse_symbol("NIFTY27OCT26FUT") is None
+    agg = oa._Agg()
+    t = datetime(2026, 10, 27, 4, 0, 10, tzinfo=tz.utc)          # 09:30:10 IST
+    agg.add("1", "NIFTY03NOV2622050CE", "NFO", t, 100.0, 99.8, 100.2, 5000, 1200)
+    agg.add("1", "NIFTY03NOV2622050CE", "NFO", t + timedelta(seconds=30), 101.0, 0, 0, None, 1500)
+    agg.add("1", "NIFTY03NOV2622050CE", "NFO", t + timedelta(hours=7), 999.0, 1, 2, 1, 1)   # 16:30
+    agg.add("99926000", "NIFTY", "NSE", t, 22040.0, None, None, None, None)
+    [row] = agg.opt.values()
+    assert row["minute"] == "2026-10-27T09:30" and row["ltp"] == 101.0
+    assert (row["bid"], row["ask"]) == (99.8, 100.2)              # a zero quote does not erase it
+    assert row["oi"] == 5000 and row["volume_cum"] == 1500
+    con = sqlite3.connect(tmp_path / "a.db")
+    con.executescript(oa.SCHEMA)
+    oa.write_day(con, "2026-10-27", agg, "test")
+    con.close()
+    q = options.Quotes(str(tmp_path / "a.db"))
+    assert q.quote("2026-10-27T09:30", "2026-11-03", 22050.0, "CE") == (99.8, 100.2)
+    assert q.spot["2026-10-27T09:30"] == 22040.0
+    assert options.Quotes(str(tmp_path / "a.db"), "BANKNIFTY").q == {}

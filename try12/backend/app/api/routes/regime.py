@@ -123,6 +123,35 @@ async def get_regime_current(
         raise HTTPException(status_code=503, detail=f"regime cache unavailable: {exc}")
 
 
+@router.get("/v2")
+async def get_regime_v2(
+    underlying: str = Query("NIFTY", description="Underlying symbol (NIFTY, BANKNIFTY)"),
+):
+    """Regime v2 (shadow, gates nothing): volatility bucket and opening-range
+    side from the cached 1-min candles (app.services.trading.regime_v2), plus
+    whether the v1 regime map is gating trades (TradingParams.regime_gating)."""
+    from app.core.config import settings
+    from app.runtime.context import market, now_ist, params
+    from app.services.market_data.timestamps import try_normalize_candle_timestamp
+    from app.services.trading.regime_v2 import classify_v2
+    token = settings.NIFTY_TOKEN if underlying.upper() == "NIFTY" else settings.BANKNIFTY_TOKEN
+    try:
+        raw = await market().get_candles(token, "ONE_MINUTE", 500) or []
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"candle cache unavailable: {exc}")
+    now = now_ist()
+    rows = sorted(((t, c) for c in raw
+                   if (t := try_normalize_candle_timestamp(c.get("timestamp"))) is not None
+                   and t < now.replace(second=0, microsecond=0)
+                   and (t.hour, t.minute) >= (9, 15) and (t.hour, t.minute) < (15, 30)),
+                  key=lambda r: r[0])
+    history = [c for _, c in rows]
+    today = [c for t, c in rows if t.date() == now.date()]
+    return {"underlying": underlying.upper(), "as_of": now.isoformat(),
+            "regime_gating": params().regime_gating,
+            "v2": classify_v2(today, history).to_dict()}
+
+
 @router.get("/strategy-map")
 async def get_strategy_map():
     """

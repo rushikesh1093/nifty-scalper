@@ -38,18 +38,28 @@ COST_MODEL_VERSION = "recorded-quotes-regression-v1"
 
 
 class Quotes:
-    def __init__(self, path: str):
+    """Recorded quotes from either store: the original snapshot file
+    (live_options.db, NIFTY only) or the option archive (app.research.
+    option_archive, NIFTY and BANKNIFTY, with an ``underlying`` column)."""
+
+    def __init__(self, path: str, underlying: str = "NIFTY"):
         con = sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True)
+        cols = {r[1] for r in con.execute("pragma table_info(opt_min)")}
+        where = " where underlying = ?" if "underlying" in cols else ""
+        args = (underlying,) if where else ()
         self.q: dict = {}                     # (minute, expiry, strike, opt) -> (bid, ask)
         self.expiries: dict = defaultdict(set)
         for minute, expiry, k, opt, bid, ask in con.execute(
-                "select minute, expiry, strike, opt, bid, ask from opt_min"):
+                f"select minute, expiry, strike, opt, bid, ask from opt_min{where}", args):
             t = datetime.fromisoformat(minute).time()
             if not (SESSION[0] <= t < SESSION[1]):
                 continue                       # out-of-hours snapshots are stale quotes
             self.q[(minute, expiry, float(k), opt)] = (bid, ask)
             self.expiries[minute[:10]].add(expiry)
-        self.spot = {m: v for m, v in con.execute("select minute, ltp from spot_min")
+        scols = {r[1] for r in con.execute("pragma table_info(spot_min)")}
+        swhere = " where underlying = ?" if "underlying" in scols else ""
+        self.spot = {m: v for m, v in con.execute(f"select minute, ltp from spot_min{swhere}",
+                                                  (underlying,) if swhere else ())
                      if SESSION[0] <= datetime.fromisoformat(m).time() < SESSION[1]}
         con.close()
 

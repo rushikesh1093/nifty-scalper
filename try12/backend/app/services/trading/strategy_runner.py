@@ -15,7 +15,7 @@ from typing import Optional
 
 from app.strategies.strategies import build_strategies
 from app.strategies.indicators import compute_all
-from app.runtime.context import ctx, market, now_ist, sessions, trading_day
+from app.runtime.context import ctx, market, now_ist, params, sessions, trading_day
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.mode_manager import mode_manager
 from app.core.config import settings
@@ -793,6 +793,9 @@ class StrategyRunner:
         a DEGRADATION row when that regime is the detector's error fallback.
         Returns True when the candle is structurally ineligible."""
         regime = regime_state.regime
+        from app.services.trading.strategy_orchestrator import ENFORCED_REGIMES
+        if not params().regime_gating and regime not in ENFORCED_REGIMES:
+            return False                 # shadow mode: only a detector error / expiry policy blocks
         rule = get_regime_rule(regime, regime_state.indicators.atr_percentile)
         if rule.enabled_strategies:
             return False
