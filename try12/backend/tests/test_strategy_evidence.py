@@ -26,7 +26,7 @@ def test_only_trades_since_the_rule_change_count():
     new = _rows("FIRST_CANDLE_BREAKOUT", 6, -0.2)
     res = se.evaluate(old + new)["FIRST_CANDLE_BREAKOUT"]
     assert res["counted"] == 6 and res["excluded"]["before_rule_change"] == 10
-    assert res["rule_since"] == "2026-10-31"
+    assert res["rule_since"] == "2026-11-02"            # puts-only from 2 Nov
 
 
 def test_trades_without_r_are_excluded_not_zero():

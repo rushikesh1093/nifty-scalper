@@ -15,7 +15,8 @@ from tests.helpers import make_signal, run, with_params
 
 
 def _refusal(sqlite_db, rc, strategy, **params):
-    sig = make_signal(strategy=strategy, direction=Direction.BUY)
+    # puts, so the puts-only rule (tested below) does not answer first
+    sig = make_signal(strategy=strategy, direction=Direction.SELL)
 
     async def go():
         async with sqlite_db() as db:
@@ -71,3 +72,41 @@ def test_ema_rsi_skips_low_volatility_only(runtime_ctx, sqlite_db):
     assert _refusal(sqlite_db, runtime_ctx, "EMA_RSI_PULLBACK_15M") is None
     strategy_orchestrator.set_regime_v2("NIFTY", None)                         # no reading: no skip
     assert _refusal(sqlite_db, runtime_ctx, "EMA_RSI_PULLBACK_15M") is None
+
+
+# ── puts only, daily option-buy cap ─────────────────────────────────────────
+
+def _refusal_dir(sqlite_db, rc, strategy, direction, **params):
+    sig = make_signal(strategy=strategy, direction=direction)
+
+    async def go():
+        async with sqlite_db() as db:
+            with using(with_params(rc, **params)):
+                from app.runtime.context import params as p
+                return await risk_gate._evidence_refusal(db, sig, p())
+    return run(go())
+
+
+def test_puts_only_refuses_calls_for_the_listed_strategies(runtime_ctx, sqlite_db):
+    assert TradingParams().pe_only_strategies == ("ORB_BREAKOUT", "PIVOT_BOUNCE",
+                                                  "FIRST_CANDLE_BREAKOUT")
+    for name in ("ORB_BREAKOUT", "PIVOT_BOUNCE", "FIRST_CANDLE_BREAKOUT"):
+        d = _refusal_dir(sqlite_db, runtime_ctx, name, Direction.BUY)
+        assert d is not None and d.code == ReasonCode.DIRECTION_POLICY
+        assert _refusal_dir(sqlite_db, runtime_ctx, name, Direction.SELL) is None
+    assert _refusal_dir(sqlite_db, runtime_ctx, "EMA_RSI_PULLBACK_15M", Direction.BUY) is None
+    assert _refusal_dir(sqlite_db, runtime_ctx, "ORB_BREAKOUT", Direction.BUY,
+                        pe_only_strategies=()) is None
+
+
+def test_daily_cap_is_the_lower_of_the_two(runtime_ctx):
+    import dataclasses
+    rc = dataclasses.replace(runtime_ctx, cfg=dataclasses.replace(runtime_ctx.cfg, max_trades_per_day=3))
+    with using(with_params(rc, max_option_buys_per_day=2)):
+        assert risk_gate.daily_trade_cap(rc.cfg) == 2
+    with using(with_params(rc, max_option_buys_per_day=5)):
+        assert risk_gate.daily_trade_cap(rc.cfg) == 3
+    with using(with_params(rc, max_option_buys_per_day=0)):
+        assert risk_gate.daily_trade_cap(rc.cfg) == 3
+    assert TradingParams().max_option_buys_per_day == 2
+    assert any("max_option_buys_per_day" in v for v in TradingParams(max_option_buys_per_day=-1).validate())

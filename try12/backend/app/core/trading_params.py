@@ -135,6 +135,16 @@ class TradingParams:
     # Only EMA_RSI_PULLBACK_15M improved in every year (-0.31 -> -0.29,
     # -0.05 -> +0.07, -0.08 -> -0.08 R); the others got worse in some year.
     low_vol_skip_strategies: tuple = ("EMA_RSI_PULLBACK_15M",)
+    # Puts only (call signals refused, recorded as DIRECTION_POLICY). Bought calls
+    # lost in 14 of 15 strategy-years 2023-26 (IV falls as NIFTY rallies); puts
+    # did better in most, and every year for PIVOT_BOUNCE. ORB calls: -0.17 /
+    # -0.20 / -0.21 R. A forward hypothesis (found in the same data): judge it
+    # on paper evidence. () = both directions.
+    pe_only_strategies: tuple = ("ORB_BREAKOUT", "PIVOT_BOUNCE", "FIRST_CANDLE_BREAKOUT")
+    # Option-buying trades a day, on top of the operator's max_trades_per_day
+    # (the lower applies). Fewer, larger trades: the fixed ~2.6-pt round-trip
+    # cost is paid per trade. 0 = no extra cap.
+    max_option_buys_per_day: int = 2
     cooldown_mirror_ttl_s: int = 120
     params_cache_ttl_s: int = 30
     # Candles blocked as REGIME_TRANSITION after a regime flip; 0 = off.
@@ -336,7 +346,9 @@ class TradingParams:
         unknown = sorted(set(mh) - allowed)
         if unknown:
             v.append(f"max_hold_minutes has unknown strategy keys {unknown}")
-        for key in ("evidence_blocked_strategies", "low_vol_skip_strategies"):
+        if not (0 <= self.max_option_buys_per_day <= 50):
+            v.append(f"max_option_buys_per_day={self.max_option_buys_per_day} must be in [0, 50]")
+        for key in ("evidence_blocked_strategies", "low_vol_skip_strategies", "pe_only_strategies"):
             bad = sorted(set(getattr(self, key)) - set(ALL_STRATEGY_NAMES))
             if bad:
                 v.append(f"{key} has unknown strategies {bad}")

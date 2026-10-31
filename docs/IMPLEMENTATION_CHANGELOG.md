@@ -147,3 +147,13 @@ The runner records regime v2 each candle for the gate. EMA_RSI's evidence clock 
 2 Nov 2026. Tests: `tests/test_evidence_gates.py`. Scripted replays and the tests of other
 gates that use SUPERTREND_EMA run with the evidence gates off (`no_evidence_gates`), with
 assertions unchanged. Full suite: 1,205 passed, 1 skipped.
+
+## Puts only and a daily option-buy cap (31 Oct 2026)
+
+`pe_only_strategies` (default ORB_BREAKOUT, PIVOT_BOUNCE, FIRST_CANDLE_BREAKOUT; call signals
+refused as `DIRECTION_POLICY`) and `max_option_buys_per_day` (default 2; the lower of it and
+`max_trades_per_day` applies, at both cap checks). Evidence: bought calls lost in 14 of 15
+strategy-years; a forward hypothesis, since it was found in the same data. Evidence clocks
+(`RULE_SINCE`) for FCB, ORB and PIVOT restart on 2 Nov 2026. Tests in
+`tests/test_evidence_gates.py`; scripted replays and the `no_evidence_gates` fixture switch
+these off.

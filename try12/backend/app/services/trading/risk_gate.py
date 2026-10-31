@@ -35,6 +35,7 @@ from sqlalchemy.exc import DBAPIError
 from app.db.models.paper_trade import PaperPosition, StrategyPerf
 from app.runtime.context import ctx, now_ist, params, trading_day
 from app.services.trading import fills, no_trade, risk_state
+from app.strategies.base import Direction
 from app.services.trading.no_trade import ReasonCode, Stage
 from app.services.trading.session_times import is_after_entry_cutoff
 
@@ -275,6 +276,14 @@ async def evaluate_pre_selection(db, signal, regime_state) -> GateDecision:
                    error=f"{type(exc).__name__}: {exc}")
 
 
+def daily_trade_cap(cfg) -> int:
+    """Positions allowed a day: the operator's max_trades_per_day, and never more
+    than params().max_option_buys_per_day (every paper position here is a bought
+    option; the iron fly keeps its own book). 0 there = no extra cap."""
+    extra = params().max_option_buys_per_day
+    return min(cfg.max_trades_per_day, extra) if extra and extra > 0 else cfg.max_trades_per_day
+
+
 # (run_id, trading_day) -> {strategy: status}: the forward evidence, computed
 # at most once a day per run (strategy_evidence over the run's closed trades)
 _evidence_cache: dict[tuple, dict] = {}
@@ -301,6 +310,10 @@ async def _evidence_refusal(db, signal, p_) -> Optional[GateDecision]:
     trades (evidence_auto_block), or listed in low_vol_skip_strategies while
     regime v2 reads LOW volatility. None = no objection."""
     name = signal.strategy_name
+    if name in p_.pe_only_strategies and signal.direction == Direction.BUY:
+        return _no(Stage.RISK_GATE, ReasonCode.DIRECTION_POLICY,
+                   f"{name} trades puts only (pe_only_strategies): call buying lost in "
+                   f"14 of 15 strategy-years", direction="BUY")
     if name in p_.evidence_blocked_strategies:
         return _no(Stage.RISK_GATE, ReasonCode.EVIDENCE_BLOCKED,
                    f"{name} is blocked by research evidence (evidence_blocked_strategies)",
@@ -411,10 +424,12 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
 
     # 8. derived daily trade count
     count = await risk_state.derived_trade_count(db, rc.run_id, day)
-    if count >= cfg.max_trades_per_day:
+    cap = daily_trade_cap(cfg)
+    if count >= cap:
         return _no(Stage.RISK_GATE, ReasonCode.DAILY_TRADE_CAP,
-                   f"Daily trade limit ({cfg.max_trades_per_day}) reached.",
-                   derived_count=count, max_trades_per_day=cfg.max_trades_per_day)
+                   f"Daily trade limit ({cap}) reached.",
+                   derived_count=count, max_trades_per_day=cfg.max_trades_per_day,
+                   max_option_buys_per_day=p_.max_option_buys_per_day)
 
     # 9. open positions
     open_n = await risk_state.open_position_count(db, rc.run_id)
@@ -611,10 +626,11 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                            direction=side, open_same_direction=same_side)
 
         count = await risk_state.derived_trade_count(db, run_id, trading_day)          # 13a
-        if count >= cfg.max_trades_per_day:
+        cap = daily_trade_cap(cfg)
+        if count >= cap:
             await db.rollback()
             return _no(Stage.RISK_GATE, ReasonCode.DAILY_TRADE_CAP,
-                       f"Daily trade limit ({cfg.max_trades_per_day}) reached while this "
+                       f"Daily trade limit ({cap}) reached while this "
                        f"signal was in selection",
                        derived_count=count, max_trades_per_day=cfg.max_trades_per_day)
         locked_used = await risk_state.open_capital_used(db, run_id)                   # 13b

@@ -232,7 +232,7 @@ def v1_regime(monkeypatch):
 @pytest.fixture
 def no_evidence_gates(monkeypatch):
     """The risk gate without the evidence gates (research block, paper auto-block,
-    low-volatility skip): for tests of other gates that happen to use a strategy
+    low-volatility skip, puts-only, the daily option-buy cap): for tests of other gates that happen to use a strategy
     the evidence blocks. The gates themselves are tested in test_evidence_gates."""
     import dataclasses
     import app.services.trading.risk_gate as rg
@@ -241,5 +241,6 @@ def no_evidence_gates(monkeypatch):
 
     def no_gates():
         return dataclasses.replace(real(), evidence_blocked_strategies=(),
-                                   evidence_auto_block=False, low_vol_skip_strategies=())
+                                   evidence_auto_block=False, low_vol_skip_strategies=(),
+                                   pe_only_strategies=(), max_option_buys_per_day=0)
     monkeypatch.setattr(rg, "params", no_gates)

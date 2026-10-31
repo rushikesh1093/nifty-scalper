@@ -29,8 +29,10 @@ from app.research.walkforward import PromotionCriteria, classify_status
 # The first trading day each strategy's current rules were live. Bump a date
 # whenever that strategy's entry or exit logic changes.
 RULE_SINCE: dict[str, date] = {
-    "FIRST_CANDLE_BREAKOUT": date(2026, 10, 31),     # ATR-chandelier exit
+    "FIRST_CANDLE_BREAKOUT": date(2026, 11, 2),      # ATR-chandelier exit, puts only
     "EMA_RSI_PULLBACK_15M": date(2026, 11, 2),       # Supertrend trail exit + low-vol entry skip
+    "ORB_BREAKOUT": date(2026, 11, 2),               # puts only
+    "PIVOT_BOUNCE": date(2026, 11, 2),               # puts only
 }
 
 
