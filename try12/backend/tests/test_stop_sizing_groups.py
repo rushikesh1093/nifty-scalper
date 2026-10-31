@@ -24,6 +24,9 @@ P = TradingParams()
 
 # ── 3. premium stop from the spot stop ───────────────────────────────────────
 
+pytestmark = pytest.mark.usefixtures("no_evidence_gates")   # tests other gates with SUPERTREND_EMA
+
+
 def _plan(dist, side="BUY"):
     entry = 22000.0
     return {"side": side, "spot_entry": entry, "spot_stop": entry - dist if side == "BUY" else entry + dist}

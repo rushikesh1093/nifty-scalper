@@ -227,3 +227,19 @@ def v1_regime(monkeypatch):
         return dataclasses.replace(p, regime_gating=True, regime_atr_pct_lookback=lb)
     for mod in (rc, so, sr):
         monkeypatch.setattr(mod, "params", v1_params)
+
+
+@pytest.fixture
+def no_evidence_gates(monkeypatch):
+    """The risk gate without the evidence gates (research block, paper auto-block,
+    low-volatility skip): for tests of other gates that happen to use a strategy
+    the evidence blocks. The gates themselves are tested in test_evidence_gates."""
+    import dataclasses
+    import app.services.trading.risk_gate as rg
+
+    real = rg.params
+
+    def no_gates():
+        return dataclasses.replace(real(), evidence_blocked_strategies=(),
+                                   evidence_auto_block=False, low_vol_skip_strategies=())
+    monkeypatch.setattr(rg, "params", no_gates)

@@ -135,3 +135,15 @@ redesign"). Details: [REGIME_REDESIGN.md](REGIME_REDESIGN.md), [DATA_FIXES.md](D
 * Tests: `tests/test_regime_shadow.py`, archive test in `tests/test_research.py`; the
   tests that specify the old map run under the new `v1_regime` fixture with every
   assertion unchanged (one default assertion updated, 20 → 486).
+
+## Evidence gates (31 Oct 2026)
+
+Details: [EVIDENCE_GATES.md](EVIDENCE_GATES.md). In the risk gate, after the kill switch:
+`evidence_blocked_strategies` (default SUPERTREND_EMA), `evidence_auto_block` (refuse a
+strategy whose own paper trades are DISABLED_FOR_RESEARCH; computed once a day),
+`low_vol_skip_strategies` (default EMA_RSI_PULLBACK_15M while regime v2 reads LOW volatility,
+the only strategy improved in every year). New reason codes `EVIDENCE_BLOCKED`, `LOW_VOL_SKIP`.
+The runner records regime v2 each candle for the gate. EMA_RSI's evidence clock restarts on
+2 Nov 2026. Tests: `tests/test_evidence_gates.py`. Scripted replays and the tests of other
+gates that use SUPERTREND_EMA run with the evidence gates off (`no_evidence_gates`), with
+assertions unchanged. Full suite: 1,205 passed, 1 skipped.

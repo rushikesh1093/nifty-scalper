@@ -16,6 +16,9 @@ from tests.helpers import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("no_evidence_gates")   # tests other gates with SUPERTREND_EMA
+
+
 @pytest.fixture
 def day(runtime_ctx, sqlite_db, monkeypatch):
     run(seed_config(sqlite_db))

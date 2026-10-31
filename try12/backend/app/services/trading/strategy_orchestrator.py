@@ -70,6 +70,15 @@ class StrategyOrchestrator:
         # streak (design §9.4). A cache of state derived from closed positions
         # by risk_state and pushed here; never a counter.
         self._daily_halts: dict[tuple, frozenset] = {}
+        # underlying → the latest regime v2 reading (set by the runner each candle;
+        # read by the risk gate's low-volatility skip)
+        self._regime_v2: dict = {}
+
+    def set_regime_v2(self, underlying: str, reading) -> None:
+        self._regime_v2[underlying] = reading
+
+    def current_regime_v2(self, underlying: str):
+        return self._regime_v2.get(underlying)
 
     # ── on_regime_detected ────────────────────────────────────────────────────
 

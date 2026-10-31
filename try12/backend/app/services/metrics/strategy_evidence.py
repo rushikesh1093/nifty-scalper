@@ -30,7 +30,7 @@ from app.research.walkforward import PromotionCriteria, classify_status
 # whenever that strategy's entry or exit logic changes.
 RULE_SINCE: dict[str, date] = {
     "FIRST_CANDLE_BREAKOUT": date(2026, 10, 31),     # ATR-chandelier exit
-    "EMA_RSI_PULLBACK_15M": date(2026, 10, 31),      # 5-min Supertrend trail exit
+    "EMA_RSI_PULLBACK_15M": date(2026, 11, 2),       # Supertrend trail exit + low-vol entry skip
 }
 
 

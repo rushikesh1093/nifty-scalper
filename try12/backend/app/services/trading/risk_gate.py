@@ -275,6 +275,52 @@ async def evaluate_pre_selection(db, signal, regime_state) -> GateDecision:
                    error=f"{type(exc).__name__}: {exc}")
 
 
+# (run_id, trading_day) -> {strategy: status}: the forward evidence, computed
+# at most once a day per run (strategy_evidence over the run's closed trades)
+_evidence_cache: dict[tuple, dict] = {}
+
+
+async def _evidence_statuses(db) -> dict:
+    key = (ctx().run_id, trading_day())
+    if key not in _evidence_cache:
+        from app.services.metrics import strategy_evidence, strategy_report
+        try:
+            log = await strategy_report.load_closed(db, ctx().run_id)
+            res = strategy_evidence.evaluate(log)
+            _evidence_cache.clear()
+            _evidence_cache[key] = {k: v["status"] for k, v in res.items()}
+        except Exception as exc:                  # evidence is advisory: never block on its failure
+            logger.warning("[RiskGate] strategy evidence unavailable: %s", exc)
+            return {}
+    return _evidence_cache[key]
+
+
+async def _evidence_refusal(db, signal, p_) -> Optional[GateDecision]:
+    """Refuse a signal from a strategy the evidence says loses: listed in
+    evidence_blocked_strategies, or DISABLED_FOR_RESEARCH on its own paper
+    trades (evidence_auto_block), or listed in low_vol_skip_strategies while
+    regime v2 reads LOW volatility. None = no objection."""
+    name = signal.strategy_name
+    if name in p_.evidence_blocked_strategies:
+        return _no(Stage.RISK_GATE, ReasonCode.EVIDENCE_BLOCKED,
+                   f"{name} is blocked by research evidence (evidence_blocked_strategies)",
+                   source="research")
+    if p_.evidence_auto_block:
+        status = (await _evidence_statuses(db)).get(name)
+        if status == "DISABLED_FOR_RESEARCH":
+            return _no(Stage.RISK_GATE, ReasonCode.EVIDENCE_BLOCKED,
+                       f"{name}'s own paper trades show negative expectancy "
+                       f"(/analytics/strategy-evidence)", source="paper", status=status)
+    if name in p_.low_vol_skip_strategies:
+        from app.services.trading.strategy_orchestrator import strategy_orchestrator
+        v2 = strategy_orchestrator.current_regime_v2(signal.underlying)
+        if v2 is not None and getattr(v2, "vol", None) == "LOW":
+            return _no(Stage.RISK_GATE, ReasonCode.LOW_VOL_SKIP,
+                       f"{name} skips entries in LOW volatility (regime v2, ATR percentile "
+                       f"{v2.atr_percentile})", atr_percentile=v2.atr_percentile)
+    return None
+
+
 async def _pre_selection(db, signal, regime_state) -> GateDecision:
     from app.services.trading.mode_manager import mode_manager
     from app.services.trading.strategy_orchestrator import strategy_orchestrator
@@ -302,6 +348,11 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
     halted, why = await mode_manager.kill_switch_state()
     if halted:
         return _no(Stage.RISK_GATE, ReasonCode.KILL_SWITCH, f"Kill switch active: {why}")
+
+    # 2a. evidence gates (docs/EVIDENCE_GATES.md)
+    refused = await _evidence_refusal(db, signal, p_)
+    if refused is not None:
+        return refused
 
     # 2b. entry blackout windows (lunch chop)
     now_t = _ist_time()

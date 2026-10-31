@@ -122,6 +122,19 @@ class TradingParams:
     # volatility axis did not predict the next 30 minutes' range
     # (docs/REGIME_REDESIGN.md). True restores the regime_rules map.
     regime_gating: bool = False
+    # Evidence gates in the risk gate (docs/EVIDENCE_GATES.md), since 31 Oct 2026.
+    # Strategies refused outright: SUPERTREND_EMA lost after costs in every
+    # variant, every exit engine and every year of 2023-26 (-0.147 R a trade
+    # over 2,450 trades, CI -0.176..-0.118). () = none.
+    evidence_blocked_strategies: tuple = ("SUPERTREND_EMA",)
+    # True: also refuse a strategy whose own closed paper trades in this run
+    # (since its RULE_SINCE date) are DISABLED_FOR_RESEARCH by the research gates
+    # (negative on >= 100 trades, or a CI wholly below 0). Checked once a day.
+    evidence_auto_block: bool = True
+    # Strategies whose entries are skipped while regime v2 reads LOW volatility.
+    # Only EMA_RSI_PULLBACK_15M improved in every year (-0.31 -> -0.29,
+    # -0.05 -> +0.07, -0.08 -> -0.08 R); the others got worse in some year.
+    low_vol_skip_strategies: tuple = ("EMA_RSI_PULLBACK_15M",)
     cooldown_mirror_ttl_s: int = 120
     params_cache_ttl_s: int = 30
     # Candles blocked as REGIME_TRANSITION after a regime flip; 0 = off.
@@ -323,6 +336,10 @@ class TradingParams:
         unknown = sorted(set(mh) - allowed)
         if unknown:
             v.append(f"max_hold_minutes has unknown strategy keys {unknown}")
+        for key in ("evidence_blocked_strategies", "low_vol_skip_strategies"):
+            bad = sorted(set(getattr(self, key)) - set(ALL_STRATEGY_NAMES))
+            if bad:
+                v.append(f"{key} has unknown strategies {bad}")
         for k, val in mh.items():
             if not (1 <= val <= MAX_HOLD_MINUTES_MAX):
                 v.append(f"max_hold_minutes[{k!r}]={val} must be in [1, {MAX_HOLD_MINUTES_MAX}]")

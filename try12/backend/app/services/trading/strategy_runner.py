@@ -678,6 +678,14 @@ class StrategyRunner:
                                    f"{type(_regime_err).__name__}: {_regime_err}")
             return True
 
+        # Regime v2 for the risk gate's low-volatility skip (gates nothing else)
+        try:
+            from app.services.trading.regime_v2 import classify_v2
+            strategy_orchestrator.set_regime_v2(underlying, classify_v2(candles, history))
+        except Exception as exc:
+            logger.debug("[%s] regime v2 unavailable: %s", underlying, exc)
+            strategy_orchestrator.set_regime_v2(underlying, None)
+
         # ── Observability only — isolated; cannot influence final_flags ───────
         if regime_state is not None:
             await self._persist_regime_state(underlying, regime_state)
