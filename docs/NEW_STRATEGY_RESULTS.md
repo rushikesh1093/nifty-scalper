@@ -97,3 +97,33 @@ Calmar 3.9, Sharpe(daily) 1.7, Sortino 4.5. Monte Carlo over 2,000 session order
 **Verdict: the most promising rule found so far, and still not proven.** It fails two gates
 narrowly. It is not added to live trading under the pre-registered rule. It is a
 candidate for a forward paper test.
+
+---
+
+# Round 3 results (1 Nov 2026): volatility-risk-premium filters on the iron fly
+
+Rules fixed in NEW_STRATEGY_PREREGISTRATION.md, round 3 (commit `d109266`), before this run.
+Run: `python -B research/protocol8_screen.py research/nifty_history.db research/live_options.db`
+(647 sessions with the 60-session trailing window). "Real" costs unless stated.
+
+| Rule | Fresh kept n | Fresh kept R (95 % CI) | Fresh skipped R | Seen kept R | Seen skipped R | Harsh kept R | Result |
+|---|---:|---|---:|---:|---:|---:|---|
+| IF0_VRP | 40 | +0.068 (-0.14..+0.27) | **+0.190** | +0.088 | **+0.177** | -0.086 | **fail**: the filter keeps the *worse* days in both periods |
+| IF0_QUIET | 47 | +0.123 (-0.07..+0.29) | +0.148 | +0.171 | +0.105 | -0.017 | **fail**: separates in one period only, CI includes 0 |
+| IF0_W300_VRP | 40 | +0.037 (-0.12..+0.18) | +0.139 | +0.068 | +0.152 | -0.033 | **fail**: same inversion as IF0_VRP |
+| NX_FLY_BOTH | 83 | -0.118 (-0.15..-0.09) | -0.170 | -0.145 | -0.159 | -0.493 | **fail**: non-expiry flies lose even on the best-filtered days |
+
+Unfiltered expiry fly on the same days: **fresh +0.135R, seen +0.139R**.
+
+## What was learned
+
+* **Do not filter the expiry fly on VIX vs realised volatility.** Days when VIX is high
+  against the last 10 sessions' realised moves were the *worse* fly days in both periods
+  (+0.07 / +0.09R kept vs +0.19 / +0.18R skipped). A likely reason: India VIX is a 30-day
+  measure, so a VIX that is high against recent calm is the market pricing a coming move,
+  not rich 0-DTE premium. The textbook VRP filter is the wrong instrument here.
+* A quiet opening range does not reliably pick better fly days.
+* Non-expiry intraday flies lose (about -0.15R) and no filter tested rescues them: the
+  edge is specific to expiry-day theta.
+* The unfiltered expiry fly is the same in both periods (+0.135 / +0.139R), which is the
+  most stable number in all of this research. Nothing is changed in the live fly.
