@@ -71,6 +71,13 @@ export function StrategyEvidencePanel() {
                               `${fmtR(row.stats.expectancy_r)} · months + ${row.months_positive}`
                             : `No trades yet${e.rule_since[key] ? ` since ${e.rule_since[key]}` : ""}`}
                       </span>
+                      {e.shadow?.[key] && (
+                        <span className="w-full font-mono text-micro text-text-3" title="What the refused signals would have made (spot-based, net of costs)">
+                          refused: {Object.entries(e.shadow[key])
+                            .map(([code, s]) => `${code.toLowerCase().replace(/_/g, " ")} ${s.n} × ${fmtR(s.mean_r_net)}`)
+                            .join(" · ")}
+                        </span>
+                      )}
                     </li>
                   );
                 })}

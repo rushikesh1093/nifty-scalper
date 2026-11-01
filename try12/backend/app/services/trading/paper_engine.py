@@ -1448,6 +1448,7 @@ class PaperEngine:
             skip_reason      = reason[:300] if reason else None,   # untruncated copy: no_trade_decisions
             no_trade_decision_id = no_trade_decision_id,
             run_id           = ctx().run_id,
+            exit_plan        = signal.exit_plan,
         )
         if selection is not None:
             sig.expiry_band = selection.expiry.band

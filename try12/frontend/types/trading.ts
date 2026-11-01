@@ -188,4 +188,6 @@ export interface StrategyEvidence {
     regime_gating:               boolean;
   };
   strategies: Record<string, StrategyEvidenceRow>;
+  /** What refused signals would have made: strategy → refusing rule → {n, mean net R}. */
+  shadow?: Record<string, Record<string, { n: number; mean_r_net: number }>>;
 }

@@ -192,6 +192,36 @@ async def quarantine_days(session_factory: Callable, days, out_dir: Path,
     return done
 
 
+async def archive_options(timeout_s: float = 3600.0) -> Optional[int]:
+    """Bring the option archive up to date (every recorded day not yet in it),
+    in a child process so the trading event loop is never blocked. Returns the
+    exit code, or None when disabled. Never raises: if it fails, the retention
+    backups still hold the ticks and the archive can read them later."""
+    path = settings.OPTION_ARCHIVE_PATH
+    if not path:
+        return None
+    import sys
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-B", "-m", "app.research.option_archive", "--out", path,
+           "--backups", settings.TICK_BACKUP_DIR]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        tail = out.decode(errors="replace").strip().splitlines()[-3:]
+        if proc.returncode == 0:
+            logger.info("Option archive updated (%s): %s", path, " | ".join(tail))
+        else:
+            logger.error("Option archive failed (exit %s): %s", proc.returncode, " | ".join(tail))
+            from app.core.alerts import alert
+            alert("option_archive", f"Option archive failed (exit {proc.returncode}); ticks are "
+                                    f"still in the retention backups", throttle_s=86400)
+        return proc.returncode
+    except Exception as exc:
+        logger.error("Option archive could not run: %s", exc)
+        return -1
+
+
 class TickRetention:
     """Daily scheduler around run_cleanup (wall clock: maintenance, not trading)."""
 
@@ -207,6 +237,7 @@ class TickRetention:
         from app.db.base import AsyncSessionLocal
         today = datetime.now(IST).date()
         self._last_run = today
+        await archive_options()                  # before anything can be deleted
         return await run_cleanup(AsyncSessionLocal, retention_days=settings.TICK_RETENTION_DAYS,
                                  backup_dir=Path(settings.TICK_BACKUP_DIR), today=today,
                                  low_disk_warn_gb=settings.LOW_DISK_WARN_GB)

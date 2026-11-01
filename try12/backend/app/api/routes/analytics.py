@@ -152,6 +152,26 @@ async def strategy_report(
     return out
 
 
+async def _shadow_summary(db: AsyncSession, run_id: str) -> dict:
+    """What refused signals would have made, per strategy and refusing rule
+    (app.services.trading.shadow_outcomes), since each strategy's rule date."""
+    from app.db.models.paper_trade import StrategySignal
+    from app.services.metrics.strategy_evidence import RULE_SINCE
+    from app.services.trading import shadow_outcomes as so
+    rows = (await db.execute(
+        select(StrategySignal.strategy_name, StrategySignal.signal_time, StrategySignal.skip_reason,
+               StrategySignal.shadow_r_net, NoTradeDecision.code)
+        .outerjoin(NoTradeDecision, NoTradeDecision.id == StrategySignal.no_trade_decision_id)
+        .where(StrategySignal.run_id == run_id, StrategySignal.shadow_r_net.is_not(None)))).all()
+    out = []
+    for name, t, reason, r, code in rows:
+        since = RULE_SINCE.get(name)
+        if since is not None and t is not None and t.date() < since:
+            continue
+        out.append({"strategy": name, "code": code or so.skip_code(reason), "r_net": r})
+    return so.summarize(out)
+
+
 @router.get("/strategy-evidence")
 async def strategy_evidence(run_id: str = Depends(run_id_query),
                             db: AsyncSession = Depends(get_db)):
@@ -174,7 +194,8 @@ async def strategy_evidence(run_id: str = Depends(run_id_query),
                       "low_vol_skip_strategies": list(p.low_vol_skip_strategies),
                       "max_option_buys_per_day": p.max_option_buys_per_day,
                       "regime_gating": p.regime_gating},
-           "strategies": _jsonable(se.evaluate(log))}
+           "strategies": _jsonable(se.evaluate(log)),
+           "shadow": await _shadow_summary(db, run_id)}
     if not log:
         out["empty_reason"] = EMPTY_REASON
     return out

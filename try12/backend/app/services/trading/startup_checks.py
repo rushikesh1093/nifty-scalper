@@ -283,6 +283,28 @@ def check_min_rr_single_source() -> list[str]:
     return v
 
 
+# The newest migration (migrations/versions). The code reads columns up to it, so a
+# database behind it would fail on its first insert (tests/test_startup_paper_checks
+# keeps this in step with the migration files).
+SCHEMA_HEAD = "0017"
+
+
+async def check_schema_revision(session_factory) -> list[str]:
+    """The database's alembic revision must be at SCHEMA_HEAD. A database with
+    no alembic_version table (tests, replay stores built with create_all) is not
+    checked. Read-only."""
+    from sqlalchemy import text
+    try:
+        async with session_factory() as db:
+            version = (await db.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+    except Exception:
+        return []
+    if version is not None and str(version) < SCHEMA_HEAD:
+        return [f"database schema is at migration {version}, the code needs {SCHEMA_HEAD}: "
+                f"run `python -m alembic upgrade head` in try12/backend, then start again"]
+    return []
+
+
 async def run_startup_checks(*, require_config_row: bool) -> None:
     """Run every implemented startup check against the bound ctx(); raise
     StartupAssertionError listing every violation. Never swallows.
@@ -315,6 +337,11 @@ async def run_startup_checks(*, require_config_row: bool) -> None:
     for v in rr_v:
         logger.error("Startup check: %s", v)
     violations += rr_v
+    # 8. the database schema is at the code's migration head
+    schema_v = await check_schema_revision(ctx().sessions)
+    for v in schema_v:
+        logger.critical("Startup check: %s", v)
+    violations += schema_v
     # operator line for check 6: which trading_config fields, and how to preview the fix
     if params_v:
         fix = param_fix_line(params_v)

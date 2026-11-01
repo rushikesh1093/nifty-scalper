@@ -372,11 +372,15 @@ async def daily_stats():
 # ── Expiry-day iron fly (separate paper book) ─────────────────────────────────
 
 @router.get("/iron-fly")
-async def iron_fly_book():
-    """The expiry-day iron fly paper book: today's spread with live mark-to-market,
-    recent history and a summary (app.services.trading.iron_fly)."""
-    from app.services.trading.iron_fly import iron_fly_paper
-    return await iron_fly_paper.snapshot()
+async def iron_fly_book(wing: int = Query(200, description="200 (the live rules) or 300")):
+    """An expiry-day iron fly paper book: today's spread with live mark-to-market,
+    recent history and a summary (app.services.trading.iron_fly). ``wing=300`` is
+    the 300-point-wing book run alongside for forward evidence."""
+    from app.services.trading.iron_fly import IRON_FLY_BOOKS
+    book = IRON_FLY_BOOKS.get(wing)
+    if book is None:
+        raise HTTPException(status_code=400, detail=f"wing must be one of {sorted(IRON_FLY_BOOKS)}")
+    return await book.snapshot()
 
 
 # ── Signals ───────────────────────────────────────────────────────────────────

@@ -172,3 +172,18 @@ Next 14.2.35 → 16.4.3 with React 19.3.1 (15.5.28 still failed `npm audit` via 
 postcss); async `params` on the run page, ESLint 9 flat config replacing `next lint`, nav bar
 scrolls in its own strip at 375 px. `npm audit --omit=dev`: 0 vulnerabilities. Details in
 FRONTEND_AUDIT.md, Security.
+
+## Data and evidence pipeline (1 Nov 2026)
+
+Details: [DATA_AND_EVIDENCE_PIPELINE.md](DATA_AND_EVIDENCE_PIPELINE.md).
+* `tick_retention.archive_options`: the option archive runs in a child process before every
+  retention pass (`OPTION_ARCHIVE_PATH`, default `backups/options_archive.db`).
+* Shadow outcomes: migration **0017** adds `strategy_signals.exit_plan`, `shadow_r_net`,
+  `shadow_exit` and `shadow_hold_min`. `shadow_outcomes.evaluate_day` runs at 15:35 IST from the
+  runner's EOD loop. `/analytics/strategy-evidence` returns `shadow`, and the Strategy evidence
+  panel shows it.
+* Iron fly: `IronFlyPaper(strategy, wing)`; a 300-point-wing book `EXPIRY_IRON_FLY_W300` runs
+  beside the 200 one; `/trading/iron-fly?wing=300`.
+* Startup check 8: the database must be at `SCHEMA_HEAD` (0017); otherwise startup stops with
+  `python -m alembic upgrade head`.
+* Tests: `tests/test_data_and_shadow.py`.
