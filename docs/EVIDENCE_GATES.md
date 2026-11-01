@@ -29,6 +29,7 @@ switches it off.
 | SUPERTREND_EMA | 1-min Supertrend flip + EMA 5/13 cross | 8-pt premium target, Supertrend trail, 10 min | **blocked** | Reliably negative |
 | EMA_RSI_PULLBACK_15M | 15-min EMA 9/21 trend, RSI pullback, close back across EMA 9 | **5-min Supertrend(10, 3) trail + flip**, to 15:15 | **skips LOW volatility**; paper auto-block | Better every year after both changes; Y1 still lost |
 | PIVOT_BOUNCE | 3-min rejection down from PP / R1 (**puts only**) | Stop 15 pts beyond the level, target next pivot, 14:45 | paper auto-block | Positive raw signal, wide CI; unproven |
+| CPR_VWAP (added 1 Nov) | Yesterday's CPR narrow (< 0.20 % of P); 5-min close below the CPR and below session VWAP, 09:30-13:00 (**puts only**) | Stop at the top of the CPR; **5-min Supertrend(10, 3) trail + flip**, to 15:15; one a day | paper auto-block | Paper forward test: puts +0.10 / +0.08 / +0.25 R by year, +0.16R overall after costs, PF 1.44; fails the CI and months gates narrowly, put side chosen after seeing the split |
 | EXPIRY_IRON_FLY (separate book) | Expiry day 09:30: sell ATM CE + PE, buy ± 200 wings | 15:00 | its own go/no-go rules (FINDINGS §12) | The only idea positive in both old and fresh years |
 | Regime | v1 detected but **not gating** (`regime_gating=False`); v2 computed each candle | — | detector failure and the expiry-day policy still block | REGIME_REDESIGN.md |
 

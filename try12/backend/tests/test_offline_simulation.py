@@ -23,7 +23,7 @@ from app.services.trading.strategy_orchestrator import strategy_orchestrator
 from app.services.trading.strategy_runner import strategy_runner
 from app.strategies.base import Direction, SignalBus
 from app.strategies.indicators import compute_all
-from app.runtime.context import ctx, trading_day, using
+from app.runtime.context import ctx, params, trading_day, using
 from tests.helpers import (
     fake_candidate, make_signal, pin_ist_time, run, seed_config, stub_select, with_cfg,
 )
@@ -95,7 +95,10 @@ def test_offline_signal_to_closed_position(runtime_ctx, sqlite_db, fake_redis, m
     assert run(_n_states()) == len(regimes)
 
     # ── 2. Signal → SignalBus → PaperEngine → PaperPosition ──────────────────
-    strategy = sorted(rule.enabled_strategies)[0]
+    # one the direction and evidence policies leave free to trade either way
+    policy = params()
+    strategy = sorted(set(rule.enabled_strategies) - set(policy.pe_only_strategies)
+                      - set(policy.evidence_blocked_strategies))[0]
     direction = Direction.BUY if "BUY" in rule.allowed_directions else Direction.SELL
     cand = fake_candidate(ltp=12.0, lot_size=65)   # cheap enough for any regime multiplier
 

@@ -4,7 +4,9 @@ The four candidates pre-registered in docs/NEW_STRATEGY_PREREGISTRATION.md.
 They are written exactly like the live strategies (subclasses of the live
 _PlanStrategy, signals with an ExitPlan, bar exits in ``candle_exit``) so a
 candidate that passes can move into app/strategies/strategies.py unchanged.
-Until then nothing here is registered in build_strategies.
+Until then nothing here is registered in build_strategies. CPR_VWAP (puts
+only) and the shared once-a-day / 5-min trail bases have moved there, as a
+paper forward test (docs/SYSTEM_EDGE_SCORECARD.md).
 
 Common trail (VOL_SQUEEZE_BREAKOUT, TREND_DAY_CONTINUATION): after each
 completed 5-min bar, once the 5-min Supertrend(10, 3) points the trade's way
@@ -27,60 +29,11 @@ from app.services.trading import exit_plan as xp
 from app.services.trading.exit_plan import ExitPlan
 from app.strategies.base import Direction
 from app.strategies.indicators import atr, ema, resample, supertrend
-from app.strategies.strategies import _PlanStrategy, _in_windows, _new_bars, _session_vwap_at, _t
-
-SIDES = (("BUY", 1, Direction.BUY), ("SELL", -1, Direction.SELL))
-
-
-def _arr(bars, key):
-    return np.array([b[key] for b in bars], dtype=float)
+from app.strategies.strategies import (  # noqa: F401  CPRVWAP: re-exported for the research CLI
+    SIDES, CPRVWAP, _OncePerDay, _PlanStrategy, _Trail5, _arr, _in_windows, _new_bars, _session_vwap_at, _t,
+)
 
 
-class _OncePerDay(_PlanStrategy):
-    BAR_MINUTES = 5
-    sl_pct = 0.35                 # premium hard stop; the spot plan stop normally comes first
-    target_pct = 0.70
-
-    def __init__(self, underlying: str = "NIFTY"):
-        super().__init__(underlying)
-        self._traded_day = None
-
-    def on_position_opened(self, signal) -> None:
-        self._traded_day = trading_day()
-
-    def restore_day(self, positions: list) -> None:
-        super().restore_day(positions)
-        self._traded_day = trading_day() if positions else None
-
-    def _ready(self, candles) -> Optional[list[dict]]:
-        bars = self._bars(candles)
-        if not bars or not self._new_bar(bars) or self.open_positions \
-                or self._traded_day == trading_day():
-            return None
-        return bars
-
-
-class _Trail5(_OncePerDay):
-    ST_PERIOD, ST_MULT = 10, 3.0
-
-    def candle_exit(self, plan, candles, indicators) -> Optional[str]:
-        bars = self._bars(candles)
-        if len(bars) < self.ST_PERIOD + 5:
-            return None
-        new = _new_bars(plan, bars)
-        if not new:
-            return None
-        st = supertrend(_arr(bars, "high"), _arr(bars, "low"), _arr(bars, "close"),
-                        self.ST_PERIOD, self.ST_MULT)
-        for i in new:
-            if np.isnan(st.supertrend[i]):
-                continue
-            if int(st.direction[i]) == plan.sign:
-                plan.breakeven_done = True                 # trail armed
-                xp.tighten_stop(plan, round(float(st.supertrend[i]), 2))
-            elif plan.breakeven_done:
-                return xp.ST_FLIP
-        return None
 
 
 class VolSqueezeBreakout(_Trail5):
@@ -286,51 +239,4 @@ class BollingerSqueezeBreakout(_Trail5):
                 return self._plan_signal(direction, c, indicators,
                                          f"Bollinger squeeze breakout {side}, close {c:.1f}, "
                                          f"band {lo:.1f}-{up:.1f}", plan)
-        return None
-
-
-class CPRVWAP(_Trail5):
-    name = "CPR_VWAP"
-    MAX_WIDTH_PCT = 0.20
-    WINDOW = (dtime(9, 30), dtime(13, 0))
-    NEEDS_PREV_SESSION = True
-
-    def __init__(self, underlying: str = "NIFTY"):
-        super().__init__(underlying)
-        self._levels_day, self._prev = None, None
-
-    def set_prev_session(self, for_day, levels, reason: Optional[str] = None) -> None:
-        self._levels_day, self._prev = for_day, levels
-
-    def prev_session_problem(self) -> Optional[str]:
-        if self._levels_day != trading_day() or self._prev is None:
-            return "previous-session levels not resolved for today"
-        return None
-
-    async def evaluate(self, candles, indicators):
-        bars = resample(candles, 5)                        # today only
-        if len(bars) < 3 or not self._new_bar(bars) or self.open_positions \
-                or self._traded_day == trading_day() or self.prev_session_problem():
-            return None
-        last = bars[-1]
-        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
-            return None
-        h, l, c0 = float(self._prev.high), float(self._prev.low), float(self._prev.close)
-        p = (h + l + c0) / 3
-        bc = (h + l) / 2
-        tc = 2 * p - bc
-        top, bottom = max(tc, bc), min(tc, bc)
-        if (top - bottom) / p * 100 >= self.MAX_WIDTH_PCT:
-            return None
-        vw = _session_vwap_at(candles).get(last["end"])
-        if vw is None:
-            return None
-        c = last["close"]
-        for side, sgn, direction in SIDES:
-            level, stop = (top, bottom) if sgn > 0 else (bottom, top)
-            if sgn * (c - level) > 0 and sgn * (c - vw) > 0:
-                plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2))
-                return self._plan_signal(direction, c, indicators,
-                                         f"narrow CPR {bottom:.1f}-{top:.1f} broken {side} with VWAP "
-                                         f"{vw:.1f}, close {c:.1f}", plan)
         return None

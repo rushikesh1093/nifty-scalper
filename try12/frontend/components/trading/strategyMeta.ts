@@ -6,4 +6,5 @@ export const STRATEGY_META = [
   { key: "EMA_RSI_PULLBACK_15M",  label: "15m EMA + RSI Pullback", edge: "15m EMA 9/21 trend, RSI 40-50 dip" },
   { key: "PIVOT_BOUNCE",          label: "Pivot Point Bounce",     edge: "3m bounce at PP / R1 / S1" },
   { key: "MOMENTUM_BURST",        label: "5m Momentum Burst",      edge: "3 strong candles, EMA 20, ATR > 15" },
+  { key: "CPR_VWAP",              label: "Narrow CPR + VWAP",      edge: "5m break of a narrow CPR with VWAP, puts" },
 ];

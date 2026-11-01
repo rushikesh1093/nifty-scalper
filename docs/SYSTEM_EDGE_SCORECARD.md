@@ -41,10 +41,10 @@ expiry day.
 | FIRST_CANDLE_BREAKOUT (puts) | Keep on paper | Less bad every year with the chandelier exit; unproven |
 | EMA_RSI_PULLBACK_15M | Keep on paper, low-vol skip | Improved every year after both changes; Y1 still negative |
 | SUPERTREND_EMA | **Cut** (already blocked) | -0.147R over 2,450 trades, CI wholly below zero |
-| CPR_VWAP, puts only | **Candidate to add** as a paper-only forward test | +0.16R, PF 1.44, positive in all three years (+0.10 / +0.08 / +0.25R); fails the CI and months gates narrowly, and the put split was chosen after seeing the data |
+| CPR_VWAP, puts only | **Added 1 Nov as a paper forward test** (puts only, evidence record from 2 Nov) | +0.16R, PF 1.44, positive in all three years (+0.10 / +0.08 / +0.25R); fails the CI and months gates narrowly, and the put split was chosen after seeing the data |
 | VRP / quiet-open filters on the fly | **Not added** | Round 3: VRP filter keeps the worse days in both periods |
 
-### CPR_VWAP puts: the rule, if added
+### CPR_VWAP puts: the rule as it now runs on paper
 
 * **Setup:** previous session's CPR: P = (H+L+C)/3, BC = (H+L)/2, TC = 2P - BC. Trade only
   when the CPR is narrow, |TC - BC| < 0.20 % of P (a narrow CPR marks a coiled market).
@@ -66,8 +66,8 @@ expiry day.
 3. **Stop adding directional option-buying rules.** The marginal one has a very low prior
    after 26 failures. If a directional idea is tested, test it as a defined-risk credit
    spread, where time decay works for it.
-4. **Forward-test CPR_VWAP puts on paper** (above), judged by the existing paper evidence
-   gates, not by the backtest.
+4. **CPR_VWAP puts is now forward-testing on paper** (above), judged by the existing paper
+   evidence gates (`/api/v1/analytics/strategy-evidence`), not by the backtest.
 5. **Next pre-registered fly study, on new data only:** fly management (take profit at 50 %
    of credit vs hold to 15:00, and a 14:30 exit). Do not run it on the 2023-26 data, which
    has now been searched for fly variants three times.

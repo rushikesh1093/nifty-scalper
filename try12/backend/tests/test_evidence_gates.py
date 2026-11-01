@@ -89,8 +89,8 @@ def _refusal_dir(sqlite_db, rc, strategy, direction, **params):
 
 def test_puts_only_refuses_calls_for_the_listed_strategies(runtime_ctx, sqlite_db):
     assert TradingParams().pe_only_strategies == ("ORB_BREAKOUT", "PIVOT_BOUNCE",
-                                                  "FIRST_CANDLE_BREAKOUT")
-    for name in ("ORB_BREAKOUT", "PIVOT_BOUNCE", "FIRST_CANDLE_BREAKOUT"):
+                                                  "FIRST_CANDLE_BREAKOUT", "CPR_VWAP")
+    for name in ("ORB_BREAKOUT", "PIVOT_BOUNCE", "FIRST_CANDLE_BREAKOUT", "CPR_VWAP"):
         d = _refusal_dir(sqlite_db, runtime_ctx, name, Direction.BUY)
         assert d is not None and d.code == ReasonCode.DIRECTION_POLICY
         assert _refusal_dir(sqlite_db, runtime_ctx, name, Direction.SELL) is None

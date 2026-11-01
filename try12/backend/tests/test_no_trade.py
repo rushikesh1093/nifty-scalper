@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from tests.helpers import IST, make_signal, run, seed_config
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
-N_STRATEGIES = 7                       # app.strategies.names.ALL_STRATEGY_NAMES
+N_STRATEGIES = 8                       # app.strategies.names.ALL_STRATEGY_NAMES
 NO_TRADE = APP / "services" / "trading" / "no_trade.py"
 
 SECTION12 = {

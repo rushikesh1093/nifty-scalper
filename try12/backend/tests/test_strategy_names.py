@@ -23,7 +23,7 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 # The expected set is written out here on purpose rather than imported, so the
 # test cannot pass by both sides reading the same wrong source.
 CANONICAL = {"VWAP_EMA_PULLBACK", "ORB_BREAKOUT", "SUPERTREND_EMA", "FIRST_CANDLE_BREAKOUT",
-             "EMA_RSI_PULLBACK_15M", "PIVOT_BOUNCE", "MOMENTUM_BURST"}
+             "EMA_RSI_PULLBACK_15M", "PIVOT_BOUNCE", "MOMENTUM_BURST", "CPR_VWAP"}
 PHANTOM = re.compile(r"\b(PCR_SIGNAL|GAP_FILL)\b")
 
 
@@ -49,7 +49,7 @@ def test_orchestrator_universe_equals_the_canonical_names():
 def test_strategy_name_enum_matches_canonical():
     from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
     assert set(ALL_STRATEGY_NAMES) == CANONICAL
-    assert len(ALL_STRATEGY_NAMES) == 7
+    assert len(ALL_STRATEGY_NAMES) == 8
     assert {m.value for m in StrategyName} == CANONICAL
 
 

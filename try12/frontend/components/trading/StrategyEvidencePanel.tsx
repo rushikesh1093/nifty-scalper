@@ -15,8 +15,9 @@ const STATUS: Record<EvidenceStatus, { label: string; intent: BadgeIntent }> = {
   DISABLED_FOR_RESEARCH: { label: "Auto-blocked",          intent: "negative" },
 };
 
-// The five strategies the engine runs (MOMENTUM_BURST / VWAP_EMA_PULLBACK are flag-disabled).
-const SHOWN = ["FIRST_CANDLE_BREAKOUT", "ORB_BREAKOUT", "EMA_RSI_PULLBACK_15M", "PIVOT_BOUNCE", "SUPERTREND_EMA"];
+// The six strategies the engine runs (MOMENTUM_BURST / VWAP_EMA_PULLBACK are flag-disabled).
+const SHOWN = ["FIRST_CANDLE_BREAKOUT", "ORB_BREAKOUT", "EMA_RSI_PULLBACK_15M", "PIVOT_BOUNCE", "CPR_VWAP",
+  "SUPERTREND_EMA"];
 
 function label(key: string) {
   return STRATEGY_META.find((m) => m.key === key)?.label ?? key;
