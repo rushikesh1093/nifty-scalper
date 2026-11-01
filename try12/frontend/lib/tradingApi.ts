@@ -1,7 +1,7 @@
 import { ApiError, http } from "@/lib/http";
 import type {
   Signal, Position, DailyStats, PnLHistory,
-  OptionCandidate, TradingConfig, CapitalSummary, TradePreviewRow,
+  OptionCandidate, TradingConfig, CapitalSummary, TradePreviewRow, StrategyEvidence,
 } from "@/types/trading";
 import type { SignalDiagnostics } from "@/types/diagnostics";
 import type { DailySnapshot, IntradayFeature } from "@/types/study";
@@ -16,6 +16,7 @@ export const getConfig        = ()         => api.get<TradingConfig>("/trading/c
 export const updateConfig     = (d:Partial<TradingConfig>) => api.put("/trading/config",d).then(r=>r.data);
 export const setStrategyFlag  = (n:string,e:boolean) => api.put("/trading/config/strategy-flag",{strategy_name:n,enabled:e}).then(r=>r.data);
 export const getDailyStats    = ()         => api.get<DailyStats>("/trading/stats").then(r=>r.data);
+export const getStrategyEvidence = () => api.get<StrategyEvidence>("/analytics/strategy-evidence").then(r=>r.data);
 
 // ── Capital ────────────────────────────────────────────────────────────────
 export const getCapital = () =>

@@ -1,3 +1,4 @@
+import pytest
 """Bug 7 (design §9.2, R8): the daily trade count is derived from persisted
 positions, so a restart cannot reset it and a rejected entry consumes no slot."""
 from datetime import time as dtime, timedelta
@@ -104,6 +105,7 @@ def test_pre_market_setup_neither_resets_the_count_nor_reconciles(runtime_ctx, s
     assert calls == []
 
 
+@pytest.mark.usefixtures("no_evidence_gates")   # 5 seeded trades exceed the daily option-buy cap of 2
 def test_rejected_entry_consumes_no_slot(runtime_ctx, sqlite_db, monkeypatch):
     """A signal refused after the gate (no option) and one refused in the entry
     section (capital race) leave the derived count where it was (R8.6)."""

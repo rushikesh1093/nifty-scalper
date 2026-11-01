@@ -71,7 +71,7 @@ def test_migration_chain_0010_to_0013():
         assert callable(mod.upgrade) and callable(mod.downgrade)
         prev = rev
     heads = sorted(p.name for p in VERSIONS.glob("*.py"))
-    assert heads[-1] == "0016_trade_log_fields.py"
+    assert heads[-1] == "0017_signal_shadow_outcomes.py"
 
 
 def test_migration_0014_adds_the_exit_plan_column():
@@ -97,6 +97,15 @@ def test_migration_0016_adds_the_trade_log_columns():
     from app.db.models.paper_trade import PaperPosition
     for name in ("spot_entry", "spot_exit", "delta_at_entry", "iv_entry", "iv_exit"):
         assert PaperPosition.__table__.c[name].nullable is True
+
+
+def test_migration_0017_adds_the_signal_shadow_columns():
+    mod = _load("0017_signal_shadow_outcomes.py")
+    assert (mod.revision, mod.down_revision) == ("0017", "0016")
+    assert callable(mod.upgrade) and callable(mod.downgrade)
+    from app.db.models.paper_trade import StrategySignal
+    for name in ("exit_plan", "shadow_r_net", "shadow_exit", "shadow_hold_min"):
+        assert StrategySignal.__table__.c[name].nullable is True
 
 
 def test_exit_plan_round_trips(sqlite_db):

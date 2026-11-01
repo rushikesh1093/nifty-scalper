@@ -372,11 +372,15 @@ async def daily_stats():
 # ── Expiry-day iron fly (separate paper book) ─────────────────────────────────
 
 @router.get("/iron-fly")
-async def iron_fly_book():
-    """The expiry-day iron fly paper book: today's spread with live mark-to-market,
-    recent history and a summary (app.services.trading.iron_fly)."""
-    from app.services.trading.iron_fly import iron_fly_paper
-    return await iron_fly_paper.snapshot()
+async def iron_fly_book(wing: int = Query(200, description="200 (the live rules) or 300")):
+    """An expiry-day iron fly paper book: today's spread with live mark-to-market,
+    recent history and a summary (app.services.trading.iron_fly). ``wing=300`` is
+    the 300-point-wing book run alongside for forward evidence."""
+    from app.services.trading.iron_fly import IRON_FLY_BOOKS
+    book = IRON_FLY_BOOKS.get(wing)
+    if book is None:
+        raise HTTPException(status_code=400, detail=f"wing must be one of {sorted(IRON_FLY_BOOKS)}")
+    return await book.snapshot()
 
 
 # ── Signals ───────────────────────────────────────────────────────────────────
@@ -602,6 +606,7 @@ async def get_signal_diagnostics():
             "candles_required": _sr.MIN_TODAY_CANDLES,
             "atr": None, "atr_min": _sr.ATR_MIN_NIFTY if u == "NIFTY" else _sr.ATR_MIN_BANKNIFTY,
             "last_candle_at": None, "regime": None, "regime_allows_trading": None,
+            "regime_gating": None,
         }
         extra: dict = {}
         all_c = None
@@ -641,7 +646,9 @@ async def get_signal_diagnostics():
                 raw = await redis_cache._r().get(f"regime:{u}:current")
                 if raw:
                     info["regime"] = json.loads(raw).get("regime")
-                    info["regime_allows_trading"] = bool(get_regime_rule(info["regime"]).enabled_strategies)
+                    from app.services.trading.strategy_orchestrator import regime_permits_trading
+                    info["regime_allows_trading"] = regime_permits_trading(info["regime"])
+            info["regime_gating"] = _params().regime_gating
             extra["in_cooldown"] = bool(strategy_orchestrator.is_in_cooldown(u))
         except Exception as exc:
             _probe_failed(f"REGIME_PROBE_{u}", exc)

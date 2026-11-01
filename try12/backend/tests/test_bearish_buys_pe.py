@@ -1,3 +1,4 @@
+import pytest
 """The long-premium invariant (design R1, blockers-plan item 4): a bearish (SELL)
 signal BUYS a PE, a bullish (BUY) signal BUYS a CE, and the engine never sells
 or shorts an option. Driven end to end through paper_engine.handle_signal over
@@ -64,6 +65,7 @@ def test_a_bearish_signal_buys_a_pe_and_never_sells_or_shorts_a_ce(
     assert not [p for p in positions if p.option_type == "CE"]
 
 
+@pytest.mark.usefixtures("no_evidence_gates")   # ORB is puts-only by default; this checks CE mapping
 def test_a_bullish_signal_buys_a_ce(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     ok, positions = _open(runtime_ctx, sqlite_db, fake_redis, monkeypatch,
                           Direction.BUY, "ORB_BREAKOUT")

@@ -73,6 +73,7 @@ def _entries_into_transition(regimes):
     return sum(1 for i, r in enumerate(regimes) if r == T and (i == 0 or regimes[i - 1] != T))
 
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_unknown_then_bull_settles(monkeypatch):
     """Readiness-report repro: UNCLASSIFIED x3 then BULL x21 (old code looped T x3 / B x1)."""
     regimes, active = _replay(monkeypatch, [U] * 3 + [B] * 21)
@@ -128,6 +129,7 @@ def test_with_the_cooldown_off_a_flip_is_adopted_on_its_bar(monkeypatch, script,
     assert regimes == expected and T not in regimes
 
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_the_cooldown_is_off_by_default(monkeypatch):
     from app.core.trading_params import TradingParams
     from app.runtime.context import ctx, using

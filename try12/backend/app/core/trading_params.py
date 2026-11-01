@@ -112,6 +112,39 @@ class TradingParams:
     kelly_min_trades: int = 100
 
     # ── caches / regime ──────────────────────────────────────────────────────
+    # False (since 31 Oct 2026): the regime runs in SHADOW: it is detected,
+    # logged and persisted every candle, but its map no longer enables or
+    # disables strategies, restricts directions or scales size; the user's
+    # strategy flags decide. A detector failure (DETECTOR_ERROR / no state)
+    # still blocks, as broken data must. Reason: on three years of NIFTY the
+    # map did not separate better from worse trades for any strategy (it
+    # blocked the better 09:15-breakout trades in every year) and its
+    # volatility axis did not predict the next 30 minutes' range
+    # (docs/REGIME_REDESIGN.md). True restores the regime_rules map.
+    regime_gating: bool = False
+    # Evidence gates in the risk gate (docs/EVIDENCE_GATES.md), since 31 Oct 2026.
+    # Strategies refused outright: SUPERTREND_EMA lost after costs in every
+    # variant, every exit engine and every year of 2023-26 (-0.147 R a trade
+    # over 2,450 trades, CI -0.176..-0.118). () = none.
+    evidence_blocked_strategies: tuple = ("SUPERTREND_EMA",)
+    # True: also refuse a strategy whose own closed paper trades in this run
+    # (since its RULE_SINCE date) are DISABLED_FOR_RESEARCH by the research gates
+    # (negative on >= 100 trades, or a CI wholly below 0). Checked once a day.
+    evidence_auto_block: bool = True
+    # Strategies whose entries are skipped while regime v2 reads LOW volatility.
+    # Only EMA_RSI_PULLBACK_15M improved in every year (-0.31 -> -0.29,
+    # -0.05 -> +0.07, -0.08 -> -0.08 R); the others got worse in some year.
+    low_vol_skip_strategies: tuple = ("EMA_RSI_PULLBACK_15M",)
+    # Puts only (call signals refused, recorded as DIRECTION_POLICY). Bought calls
+    # lost in 14 of 15 strategy-years 2023-26 (IV falls as NIFTY rallies); puts
+    # did better in most, and every year for PIVOT_BOUNCE. ORB calls: -0.17 /
+    # -0.20 / -0.21 R. A forward hypothesis (found in the same data): judge it
+    # on paper evidence. () = both directions.
+    pe_only_strategies: tuple = ("ORB_BREAKOUT", "PIVOT_BOUNCE", "FIRST_CANDLE_BREAKOUT")
+    # Option-buying trades a day, on top of the operator's max_trades_per_day
+    # (the lower applies). Fewer, larger trades: the fixed ~2.6-pt round-trip
+    # cost is paid per trade. 0 = no extra cap.
+    max_option_buys_per_day: int = 2
     cooldown_mirror_ttl_s: int = 120
     params_cache_ttl_s: int = 30
     # Candles blocked as REGIME_TRANSITION after a regime flip; 0 = off.
@@ -135,10 +168,13 @@ class TradingParams:
     regime_breakout_hold_minutes: int = 0    # keep a breakout label this long...
     regime_breakout_fail_pts: float = 10.0   # ...unless price is back this far inside
     regime_confirm_evals: int = 1            # evaluations a new label must persist
-    # ATR values the ATR percentile ranks against (regime_indicators). 20 is the
-    # original rank (5% steps); 375 = one session. The runner reads the last 500
-    # one-minute candles and ATR(14) needs 14 of them, so 486 is the most.
-    regime_atr_pct_lookback: int = 20
+    # ATR values the ATR percentile ranks against (regime_indicators). 375 = one
+    # session. The runner reads the last 500 one-minute candles and ATR(14)
+    # needs 14 of them, so 486 is the most. 486 since 31 Oct 2026: against the
+    # last 20 minutes (the old 20) the percentile had no relation to the next
+    # 30 minutes' range (Spearman -0.02 / -0.01 / +0.01 by year, 2023-26); against
+    # 486 it does every year (+0.35 / +0.37 / +0.24; HIGH ~68 pts vs LOW ~44 pts).
+    regime_atr_pct_lookback: int = 486
     # True: a minute the classifier leaves UNCLASSIFIED with ADX below
     # ADX_RANGE_THRESHOLD and fewer VWAP crosses than the chop threshold is
     # RANGE_BOUND (the range strategies), whatever the ATR percentile.
@@ -310,6 +346,12 @@ class TradingParams:
         unknown = sorted(set(mh) - allowed)
         if unknown:
             v.append(f"max_hold_minutes has unknown strategy keys {unknown}")
+        if not (0 <= self.max_option_buys_per_day <= 50):
+            v.append(f"max_option_buys_per_day={self.max_option_buys_per_day} must be in [0, 50]")
+        for key in ("evidence_blocked_strategies", "low_vol_skip_strategies", "pe_only_strategies"):
+            bad = sorted(set(getattr(self, key)) - set(ALL_STRATEGY_NAMES))
+            if bad:
+                v.append(f"{key} has unknown strategies {bad}")
         for k, val in mh.items():
             if not (1 <= val <= MAX_HOLD_MINUTES_MAX):
                 v.append(f"max_hold_minutes[{k!r}]={val} must be in [1, {MAX_HOLD_MINUTES_MAX}]")

@@ -79,6 +79,12 @@ class StrategySignal(Base):
     score_breakdown      = Column(JSON,        nullable=True)
     no_trade_decision_id = Column(BigInteger,  nullable=True)   # → no_trade_decisions.id
 
+    # ── migration 0017: the exit plan and, for SKIPPED signals, its shadow outcome ──
+    exit_plan            = Column(JSON,        nullable=True)
+    shadow_r_net         = Column(Float,       nullable=True)   # net R the plan would have made
+    shadow_exit          = Column(String(20),  nullable=True)   # its exit reason, or NO_FILL
+    shadow_hold_min      = Column(Float,       nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

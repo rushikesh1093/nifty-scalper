@@ -15,7 +15,7 @@ from typing import Optional
 
 from app.strategies.strategies import build_strategies
 from app.strategies.indicators import compute_all
-from app.runtime.context import ctx, market, now_ist, sessions, trading_day
+from app.runtime.context import ctx, market, now_ist, params, sessions, trading_day
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.mode_manager import mode_manager
 from app.core.config import settings
@@ -678,6 +678,14 @@ class StrategyRunner:
                                    f"{type(_regime_err).__name__}: {_regime_err}")
             return True
 
+        # Regime v2 for the risk gate's low-volatility skip (gates nothing else)
+        try:
+            from app.services.trading.regime_v2 import classify_v2
+            strategy_orchestrator.set_regime_v2(underlying, classify_v2(candles, history))
+        except Exception as exc:
+            logger.debug("[%s] regime v2 unavailable: %s", underlying, exc)
+            strategy_orchestrator.set_regime_v2(underlying, None)
+
         # ── Observability only — isolated; cannot influence final_flags ───────
         if regime_state is not None:
             await self._persist_regime_state(underlying, regime_state)
@@ -793,6 +801,9 @@ class StrategyRunner:
         a DEGRADATION row when that regime is the detector's error fallback.
         Returns True when the candle is structurally ineligible."""
         regime = regime_state.regime
+        from app.services.trading.strategy_orchestrator import ENFORCED_REGIMES
+        if not params().regime_gating and regime not in ENFORCED_REGIMES:
+            return False                 # shadow mode: only a detector error / expiry policy blocks
         rule = get_regime_rule(regime, regime_state.indicators.atr_percentile)
         if rule.enabled_strategies:
             return False
@@ -877,6 +888,12 @@ class StrategyRunner:
                     await self._eod_square_off()
                     self._eod_done_date = ist.date()
 
+                # 15:35 IST: shadow outcomes of today's refused signals
+                if (ist.weekday() < 5 and (ist_h, ist_m) >= (15, 35)
+                        and getattr(self, "_shadow_done_date", None) != ist.date()):
+                    self._shadow_done_date = ist.date()
+                    await self._shadow_outcomes(ist.date())
+
                 # 9:00 IST pre-market setup
                 if ist_h == 9 and ist_m == 0:
                     await self._pre_market_setup()
@@ -889,6 +906,17 @@ class StrategyRunner:
             except Exception as e:
                 logger.error("EOD monitor error: %s", e, exc_info=True)
                 await asyncio.sleep(30)
+
+    async def _shadow_outcomes(self, day) -> None:
+        """What today's refused NIFTY signals would have made (shadow_outcomes).
+        Observability only: it never opens, closes or sizes anything."""
+        try:
+            from app.services.trading import shadow_outcomes
+            candles = await market().get_candles(settings.NIFTY_TOKEN, "ONE_MINUTE", 500)
+            async with sessions()() as db:
+                await shadow_outcomes.evaluate_day(db, ctx().run_id, day, candles or [])
+        except Exception as exc:
+            logger.error("Shadow outcomes failed for %s: %s", day, exc, exc_info=True)
 
     async def _eod_square_off(self):
         """

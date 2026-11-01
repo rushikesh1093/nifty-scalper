@@ -144,6 +144,7 @@ def test_absent_regime_flag_means_disabled(monkeypatch):
     assert [n for n, on in flags.items() if on] == ["ORB_BREAKOUT"]
 
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_user_disable_overrides_the_regime(monkeypatch):
     flags = _merge(monkeypatch, "TREND_HIGH_VOL", {"SUPERTREND_EMA": False})
     assert flags["SUPERTREND_EMA"] is False
@@ -174,6 +175,7 @@ def test_should_allow_signal_fails_closed_without_a_regime():
     assert (ok, code) == (False, ReasonCode.REGIME_STATE_UNAVAILABLE) and reason
 
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_trend_high_vol_narrows_direction_by_price_vs_vwap():
     from app.strategies.base import Direction
     from tests.helpers import make_signal
@@ -218,6 +220,7 @@ def test_run_startup_checks_passes_under_runtime_ctx(runtime_ctx, sqlite_db):
     run(run_startup_checks(require_config_row=True))
 
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_strategy_map_endpoint(runtime_ctx, monkeypatch):
     from app.api.routes.regime import get_strategy_map
 

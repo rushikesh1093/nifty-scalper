@@ -1,0 +1,9 @@
+{
+ "design_end": "2024-09-30",
+ "fcb_body_min": 0.744,
+ "fcb_close_loc_min": 0.907,
+ "orb_disp_min": 0.398,
+ "orb_relvol_min": 1.266,
+ "pv_sweep_min": 2.85,
+ "method": "median of the baseline signals' trigger-bar feature, DESIGN window only"
+}

@@ -20,6 +20,7 @@ import { CapitalWidget } from "@/components/trading/CapitalWidget";
 import { RiskRules } from "@/components/trading/RiskRules";
 import { OptionSelectorWidget } from "@/components/trading/OptionSelectorWidget";
 import { DownloadPdfButton } from "@/components/trading/DownloadPdfButton";
+import { StrategyEvidencePanel } from "@/components/trading/StrategyEvidencePanel";
 
 const SIDEBAR_TABS: { key: DeskSidebarTab; label: string }[] = [
   { key: "capital",    label: "Capital & sizing" },
@@ -153,6 +154,8 @@ export default function TradingPage() {
               {tab === "selector" && <OptionSelectorWidget />}
             </div>
           </section>
+
+          <StrategyEvidencePanel />
 
           <Panel title="Trade report">
             <DownloadPdfButton />

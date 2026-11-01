@@ -66,6 +66,7 @@ def reset_singletons() -> None:
     strategy_orchestrator._flag_state.clear()
     strategy_orchestrator._current_regime.clear()
     getattr(strategy_orchestrator, "_daily_halts", {}).clear()
+    getattr(strategy_orchestrator, "_regime_v2", {}).clear()
     strategy_runner._seen.clear()
     strategy_runner._seen_day = None
     strategy_runner._strategy_gate_last.clear()
@@ -73,6 +74,7 @@ def reset_singletons() -> None:
     try:
         from app.services.trading import risk_gate
         risk_gate._sqlite_locks.clear()
+        getattr(risk_gate, "_evidence_cache", {}).clear()
     except ImportError:            # fail-before runs against the pre-FEAT-005 tree
         pass
     from app.services.trading import option_selector as _os_mod

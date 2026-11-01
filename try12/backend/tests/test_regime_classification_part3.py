@@ -44,7 +44,8 @@ def P(**kw):
 
 def test_defaults_keep_the_current_behaviour():
     p = TradingParams()
-    assert p.regime_atr_pct_lookback == 20
+    # 486 since 31 Oct 2026: the 20-value rank did not predict range (REGIME_REDESIGN.md)
+    assert p.regime_atr_pct_lookback == 486
     assert p.regime_range_bound is False
     assert p.regime_hysteresis is False
     assert p.validate() == []
@@ -162,6 +163,7 @@ def test_hysteresis_alone_does_not_emit_range_bound():
 
 # ── the detector passes the knobs through ────────────────────────────────────
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 @pytest.mark.parametrize("params,lookback,label", [
     ({}, 20, UNCL),
     ({"regime_atr_pct_lookback": 375, "regime_range_bound": True}, 375, RB),

@@ -40,6 +40,7 @@ export const queryKeys = {
   capital:      ["capital"] as const,
   config:       ["config"] as const,
   stats:        ["daily-stats"] as const,
+  strategyEvidence: ["strategy-evidence"] as const,
   pnlToday:     ["pnl-today"] as const,
   pnlHistoryAll: ["pnl-history"] as const,
   pnlHistory:   (days: number) => ["pnl-history", days] as const,
@@ -59,6 +60,7 @@ export const queryKeys = {
   regimeCurrent:     (underlying: string) => ["regime-current", underlying] as const,
   regimeHistory:     (underlying: string, hours: number) => ["regime-history", underlying, hours] as const,
   regimePerformance: (underlying?: string) => ["regime-performance", underlying ?? "ALL"] as const,
+  regimeV2:          (underlying: string) => ["regime-v2", underlying] as const,
 
   // Shell
   session: ["session-status"] as const,

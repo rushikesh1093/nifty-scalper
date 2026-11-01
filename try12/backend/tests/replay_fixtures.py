@@ -178,8 +178,12 @@ def replay(Session, date_from: date, date_to: date, factory: Callable, *,
         from app.services.replay.report import build_and_write
     # Replay tests script entries at fixed times on hand-built strike ladders; the
     # lunch blackout and the ATM/1-OTM strike limit are tested on their own
-    # (test_new_strategies), so they are off here unless a test sets them.
-    base = {"entry_blackout_windows": [], "max_otm_strikes": 20}
+    # (test_new_strategies), so they are off here unless a test sets them. So are
+    # the evidence gates (test_evidence_gates): scripted trades are not evidence.
+    base = {"entry_blackout_windows": [], "max_otm_strikes": 20,
+            "evidence_blocked_strategies": [], "evidence_auto_block": False,
+            "low_vol_skip_strategies": [], "pe_only_strategies": [],
+            "max_option_buys_per_day": 0}
     args = ReplayArgs(date_from=date_from, date_to=date_to, underlyings=("NIFTY",),
                       params_overrides={**base, **(overrides or {})}, seed=seed, label=label,
                       bootstrap_iterations=iterations, out_dir=out_dir)

@@ -896,7 +896,10 @@ class PaperEngine:
         if action in (xp.SPOT_SL, xp.TARGET, xp.TIME_EXIT, xp.SESSION_EXIT):
             logger.info("[PaperEngine] plan exit %s pos %d (%s) spot=%s ltp=%.2f",
                         action, pos.id, pos.strategy_name, spot, ltp)
-            await self._close_position(pos.id, ltp, action)
+            # A spot target is a market sell when spot gets there, not a resting
+            # limit at a premium: it fills at the bid like any other market exit.
+            await self._close_position(pos.id, ltp, action,
+                                       fill_reason=xp.SPOT_TARGET_FILL if action == xp.TARGET else None)
             self._forget(pos.id)
             return
         if action == xp.T1_PARTIAL:
@@ -1145,11 +1148,13 @@ class PaperEngine:
 
     # ── Full close ────────────────────────────────────────────────────────────
 
-    async def _close_position(self, pos_id: int, exit_price: float, reason: str):
+    async def _close_position(self, pos_id: int, exit_price: float, reason: str,
+                              fill_reason: Optional[str] = None):
         """Final close. *exit_price* is the trigger (stop, target, or the price
         the caller observed); the fill comes from fills.exit_fill with the tick
         read here, so the observed LTP drives the gap-through rule and a
-        no-tick close is LAST_KNOWN."""
+        no-tick close is LAST_KNOWN. *fill_reason* (default *reason*) is the
+        reason the fill table sees, when it differs from the recorded one."""
         p = params()
         async with sessions()() as db:
             result = await db.execute(
@@ -1171,7 +1176,7 @@ class PaperEngine:
                 tick = None
             bid, ask, age = _quote(tick)
             actual_exit, exit_source = fills.exit_fill(
-                exit_price, observed, bid, ask, age, reason, p)
+                exit_price, observed, bid, ask, age, fill_reason or reason, p)
             exit_slip = round(exit_price - actual_exit, 2)
 
             # Remaining-lot P&L (pos.quantity already reflects the partial)
@@ -1304,7 +1309,8 @@ class PaperEngine:
 
         # An exit not filled off a valid bid (other than a TARGET limit) is a recorded
         # fallback (§12); exits are never refused, so this is the visible cost.
-        if exit_source == "LAST_KNOWN" or (exit_source == "TRIGGER_SLIPPED" and reason != "TARGET"):
+        if exit_source == "LAST_KNOWN" or (exit_source == "TRIGGER_SLIPPED"
+                                           and (fill_reason or reason) != "TARGET"):
             await no_trade.record_degradation(
                 ctx().run_id, no_trade.ReasonCode.FALLBACK_FILL, position_id=pos_id,
                 underlying=pos.underlying,
@@ -1442,6 +1448,7 @@ class PaperEngine:
             skip_reason      = reason[:300] if reason else None,   # untruncated copy: no_trade_decisions
             no_trade_decision_id = no_trade_decision_id,
             run_id           = ctx().run_id,
+            exit_plan        = signal.exit_plan,
         )
         if selection is not None:
             sig.expiry_band = selection.expiry.band

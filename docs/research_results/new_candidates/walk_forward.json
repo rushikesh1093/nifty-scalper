@@ -1,0 +1,3968 @@
+{
+ "protocol": "\nChronological walk-forward, cost scenarios and evidence-based strategy\nstatus (Parts 9, 11, 12). Pure functions over trade rows (dicts with day,\nr_gross, risk_pts, hold_min, expiry, regime, candidate).\n\nProtocol (fixed before running):\n  * DESIGN window = the first 12 months. Variant thresholds come from it;\n    no test month inside it is scored.\n  * Fold f: train = 3 calendar months, validation = the next month, test =\n    the month after. Roll by one month. Only test months after the DESIGN\n    window count as out-of-sample.\n  * Selection per fold, per strategy: among its candidates (entry variants,\n    each with and without a regime filter learned on train), the highest\n    train net expectancy with train n >= MIN_TRAIN_N and expectancy > 0; it\n    trades the test month only if its validation expectancy is also > 0.\n    Otherwise the strategy stands aside (NO_TRADE) that month.\n  * The test month is never used to choose anything.\n",
+ "criteria": {
+  "min_trades": 100,
+  "preferred_trades": 200,
+  "min_sessions": 60,
+  "min_profit_factor": 1.2,
+  "max_drawdown_r": -25.0,
+  "min_positive_fold_share": 0.5,
+  "require_ci_lower_above": 0.0
+ },
+ "design_end": "2024-09-30",
+ "folds_definition": [
+  {
+   "train": [
+    "2024-06",
+    "2024-07",
+    "2024-08"
+   ],
+   "val": "2024-09",
+   "test": "2024-10"
+  },
+  {
+   "train": [
+    "2024-07",
+    "2024-08",
+    "2024-09"
+   ],
+   "val": "2024-10",
+   "test": "2024-11"
+  },
+  {
+   "train": [
+    "2024-08",
+    "2024-09",
+    "2024-10"
+   ],
+   "val": "2024-11",
+   "test": "2024-12"
+  },
+  {
+   "train": [
+    "2024-09",
+    "2024-10",
+    "2024-11"
+   ],
+   "val": "2024-12",
+   "test": "2025-01"
+  },
+  {
+   "train": [
+    "2024-10",
+    "2024-11",
+    "2024-12"
+   ],
+   "val": "2025-01",
+   "test": "2025-02"
+  },
+  {
+   "train": [
+    "2024-11",
+    "2024-12",
+    "2025-01"
+   ],
+   "val": "2025-02",
+   "test": "2025-03"
+  },
+  {
+   "train": [
+    "2024-12",
+    "2025-01",
+    "2025-02"
+   ],
+   "val": "2025-03",
+   "test": "2025-04"
+  },
+  {
+   "train": [
+    "2025-01",
+    "2025-02",
+    "2025-03"
+   ],
+   "val": "2025-04",
+   "test": "2025-05"
+  },
+  {
+   "train": [
+    "2025-02",
+    "2025-03",
+    "2025-04"
+   ],
+   "val": "2025-05",
+   "test": "2025-06"
+  },
+  {
+   "train": [
+    "2025-03",
+    "2025-04",
+    "2025-05"
+   ],
+   "val": "2025-06",
+   "test": "2025-07"
+  },
+  {
+   "train": [
+    "2025-04",
+    "2025-05",
+    "2025-06"
+   ],
+   "val": "2025-07",
+   "test": "2025-08"
+  },
+  {
+   "train": [
+    "2025-05",
+    "2025-06",
+    "2025-07"
+   ],
+   "val": "2025-08",
+   "test": "2025-09"
+  },
+  {
+   "train": [
+    "2025-06",
+    "2025-07",
+    "2025-08"
+   ],
+   "val": "2025-09",
+   "test": "2025-10"
+  },
+  {
+   "train": [
+    "2025-07",
+    "2025-08",
+    "2025-09"
+   ],
+   "val": "2025-10",
+   "test": "2025-11"
+  },
+  {
+   "train": [
+    "2025-08",
+    "2025-09",
+    "2025-10"
+   ],
+   "val": "2025-11",
+   "test": "2025-12"
+  },
+  {
+   "train": [
+    "2025-09",
+    "2025-10",
+    "2025-11"
+   ],
+   "val": "2025-12",
+   "test": "2026-01"
+  },
+  {
+   "train": [
+    "2025-10",
+    "2025-11",
+    "2025-12"
+   ],
+   "val": "2026-01",
+   "test": "2026-02"
+  },
+  {
+   "train": [
+    "2025-11",
+    "2025-12",
+    "2026-01"
+   ],
+   "val": "2026-02",
+   "test": "2026-03"
+  },
+  {
+   "train": [
+    "2025-12",
+    "2026-01",
+    "2026-02"
+   ],
+   "val": "2026-03",
+   "test": "2026-04"
+  },
+  {
+   "train": [
+    "2026-01",
+    "2026-02",
+    "2026-03"
+   ],
+   "val": "2026-04",
+   "test": "2026-05"
+  },
+  {
+   "train": [
+    "2026-02",
+    "2026-03",
+    "2026-04"
+   ],
+   "val": "2026-05",
+   "test": "2026-06"
+  },
+  {
+   "train": [
+    "2026-03",
+    "2026-04",
+    "2026-05"
+   ],
+   "val": "2026-06",
+   "test": "2026-07"
+  },
+  {
+   "train": [
+    "2026-04",
+    "2026-05",
+    "2026-06"
+   ],
+   "val": "2026-07",
+   "test": "2026-08"
+  },
+  {
+   "train": [
+    "2026-05",
+    "2026-06",
+    "2026-07"
+   ],
+   "val": "2026-08",
+   "test": "2026-09"
+  },
+  {
+   "train": [
+    "2026-06",
+    "2026-07",
+    "2026-08"
+   ],
+   "val": "2026-09",
+   "test": "2026-10"
+  }
+ ],
+ "strategies": {
+  "VOL_SQUEEZE_BREAKOUT": {
+   "ZERO": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "SQUEEZE": {
+      "n": 24,
+      "sessions": 24,
+      "wins": 5,
+      "losses": 19,
+      "win_rate": 0.2083,
+      "win_rate_ci95": [
+       0.0924,
+       0.4047
+      ],
+      "gross_profit_r": 14.882,
+      "gross_loss_r": 14.292,
+      "profit_factor": 1.041,
+      "expectancy_r": 0.0246,
+      "avg_win_r": 2.9763,
+      "avg_loss_r": -0.7522,
+      "payoff": 3.957,
+      "total_r": 0.59,
+      "max_drawdown_r": -5.8962,
+      "max_consecutive_losses": 6,
+      "sharpe_daily_ann": 0.199,
+      "sortino_daily_ann": 0.531,
+      "worst_session_r": -1.064,
+      "best_session_r": 7.707,
+      "expectancy_without_best_session": -0.3094,
+      "mean_r_gross": 0.0246,
+      "mean_mfe_r": 1.3281,
+      "mean_mae_r": -0.8669,
+      "mean_hold_min": 90.0833,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.6304,
+       0.8657
+      ]
+     }
+    }
+   },
+   "MEASURED": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "SQUEEZE": {
+      "n": 24,
+      "sessions": 24,
+      "wins": 5,
+      "losses": 19,
+      "win_rate": 0.2083,
+      "win_rate_ci95": [
+       0.0924,
+       0.4047
+      ],
+      "gross_profit_r": 13.707,
+      "gross_loss_r": 17.47,
+      "profit_factor": 0.785,
+      "expectancy_r": -0.1568,
+      "avg_win_r": 2.7413,
+      "avg_loss_r": -0.9195,
+      "payoff": 2.981,
+      "total_r": -3.763,
+      "max_drawdown_r": -8.0172,
+      "max_consecutive_losses": 6,
+      "sharpe_daily_ann": -1.282,
+      "sortino_daily_ann": -2.823,
+      "worst_session_r": -1.291,
+      "best_session_r": 7.45,
+      "expectancy_without_best_session": -0.4875,
+      "mean_r_gross": 0.0246,
+      "mean_mfe_r": 1.3281,
+      "mean_mae_r": -0.8669,
+      "mean_hold_min": 90.0833,
+      "mean_cost_r": 0.1814,
+      "expectancy_ci95": [
+       -0.8035,
+       0.6677
+      ]
+     }
+    }
+   },
+   "HARSH": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "SQUEEZE": {
+      "n": 24,
+      "sessions": 24,
+      "wins": 5,
+      "losses": 19,
+      "win_rate": 0.2083,
+      "win_rate_ci95": [
+       0.0924,
+       0.4047
+      ],
+      "gross_profit_r": 12.249,
+      "gross_loss_r": 20.407,
+      "profit_factor": 0.6,
+      "expectancy_r": -0.3399,
+      "avg_win_r": 2.4498,
+      "avg_loss_r": -1.0741,
+      "payoff": 2.281,
+      "total_r": -8.159,
+      "max_drawdown_r": -10.1138,
+      "max_consecutive_losses": 6,
+      "sharpe_daily_ann": -2.842,
+      "sortino_daily_ann": -5.299,
+      "worst_session_r": -1.602,
+      "best_session_r": 7.142,
+      "expectancy_without_best_session": -0.6653,
+      "mean_r_gross": 0.0246,
+      "mean_mfe_r": 1.3281,
+      "mean_mae_r": -0.8669,
+      "mean_hold_min": 90.0833,
+      "mean_cost_r": 0.3645,
+      "expectancy_ci95": [
+       -0.9671,
+       0.486
+      ]
+     }
+    }
+   }
+  },
+  "TREND_DAY_CONTINUATION": {
+   "ZERO": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE",
+      "candidate": "TREND_DAY",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 20,
+      "train_exp": 0.2297,
+      "val_n": 2,
+      "val_exp": -0.2863
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "TREND_DAY/ALL",
+      "candidate": "TREND_DAY",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 21,
+      "train_exp": 0.045,
+      "val_n": 4,
+      "val_exp": 1.9641,
+      "test_n": 7,
+      "test_exp": -0.0622,
+      "test_total_r": -0.436
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "TREND_DAY",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 20,
+      "train_exp": 0.2022,
+      "val_n": 4,
+      "val_exp": -0.0072
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 7,
+     "sessions": 7,
+     "wins": 3,
+     "losses": 4,
+     "win_rate": 0.4286,
+     "win_rate_ci95": [
+      0.1582,
+      0.7495
+     ],
+     "gross_profit_r": 2.864,
+     "gross_loss_r": 3.299,
+     "profit_factor": 0.868,
+     "expectancy_r": -0.0622,
+     "avg_win_r": 0.9546,
+     "avg_loss_r": -0.8248,
+     "payoff": 1.157,
+     "total_r": -0.436,
+     "max_drawdown_r": -3.2994,
+     "max_consecutive_losses": 4,
+     "sharpe_daily_ann": -0.978,
+     "sortino_daily_ann": -1.546,
+     "worst_session_r": -1.022,
+     "best_session_r": 1.561,
+     "expectancy_without_best_session": -0.3327,
+     "mean_r_gross": -0.0622,
+     "mean_mfe_r": 1.6262,
+     "mean_mae_r": -0.7364,
+     "mean_hold_min": 113.5714,
+     "mean_cost_r": 0.0,
+     "expectancy_ci95": [
+      -0.7145,
+      0.6426
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 1,
+    "folds_positive": 0,
+    "worst_fold_r": -0.436,
+    "best_fold_r": -0.436,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "out-of-sample -0.062R on only 7 trades"
+    ],
+    "fixed_candidates_post_design": {
+     "TREND_DAY": {
+      "n": 114,
+      "sessions": 114,
+      "wins": 42,
+      "losses": 72,
+      "win_rate": 0.3684,
+      "win_rate_ci95": [
+       0.2855,
+       0.4599
+      ],
+      "gross_profit_r": 83.804,
+      "gross_loss_r": 61.51,
+      "profit_factor": 1.362,
+      "expectancy_r": 0.1956,
+      "avg_win_r": 1.9953,
+      "avg_loss_r": -0.8543,
+      "payoff": 2.336,
+      "total_r": 22.294,
+      "max_drawdown_r": -8.3939,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": 1.702,
+      "sortino_daily_ann": 4.347,
+      "worst_session_r": -1.106,
+      "best_session_r": 9.543,
+      "expectancy_without_best_session": 0.1128,
+      "mean_r_gross": 0.1956,
+      "mean_mfe_r": 1.6254,
+      "mean_mae_r": -0.8116,
+      "mean_hold_min": 92.1228,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.1251,
+       0.5551
+      ]
+     }
+    }
+   },
+   "MEASURED": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE",
+      "candidate": "TREND_DAY",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 20,
+      "train_exp": 0.0765,
+      "val_n": 2,
+      "val_exp": -0.3574
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "TREND_DAY",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 20,
+      "train_exp": 0.0656,
+      "val_n": 4,
+      "val_exp": -0.134
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "TREND_DAY": {
+      "n": 114,
+      "sessions": 114,
+      "wins": 37,
+      "losses": 77,
+      "win_rate": 0.3246,
+      "win_rate_ci95": [
+       0.2456,
+       0.415
+      ],
+      "gross_profit_r": 77.086,
+      "gross_loss_r": 70.989,
+      "profit_factor": 1.086,
+      "expectancy_r": 0.0535,
+      "avg_win_r": 2.0834,
+      "avg_loss_r": -0.9219,
+      "payoff": 2.26,
+      "total_r": 6.097,
+      "max_drawdown_r": -13.3083,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": 0.471,
+      "sortino_daily_ann": 1.047,
+      "worst_session_r": -1.33,
+      "best_session_r": 9.216,
+      "expectancy_without_best_session": -0.0276,
+      "mean_r_gross": 0.1956,
+      "mean_mfe_r": 1.6254,
+      "mean_mae_r": -0.8116,
+      "mean_hold_min": 92.1228,
+      "mean_cost_r": 0.1421,
+      "expectancy_ci95": [
+       -0.2613,
+       0.4059
+      ]
+     }
+    }
+   },
+   "HARSH": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "TREND_DAY": {
+      "n": 114,
+      "sessions": 114,
+      "wins": 35,
+      "losses": 79,
+      "win_rate": 0.307,
+      "win_rate_ci95": [
+       0.2298,
+       0.3968
+      ],
+      "gross_profit_r": 69.799,
+      "gross_loss_r": 80.653,
+      "profit_factor": 0.865,
+      "expectancy_r": -0.0952,
+      "avg_win_r": 1.9943,
+      "avg_loss_r": -1.0209,
+      "payoff": 1.953,
+      "total_r": -10.853,
+      "max_drawdown_r": -21.2496,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": -0.858,
+      "sortino_daily_ann": -1.673,
+      "worst_session_r": -1.542,
+      "best_session_r": 8.8,
+      "expectancy_without_best_session": -0.1739,
+      "mean_r_gross": 0.1956,
+      "mean_mfe_r": 1.6254,
+      "mean_mae_r": -0.8116,
+      "mean_hold_min": 92.1228,
+      "mean_cost_r": 0.2908,
+      "expectancy_ci95": [
+       -0.4043,
+       0.2525
+      ]
+     }
+    }
+   }
+  },
+  "GAP_FADE": {
+   "ZERO": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "GAP_FADE": {
+      "n": 62,
+      "sessions": 62,
+      "wins": 31,
+      "losses": 31,
+      "win_rate": 0.5,
+      "win_rate_ci95": [
+       0.3792,
+       0.6208
+      ],
+      "gross_profit_r": 21.416,
+      "gross_loss_r": 26.708,
+      "profit_factor": 0.802,
+      "expectancy_r": -0.0854,
+      "avg_win_r": 0.6908,
+      "avg_loss_r": -0.8615,
+      "payoff": 0.802,
+      "total_r": -5.292,
+      "max_drawdown_r": -11.3778,
+      "max_consecutive_losses": 4,
+      "sharpe_daily_ann": -1.457,
+      "sortino_daily_ann": -2.09,
+      "worst_session_r": -1.034,
+      "best_session_r": 2.789,
+      "expectancy_without_best_session": -0.1325,
+      "mean_r_gross": -0.0854,
+      "mean_mfe_r": 0.5474,
+      "mean_mae_r": -0.6435,
+      "mean_hold_min": 107.1452,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.3174,
+       0.1427
+      ]
+     }
+    }
+   },
+   "MEASURED": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "GAP_FADE": {
+      "n": 62,
+      "sessions": 62,
+      "wins": 30,
+      "losses": 32,
+      "win_rate": 0.4839,
+      "win_rate_ci95": [
+       0.3641,
+       0.6055
+      ],
+      "gross_profit_r": 19.773,
+      "gross_loss_r": 28.844,
+      "profit_factor": 0.686,
+      "expectancy_r": -0.1463,
+      "avg_win_r": 0.6591,
+      "avg_loss_r": -0.9014,
+      "payoff": 0.731,
+      "total_r": -9.07,
+      "max_drawdown_r": -13.2535,
+      "max_consecutive_losses": 4,
+      "sharpe_daily_ann": -2.509,
+      "sortino_daily_ann": -3.354,
+      "worst_session_r": -1.135,
+      "best_session_r": 2.611,
+      "expectancy_without_best_session": -0.1915,
+      "mean_r_gross": -0.0854,
+      "mean_mfe_r": 0.5474,
+      "mean_mae_r": -0.6435,
+      "mean_hold_min": 107.1452,
+      "mean_cost_r": 0.0609,
+      "expectancy_ci95": [
+       -0.3813,
+       0.0833
+      ]
+     }
+    }
+   },
+   "HARSH": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "GAP_FADE": {
+      "n": 62,
+      "sessions": 62,
+      "wins": 29,
+      "losses": 33,
+      "win_rate": 0.4677,
+      "win_rate_ci95": [
+       0.3491,
+       0.5902
+      ],
+      "gross_profit_r": 18.067,
+      "gross_loss_r": 31.333,
+      "profit_factor": 0.577,
+      "expectancy_r": -0.214,
+      "avg_win_r": 0.623,
+      "avg_loss_r": -0.9495,
+      "payoff": 0.656,
+      "total_r": -13.266,
+      "max_drawdown_r": -15.855,
+      "max_consecutive_losses": 4,
+      "sharpe_daily_ann": -3.683,
+      "sortino_daily_ann": -4.562,
+      "worst_session_r": -1.319,
+      "best_session_r": 2.37,
+      "expectancy_without_best_session": -0.2563,
+      "mean_r_gross": -0.0854,
+      "mean_mfe_r": 0.5474,
+      "mean_mae_r": -0.6435,
+      "mean_hold_min": 107.1452,
+      "mean_cost_r": 0.1286,
+      "expectancy_ci95": [
+       -0.4425,
+       0.0159
+      ]
+     }
+    }
+   }
+  },
+  "VWAP_EXTREME_REVERSION": {
+   "ZERO": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "VWAP_REV": {
+      "n": 106,
+      "sessions": 106,
+      "wins": 40,
+      "losses": 66,
+      "win_rate": 0.3774,
+      "win_rate_ci95": [
+       0.2909,
+       0.4724
+      ],
+      "gross_profit_r": 52.599,
+      "gross_loss_r": 62.594,
+      "profit_factor": 0.84,
+      "expectancy_r": -0.0943,
+      "avg_win_r": 1.315,
+      "avg_loss_r": -0.9484,
+      "payoff": 1.387,
+      "total_r": -9.995,
+      "max_drawdown_r": -22.5542,
+      "max_consecutive_losses": 7,
+      "sharpe_daily_ann": -1.262,
+      "sortino_daily_ann": -1.968,
+      "worst_session_r": -1.049,
+      "best_session_r": 3.075,
+      "expectancy_without_best_session": -0.1245,
+      "mean_r_gross": -0.0943,
+      "mean_mfe_r": 0.8549,
+      "mean_mae_r": -0.8357,
+      "mean_hold_min": 30.5094,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.3093,
+       0.1491
+      ]
+     }
+    }
+   },
+   "MEASURED": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "VWAP_REV": {
+      "n": 106,
+      "sessions": 106,
+      "wins": 40,
+      "losses": 66,
+      "win_rate": 0.3774,
+      "win_rate_ci95": [
+       0.2909,
+       0.4724
+      ],
+      "gross_profit_r": 46.885,
+      "gross_loss_r": 70.968,
+      "profit_factor": 0.661,
+      "expectancy_r": -0.2272,
+      "avg_win_r": 1.1721,
+      "avg_loss_r": -1.0753,
+      "payoff": 1.09,
+      "total_r": -24.083,
+      "max_drawdown_r": -33.1611,
+      "max_consecutive_losses": 7,
+      "sharpe_daily_ann": -3.071,
+      "sortino_daily_ann": -4.186,
+      "worst_session_r": -1.261,
+      "best_session_r": 2.829,
+      "expectancy_without_best_session": -0.2563,
+      "mean_r_gross": -0.0943,
+      "mean_mfe_r": 0.8549,
+      "mean_mae_r": -0.8357,
+      "mean_hold_min": 30.5094,
+      "mean_cost_r": 0.1329,
+      "expectancy_ci95": [
+       -0.4414,
+       0.0156
+      ]
+     }
+    }
+   },
+   "HARSH": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "VWAP_REV": {
+      "n": 106,
+      "sessions": 106,
+      "wins": 39,
+      "losses": 67,
+      "win_rate": 0.3679,
+      "win_rate_ci95": [
+       0.2822,
+       0.4628
+      ],
+      "gross_profit_r": 42.265,
+      "gross_loss_r": 77.379,
+      "profit_factor": 0.546,
+      "expectancy_r": -0.3313,
+      "avg_win_r": 1.0837,
+      "avg_loss_r": -1.1549,
+      "payoff": 0.938,
+      "total_r": -35.113,
+      "max_drawdown_r": -42.1103,
+      "max_consecutive_losses": 7,
+      "sharpe_daily_ann": -4.521,
+      "sortino_daily_ann": -5.601,
+      "worst_session_r": -1.475,
+      "best_session_r": 2.648,
+      "expectancy_without_best_session": -0.3596,
+      "mean_r_gross": -0.0943,
+      "mean_mfe_r": 0.8549,
+      "mean_mae_r": -0.8357,
+      "mean_hold_min": 30.5094,
+      "mean_cost_r": 0.237,
+      "expectancy_ci95": [
+       -0.5455,
+       -0.0895
+      ]
+     }
+    }
+   }
+  }
+ }
+}

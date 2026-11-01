@@ -14,9 +14,9 @@ export function NavBar() {
   const pathname = usePathname();
 
   return (
-    <nav aria-label="Primary" className="flex h-10 items-stretch gap-0.5 border-b border-border bg-surface px-4">
+    <nav aria-label="Primary" className="flex h-10 items-stretch gap-0.5 overflow-x-auto whitespace-nowrap border-b border-border bg-surface px-4">
       {/* Logo */}
-      <div className="mr-4 flex items-center gap-2 border-r border-border-2 pr-4">
+      <div className="mr-4 flex shrink-0 items-center gap-2 border-r border-border-2 pr-4">
         <div
           aria-hidden="true"
           className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[5px] bg-accent text-[11px] font-bold text-text-1"

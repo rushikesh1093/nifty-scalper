@@ -24,6 +24,9 @@ P = TradingParams()
 
 # ── 3. premium stop from the spot stop ───────────────────────────────────────
 
+pytestmark = pytest.mark.usefixtures("no_evidence_gates")   # tests other gates with SUPERTREND_EMA
+
+
 def _plan(dist, side="BUY"):
     entry = 22000.0
     return {"side": side, "spot_entry": entry, "spot_stop": entry - dist if side == "BUY" else entry + dist}
@@ -86,7 +89,7 @@ def test_a_wide_first_candle_caps_the_stop_at_50_points():
         sig = evaluate(FirstCandleBreakoutStrategy(), c)
     assert sig.direction == Direction.BUY
     assert sig.exit_plan["spot_stop"] == 22085.0 - 50.0               # not the 21950 low
-    assert sig.exit_plan["spot_target"] == 22085.0 + 1.5 * 120
+    assert sig.exit_plan["spot_target"] is None                       # ATR-chandelier exit
 
 
 def test_a_close_first_candle_stop_is_kept():

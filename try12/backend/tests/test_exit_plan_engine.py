@@ -212,3 +212,31 @@ def test_replay_spot_index_has_a_timestamped_tick():
     tick = run(m.get_tick(SPOT))
     assert tick["ltp"] == 1.5 == run(m.get_ltp(SPOT))
     assert tick["ts"] == (t0 + timedelta(minutes=1)).isoformat()           # the candle's close
+
+
+def test_spot_target_fills_at_the_bid_not_the_last_trade(runtime_ctx, sqlite_db, fake_redis):
+    """Regression (QUANT_SYSTEM_AUDIT F-1): a spot-plan TARGET is a market exit
+    taken when spot reaches the level. It used to fill at LTP × 0.999 through the
+    premium-TARGET limit row of fills.exit_fill, ignoring a valid bid below it."""
+    run(seed_config(sqlite_db, used_capital=6500.0))
+    pid = _open(sqlite_db, runtime_ctx, strategy_name="ORB_BREAKOUT",
+                exit_plan=plan(strategy="ORB_BREAKOUT", spot_t1=None, spot_target=22030.0))
+    fake_redis.put_tick("OPT1", 120.0, bid=117.0, ask=120.5, age_s=1.0)
+    fake_redis.put_tick(SPOT, 22031.0, age_s=1.0)
+    run(paper_engine._check_position(run(get_position(sqlite_db, pid)), dtime(11, 0), dtime(15, 15)))
+    pos = run(get_position(sqlite_db, pid))
+    assert not pos.is_open and pos.exit_reason == xp.TARGET
+    assert pos.exit_fill_source == "BID"
+    assert pos.actual_exit <= 117.0                              # not 120 × 0.999
+
+
+def test_premium_point_target_still_fills_at_its_limit(runtime_ctx, sqlite_db, fake_redis):
+    run(seed_config(sqlite_db, used_capital=6500.0))
+    pid = _open(sqlite_db, runtime_ctx, strategy_name="SUPERTREND_EMA", target=120.0,
+                exit_plan=plan(strategy="SUPERTREND_EMA", spot_t1=None,
+                               premium_target_pts=20.0, time_stop_minutes=10))
+    fake_redis.put_tick("OPT1", 120.5, bid=119.0, ask=121.0, age_s=1.0)
+    fake_redis.put_tick(SPOT, 22004.0, age_s=1.0)
+    run(paper_engine._check_position(run(get_position(sqlite_db, pid)), dtime(11, 0), dtime(15, 15)))
+    pos = run(get_position(sqlite_db, pid))
+    assert not pos.is_open and pos.exit_fill_source == "TRIGGER_SLIPPED"

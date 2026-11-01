@@ -152,6 +152,55 @@ async def strategy_report(
     return out
 
 
+async def _shadow_summary(db: AsyncSession, run_id: str) -> dict:
+    """What refused signals would have made, per strategy and refusing rule
+    (app.services.trading.shadow_outcomes), since each strategy's rule date."""
+    from app.db.models.paper_trade import StrategySignal
+    from app.services.metrics.strategy_evidence import RULE_SINCE
+    from app.services.trading import shadow_outcomes as so
+    rows = (await db.execute(
+        select(StrategySignal.strategy_name, StrategySignal.signal_time, StrategySignal.skip_reason,
+               StrategySignal.shadow_r_net, NoTradeDecision.code)
+        .outerjoin(NoTradeDecision, NoTradeDecision.id == StrategySignal.no_trade_decision_id)
+        .where(StrategySignal.run_id == run_id, StrategySignal.shadow_r_net.is_not(None)))).all()
+    out = []
+    for name, t, reason, r, code in rows:
+        since = RULE_SINCE.get(name)
+        if since is not None and t is not None and t.date() < since:
+            continue
+        out.append({"strategy": name, "code": code or so.skip_code(reason), "r_net": r})
+    return so.summarize(out)
+
+
+@router.get("/strategy-evidence")
+async def strategy_evidence(run_id: str = Depends(run_id_query),
+                            db: AsyncSession = Depends(get_db)):
+    """Forward evidence per strategy from this run's closed paper trades, counted
+    only since each strategy's current rules went live, against the research
+    promotion gates (app.services.metrics.strategy_evidence). Advice only: no
+    flag is changed."""
+    from app.research.walkforward import criteria_dict
+    from app.services.metrics import strategy_evidence as se
+    from app.services.metrics import strategy_report as sr
+    log = await sr.load_closed(db, run_id)
+    p = params()
+    out = {"run_id": run_id, "criteria": criteria_dict(),
+           "rule_since": {k: str(v) for k, v in se.RULE_SINCE.items()},
+           # The policy the risk gate applies now (TradingParams), so the dashboard
+           # shows the engine's settings, not a copy of them.
+           "policy": {"evidence_blocked_strategies": list(p.evidence_blocked_strategies),
+                      "evidence_auto_block": p.evidence_auto_block,
+                      "pe_only_strategies": list(p.pe_only_strategies),
+                      "low_vol_skip_strategies": list(p.low_vol_skip_strategies),
+                      "max_option_buys_per_day": p.max_option_buys_per_day,
+                      "regime_gating": p.regime_gating},
+           "strategies": _jsonable(se.evaluate(log)),
+           "shadow": await _shadow_summary(db, run_id)}
+    if not log:
+        out["empty_reason"] = EMPTY_REASON
+    return out
+
+
 @router.get("/metrics/by/{dimension}")
 async def get_metrics_by(
     dimension: str,

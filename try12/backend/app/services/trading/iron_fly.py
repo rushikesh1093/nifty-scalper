@@ -33,6 +33,7 @@ from app.services.trading import fills
 logger = logging.getLogger(__name__)
 
 STRATEGY = "EXPIRY_IRON_FLY"
+STRATEGY_W300 = "EXPIRY_IRON_FLY_W300"
 UNDERLYING = "NIFTY"
 STRIKE_STEP = 50
 WING_PTS = 200
@@ -124,13 +125,17 @@ def mark_to_market(legs: list[dict], quotes: dict, quantity: int) -> Optional[fl
 # ── service ──────────────────────────────────────────────────────────────────
 
 class IronFlyPaper:
-    def __init__(self) -> None:
+    """One iron-fly paper book. *strategy* names its rows in paper_spreads;
+    *wing* is the distance of the bought wings from the ATM strike."""
+
+    def __init__(self, strategy: str = STRATEGY, wing: float = WING_PTS) -> None:
+        self.strategy, self.wing = strategy, wing
         self._task: Optional[asyncio.Task] = None
         self._skip_logged: Optional[tuple] = None
 
     async def start(self) -> None:
         if not settings.IRON_FLY_PAPER_ENABLED:
-            logger.info("[%s] disabled (IRON_FLY_PAPER_ENABLED=false)", STRATEGY)
+            logger.info("[%s] disabled (IRON_FLY_PAPER_ENABLED=false)", self.strategy)
             return
         self._task = asyncio.create_task(self._loop())
 
@@ -146,7 +151,7 @@ class IronFlyPaper:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.error("[%s] cycle failed: %s", STRATEGY, exc, exc_info=True)
+                logger.error("[%s] cycle failed: %s", self.strategy, exc, exc_info=True)
             await asyncio.sleep(LOOP_SECONDS)
 
     def _skip(self, reason: str) -> None:
@@ -154,7 +159,7 @@ class IronFlyPaper:
         key = (trading_day(), reason)
         if self._skip_logged != key:
             self._skip_logged = key
-            logger.info("[%s] no entry: %s", STRATEGY, reason)
+            logger.info("[%s] no entry: %s", self.strategy, reason)
 
     async def _quotes(self, legs: list[dict]) -> dict:
         now = now_utc()
@@ -180,7 +185,7 @@ class IronFlyPaper:
         today, t = trading_day(), now_ist().time().replace(tzinfo=None)
         async with ctx().sessions() as db:
             open_rows = (await db.execute(select(PaperSpread).where(
-                PaperSpread.strategy_name == STRATEGY, PaperSpread.status == OPEN))).scalars().all()
+                PaperSpread.strategy_name == self.strategy, PaperSpread.status == OPEN))).scalars().all()
             for row in open_rows:
                 if row.trading_day < today:
                     self._mark_unsettled(row)
@@ -192,7 +197,7 @@ class IronFlyPaper:
             if not (ENTRY_FROM <= t < ENTRY_UNTIL):
                 return
             done = (await db.execute(select(PaperSpread.id).where(
-                PaperSpread.strategy_name == STRATEGY, PaperSpread.trading_day == today))).first()
+                PaperSpread.strategy_name == self.strategy, PaperSpread.trading_day == today))).first()
             if done:
                 return
             row = await self._open(db, today)
@@ -200,7 +205,7 @@ class IronFlyPaper:
                 db.add(row)
                 await db.commit()
                 logger.info("[%s] opened: credit %.2f pts, max loss Rs%.0f, legs %s",
-                            STRATEGY, row.credit_pts, row.max_loss,
+                            self.strategy, row.credit_pts, row.max_loss,
                             ", ".join(f"{l['side']} {l['symbol']}@{l['entry_price']}" for l in row.legs))
 
     async def _open(self, db, today: date):
@@ -214,9 +219,9 @@ class IronFlyPaper:
         if spot is None:
             return self._skip("no fresh NIFTY spot price")
         atm = atm_strike(spot)
-        legs = pick_legs(rows, today, atm)
+        legs = pick_legs(rows, today, atm, self.wing)
         if legs is None:
-            return self._skip(f"strikes {atm - WING_PTS:.0f}-{atm + WING_PTS:.0f} not all in the instrument master")
+            return self._skip(f"strikes {atm - self.wing:.0f}-{atm + self.wing:.0f} not all in the instrument master")
         quotes = await self._quotes(legs)
         missing = [l["symbol"] for l in legs if l["token"] not in quotes]
         if missing:
@@ -226,13 +231,13 @@ class IronFlyPaper:
             l.update(entry_bid=bid, entry_ask=ask, entry_price=fill(l["side"], bid, ask))
         cr = credit(legs)
         lot_size = legs[0]["lot_size"]
-        if cr <= 0 or cr >= WING_PTS or lot_size <= 0:
-            return self._skip(f"credit {cr:.2f} pts is outside (0, {WING_PTS})")
+        if cr <= 0 or cr >= self.wing or lot_size <= 0:
+            return self._skip(f"credit {cr:.2f} pts is outside (0, {self.wing})")
         qty = LOTS * lot_size
         return PaperSpread(
-            strategy_name=STRATEGY, trading_day=today, underlying=UNDERLYING, expiry=today,
+            strategy_name=self.strategy, trading_day=today, underlying=UNDERLYING, expiry=today,
             status=OPEN, lots=LOTS, lot_size=lot_size, legs=legs, spot_entry=spot,
-            credit_pts=cr, max_loss=round((WING_PTS - cr) * qty, 2), entry_time=now_utc())
+            credit_pts=cr, max_loss=round((self.wing - cr) * qty, 2), entry_time=now_utc())
 
     async def _close(self, row, t: dtime) -> None:
         legs = [dict(l) for l in row.legs]
@@ -258,19 +263,19 @@ class IronFlyPaper:
         for k, v in res.items():
             setattr(row, k, v)
         row.r_multiple = round(res["net_pnl"] / row.max_loss, 4) if row.max_loss else None
-        logger.info("[%s] closed (%s): net Rs%.2f, %.3fR", STRATEGY, reason, row.net_pnl, row.r_multiple or 0)
+        logger.info("[%s] closed (%s): net Rs%.2f, %.3fR", self.strategy, reason, row.net_pnl, row.r_multiple or 0)
 
     def _mark_unsettled(self, row) -> None:
         from app.core.alerts import alert
         row.status, row.exit_reason, row.exit_time = UNSETTLED, UNSETTLED, now_utc()
-        alert("iron_fly_unsettled", f"{STRATEGY} spread of {row.trading_day} was still open on a "
+        alert("iron_fly_unsettled", f"{self.strategy} spread of {row.trading_day} was still open on a "
               f"later day; marked UNSETTLED with no P&L")
 
     async def snapshot(self, limit: int = 50) -> dict:
         """Today's spread with live mark-to-market, the recent history and a summary."""
         from app.db.models.paper_spread import PaperSpread
         async with ctx().sessions() as db:
-            rows = (await db.execute(select(PaperSpread).where(PaperSpread.strategy_name == STRATEGY)
+            rows = (await db.execute(select(PaperSpread).where(PaperSpread.strategy_name == self.strategy)
                                      .order_by(PaperSpread.trading_day.desc()).limit(limit))).scalars().all()
         out = []
         for r in rows:
@@ -281,10 +286,10 @@ class IronFlyPaper:
             out.append(d)
         closed = [r for r in rows if r.status == CLOSED and r.net_pnl is not None]
         return {
-            "strategy": STRATEGY,
+            "strategy": self.strategy,
             "enabled": settings.IRON_FLY_PAPER_ENABLED,
             "rules": {"entry": f"{ENTRY_FROM:%H:%M}-{ENTRY_UNTIL:%H:%M} on expiry day",
-                      "exit": f"{EXIT_AT:%H:%M}", "wing_pts": WING_PTS, "lots": LOTS},
+                      "exit": f"{EXIT_AT:%H:%M}", "wing_pts": self.wing, "lots": LOTS},
             "summary": {
                 "trades": len(closed),
                 "wins": sum(1 for r in closed if r.net_pnl > 0),
@@ -296,3 +301,7 @@ class IronFlyPaper:
 
 
 iron_fly_paper = IronFlyPaper()
+# Same rules with 300-point wings, in its own rows: the research ranked them the most
+# cost-robust variant (FINDINGS.md section 11) - this collects their forward evidence.
+iron_fly_paper_w300 = IronFlyPaper(STRATEGY_W300, 300)
+IRON_FLY_BOOKS = {200: iron_fly_paper, 300: iron_fly_paper_w300}

@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     TICK_RETENTION_DAYS: int = 30
     TICK_BACKUP_DIR: str = "backups/ticks"
     TICK_CLEANUP_TIME_IST: str = "16:05"
+    # Option archive (app/research/option_archive.py): before each retention
+    # pass, every recorded day not yet archived is added to this SQLite file as
+    # per-minute option quotes (bid/ask, OI, volume) - the permanent history the
+    # research needs; ticks themselves are deleted after TICK_RETENTION_DAYS.
+    # Run in a separate process. Empty path disables it.
+    OPTION_ARCHIVE_PATH: str = "backups/options_archive.db"
     # ~1.3 GB of ticks a trading day: 10 GB is about a week's warning.
     LOW_DISK_WARN_GB: float = 10.0
 
