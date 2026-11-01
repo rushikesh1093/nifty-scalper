@@ -114,7 +114,9 @@ export function RegimeStatus() {
   }
 
   const elapsed = now === null ? null : data.seconds_in_regime + Math.max(0, (now - dataUpdatedAt) / 1000);
-  const allows = diag.data?.underlyings.find((u) => u.underlying === UNDERLYING)?.regime_allows_trading;
+  const probe = diag.data?.underlyings.find((u) => u.underlying === UNDERLYING);
+  const allows = probe?.regime_allows_trading;
+  const shadow = probe?.regime_gating === false;
   const tone = REGIME_TONE[data.regime] ?? "text-text-2";
 
   return (
@@ -126,7 +128,10 @@ export function RegimeStatus() {
           <span className="sr-only">{UNDERLYING} regime: </span>
           {regimeLabel(data.regime)}
         </span>
-        {allows === true && <span className="text-micro text-green">permits trading</span>}
+        {allows === true && shadow && (
+          <span className="text-micro text-text-3" title="Regime gating is off: it is detected but does not gate trades">shadow</span>
+        )}
+        {allows === true && !shadow && <span className="text-micro text-green">permits trading</span>}
         {allows === false && <span className="text-micro text-red">blocks trading</span>}
       </span>
       <span className="font-mono text-micro text-text-3" title={data.since ? `since ${data.since}` : undefined}>

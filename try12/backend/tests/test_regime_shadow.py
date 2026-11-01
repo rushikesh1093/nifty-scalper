@@ -111,3 +111,17 @@ def test_v2_opening_range_is_forming_before_0930():
     today = _candles(date(2026, 9, 1), 16)                # 09:15 - 09:30
     assert classify_v2(today[:14], (hist + today[:14])[-500:]).or_side == "FORMING"     # to 09:28
     assert classify_v2(today[:15], (hist + today[:15])[-500:]).or_side == "INSIDE"      # 09:29 closed
+
+
+def test_diagnostics_permission_follows_the_engine():
+    """The dashboard's "permits / blocks trading" comes from regime_permits_trading,
+    so it never reports a block the engine does not apply."""
+    from app.services.trading.strategy_orchestrator import regime_permits_trading
+    with _ctx(False):
+        assert regime_permits_trading("HIGH_VOL_CHOP") is True          # shadow: not a block
+        assert regime_permits_trading("DETECTOR_ERROR") is False
+        assert regime_permits_trading("EXPIRY_DAY") is False
+        assert regime_permits_trading(None) is None
+    with _ctx(True):
+        assert regime_permits_trading("HIGH_VOL_CHOP") is False
+        assert regime_permits_trading("BULL_TREND_NORMAL_VOL") is True

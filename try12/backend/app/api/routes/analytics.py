@@ -163,8 +163,17 @@ async def strategy_evidence(run_id: str = Depends(run_id_query),
     from app.services.metrics import strategy_evidence as se
     from app.services.metrics import strategy_report as sr
     log = await sr.load_closed(db, run_id)
+    p = params()
     out = {"run_id": run_id, "criteria": criteria_dict(),
            "rule_since": {k: str(v) for k, v in se.RULE_SINCE.items()},
+           # The policy the risk gate applies now (TradingParams), so the dashboard
+           # shows the engine's settings, not a copy of them.
+           "policy": {"evidence_blocked_strategies": list(p.evidence_blocked_strategies),
+                      "evidence_auto_block": p.evidence_auto_block,
+                      "pe_only_strategies": list(p.pe_only_strategies),
+                      "low_vol_skip_strategies": list(p.low_vol_skip_strategies),
+                      "max_option_buys_per_day": p.max_option_buys_per_day,
+                      "regime_gating": p.regime_gating},
            "strategies": _jsonable(se.evaluate(log))}
     if not log:
         out["empty_reason"] = EMPTY_REASON

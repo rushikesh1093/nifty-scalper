@@ -163,3 +163,29 @@ export interface TradePreviewRow {
   capital_used:   number;
   capital_needed: number;
 }
+
+/** GET /analytics/strategy-evidence — forward paper evidence per strategy and the active policy. */
+export type EvidenceStatus = "INSUFFICIENT_EVIDENCE" | "DISABLED_FOR_RESEARCH" | "PASSES_GATES";
+
+export interface StrategyEvidenceRow {
+  status:          EvidenceStatus;
+  reasons:         string[];
+  rule_since:      string | null;
+  counted:         number;
+  months_positive: string;
+  stats:           { n: number; expectancy_r?: number | null; profit_factor?: number | null };
+}
+
+export interface StrategyEvidence {
+  run_id:     string;
+  rule_since: Record<string, string>;
+  policy: {
+    evidence_blocked_strategies: string[];
+    evidence_auto_block:         boolean;
+    pe_only_strategies:          string[];
+    low_vol_skip_strategies:     string[];
+    max_option_buys_per_day:     number;
+    regime_gating:               boolean;
+  };
+  strategies: Record<string, StrategyEvidenceRow>;
+}

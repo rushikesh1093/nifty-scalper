@@ -93,6 +93,22 @@ export interface RegimeStatus {
   source:             "redis" | "absent";
 }
 
+/** GET /regime/v2 — shadow reading (gates nothing): volatility bucket and opening-range side. */
+export interface RegimeV2 {
+  underlying:    string;
+  as_of:         string;
+  regime_gating: boolean;
+  v2: {
+    label:          string;
+    vol:            "LOW" | "NORMAL" | "HIGH" | "UNKNOWN";
+    atr_percentile: number | null;
+    or_side:        "ABOVE" | "INSIDE" | "BELOW" | "FORMING" | "UNKNOWN";
+    or_high:        number | null;
+    or_low:         number | null;
+    data_ok:        boolean;
+  };
+}
+
 /** GET /regime/history?collapse=true (default) — ascending collapsed spans. */
 export interface RegimeSpan {
   regime:          string;

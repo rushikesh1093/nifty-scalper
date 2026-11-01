@@ -157,3 +157,13 @@ strategy-years; a forward hypothesis, since it was found in the same data. Evide
 (`RULE_SINCE`) for FCB, ORB and PIVOT restart on 2 Nov 2026. Tests in
 `tests/test_evidence_gates.py`; scripted replays and the `no_evidence_gates` fixture switch
 these off.
+
+## Frontend check and fixes (1 Nov 2026)
+
+Details: [FRONTEND_AUDIT.md](FRONTEND_AUDIT.md). Typecheck, lint and build were clean; every page
+handles a missing backend. Fixed: the diagnostics reported regime blocks the shadow-mode engine
+no longer applies (now `strategy_orchestrator.regime_permits_trading` plus `regime_gating` in the
+probe; the UI labels shadow mode); new Strategy evidence panel (policy + per-strategy status);
+regime v2 on the regime card; Next 14.2.3 → 14.2.35 and `npm audit fix`, with
+`images.unoptimized`, `next dev -H 127.0.0.1` and Docker bound to 127.0.0.1:3000 against the
+advisories only Next 15.5+ fixes. Backend suite: 1,208 passed, 1 skipped.

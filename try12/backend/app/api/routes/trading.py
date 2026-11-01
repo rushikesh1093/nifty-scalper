@@ -602,6 +602,7 @@ async def get_signal_diagnostics():
             "candles_required": _sr.MIN_TODAY_CANDLES,
             "atr": None, "atr_min": _sr.ATR_MIN_NIFTY if u == "NIFTY" else _sr.ATR_MIN_BANKNIFTY,
             "last_candle_at": None, "regime": None, "regime_allows_trading": None,
+            "regime_gating": None,
         }
         extra: dict = {}
         all_c = None
@@ -641,7 +642,9 @@ async def get_signal_diagnostics():
                 raw = await redis_cache._r().get(f"regime:{u}:current")
                 if raw:
                     info["regime"] = json.loads(raw).get("regime")
-                    info["regime_allows_trading"] = bool(get_regime_rule(info["regime"]).enabled_strategies)
+                    from app.services.trading.strategy_orchestrator import regime_permits_trading
+                    info["regime_allows_trading"] = regime_permits_trading(info["regime"])
+            info["regime_gating"] = _params().regime_gating
             extra["in_cooldown"] = bool(strategy_orchestrator.is_in_cooldown(u))
         except Exception as exc:
             _probe_failed(f"REGIME_PROBE_{u}", exc)

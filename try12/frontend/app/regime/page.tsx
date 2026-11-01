@@ -13,7 +13,7 @@ export default function RegimePage() {
     <div className="mx-auto max-w-[2400px] space-y-4 p-4">
       <PageHeader
         title="Market regime"
-        description="What the detector sees now, how it has changed over the last 24 hours, and whether the current regime lets strategies trade."
+        description="What the detector sees now and how it has changed over the last 24 hours. The regime runs in shadow unless regime gating is switched on: it is recorded, and only a detector failure or the expiry-day policy blocks trading."
         actions={
           <div role="group" aria-label="Underlying" className="inline-flex rounded-lg border border-border bg-surface-2 p-0.5">
             {(["NIFTY", "BANKNIFTY"] as const).map((u) => (

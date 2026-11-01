@@ -64,6 +64,9 @@ class UnderlyingProbe(BaseModel):
     last_candle_at:        Optional[str]   = None
     regime:                Optional[str]   = None
     regime_allows_trading: Optional[bool]  = None
+    # False = the regime runs in shadow (TradingParams.regime_gating): it is
+    # detected but does not gate strategies, direction or size.
+    regime_gating:         Optional[bool]  = None
     prev_day_snapshot:     Optional[str]   = None
     readiness:             Optional[ReadinessProbe] = None
 

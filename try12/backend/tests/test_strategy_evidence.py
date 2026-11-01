@@ -51,3 +51,6 @@ def test_endpoint_empty_payload(api):  # noqa: F811
     body = r.json()
     assert body["strategies"] == {} and body["empty_reason"] == "no_data_for_filter"
     assert body["criteria"]["min_trades"] == 100
+    assert body["policy"]["evidence_blocked_strategies"] == ["SUPERTREND_EMA"]
+    assert body["policy"]["pe_only_strategies"] == ["ORB_BREAKOUT", "PIVOT_BOUNCE", "FIRST_CANDLE_BREAKOUT"]
+    assert body["policy"]["max_option_buys_per_day"] == 2 and body["policy"]["regime_gating"] is False

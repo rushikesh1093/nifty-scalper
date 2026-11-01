@@ -138,7 +138,10 @@ function Checklist({ d, now }: { d: SignalDiagnostics; now: Date | null }) {
           <Row
             key={u.underlying}
             label={`${u.underlying} · candles ${u.candles_today ?? "—"}/${u.candles_required} · ATR ${n(u.atr, 1)}/${n(u.atr_min, 1)}`}
-            value={u.regime == null ? "regime not detected yet" : `${u.regime} · ${yesNo(u.regime_allows_trading, "allows trading", "blocks trading")}`}
+            value={u.regime == null ? "regime not detected yet"
+              : `${u.regime} · ${u.regime_gating === false && u.regime_allows_trading
+                  ? "shadow (does not gate trades)"
+                  : yesNo(u.regime_allows_trading, "allows trading", "blocks trading")}`}
             state={u.regime_allows_trading === false ? "warning" : u.regime_allows_trading ? "ok" : undefined}
           />
         ))}

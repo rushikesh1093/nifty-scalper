@@ -41,6 +41,19 @@ DETECTOR_ERROR = "DETECTOR_ERROR"      # the detector's fail-closed regime
 # operator chose trade_on_expiry_day = False - a policy, not a regime opinion.
 ENFORCED_REGIMES = frozenset({DETECTOR_ERROR, "EXPIRY_DAY"})
 
+
+def regime_permits_trading(regime: Optional[str]) -> Optional[bool]:
+    """Whether *regime* lets any strategy trade, exactly as the engine decides:
+    in shadow mode (regime_gating False) every regime does except
+    ENFORCED_REGIMES; with gating on, the regime_rules map decides. None when
+    no regime is known. The diagnostics and the dashboard read this, so they
+    never report a block the engine does not apply."""
+    if regime is None:
+        return None
+    if not params().regime_gating and regime not in ENFORCED_REGIMES:
+        return True
+    return bool(get_regime_rule(regime).enabled_strategies)
+
 logger = logging.getLogger(__name__)
 
 # Closed set of per-strategy reasons (design §6.5)
