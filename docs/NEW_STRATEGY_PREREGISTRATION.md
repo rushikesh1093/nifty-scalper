@@ -57,3 +57,20 @@ forward paper trading only. A candidate that fails is not added.
 **Honest caveat:** the test window has been looked at in aggregate for the five
 existing strategies, so it is not perfectly fresh for ideas formed after that look.
 Forward paper results are the only clean test of any candidate that passes.
+
+---
+
+# Round 2 (1 Nov 2026, before any result): Bollinger breakout and CPR + VWAP
+
+The two strategies in the master brief that have not been tested. Same data, harness,
+costs, windows, common 5-min Supertrend(10, 3) trail, one trade a day per strategy, and
+**the same pass criteria** as round 1 above. Parameters are the standard published ones,
+not fitted.
+
+| ID | Entry | Stop | Exit |
+|---|---|---|---|
+| **BOLLINGER_SQUEEZE_BREAKOUT** | 5-min bars, 09:45-14:00. Bollinger(20, 2) on 5-min closes. The band width (upper - lower) / middle of the previous bar is at or below the 25th percentile of the previous 88 bars' widths (a squeeze), and the bar closes outside the band | the middle band (SMA 20) at entry | common trail |
+| **CPR_VWAP** | Previous session's CPR: pivot P = (H+L+C)/3, BC = (H+L)/2, TC = 2P - BC. Only when the CPR is narrow: \|TC - BC\| < 0.20 % of P. 5-min bars, 09:30-13:00: the first close above max(TC, BC) that is also above session VWAP (long), or below min(TC, BC) and below VWAP (short) | the other side of the CPR | common trail |
+
+Both are reported for both directions, and by side (CE / PE), because round 1 found calls
+negative almost everywhere.

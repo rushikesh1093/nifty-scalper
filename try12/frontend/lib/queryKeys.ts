@@ -61,6 +61,7 @@ export const queryKeys = {
   regimeHistory:     (underlying: string, hours: number) => ["regime-history", underlying, hours] as const,
   regimePerformance: (underlying?: string) => ["regime-performance", underlying ?? "ALL"] as const,
   regimeV2:          (underlying: string) => ["regime-v2", underlying] as const,
+  dataHealth:        ["data-health"] as const,
 
   // Shell
   session: ["session-status"] as const,

@@ -54,3 +54,46 @@ TREND_DAY_CONTINUATION stays in `app/research/new_strategies.py` as a documented
 hypothesis. It is not registered in `build_strategies`. If you want it paper-traded
 anyway, it can be added as a disabled flag. It would then be a forward test of an
 unproven idea, not a strategy with an edge.
+
+---
+
+# Round 2 results (1 Nov 2026): Bollinger squeeze breakout, CPR + VWAP
+
+Rules fixed in NEW_STRATEGY_PREREGISTRATION.md, round 2 (commit `ddb16de`). Data in
+`research_results/new_candidates_round2/`.
+
+**BOLLINGER_SQUEEZE_BREAKOUT: not testable as registered.** It needs 20 + 88 + 1 = 109
+five-minute bars of history; the live runner keeps 500 one-minute candles (about 100), so it
+never fired. A **post-hoc** run with a 70-bar lookback (which can never pass) is clearly
+negative: **-0.24R** after costs (n = 322 after the design year, CI -0.41..-0.07, PF 0.66).
+Not added.
+
+**CPR_VWAP (both directions): fails.** Net +0.04R (CI -0.10..+0.19, PF 1.10), design year
+-0.11R, harsh -0.07R. By side it is two different rules:
+
+| side | Y1 | Y2 | Y3 (net R, MEASURED) |
+|---|---:|---:|---:|
+| calls (CE) | -0.22 (97) | -0.10 (61) | -0.09 (80) |
+| **puts (PE)** | **+0.10 (50)** | **+0.08 (81)** | **+0.25 (77)** |
+
+**CPR_VWAP puts only**, under the round-1 gates (selecting the put side follows round 1's
+"calls lose" finding, but it was chosen after seeing this split, so it is not independent proof):
+
+| gate | result | |
+|---|---|---|
+| n / sessions after the design year | 158 / 158 | ✅ |
+| net expectancy | +0.16R | ✅ |
+| design year | +0.10R (n = 50) | ✅ |
+| profit factor | 1.44 | ✅ |
+| without the best day | +0.10R | ✅ |
+| max drawdown | -10.3R | ✅ |
+| harsh costs | +0.05R | ✅ |
+| 95 % CI lower bound > 0 | -0.05 | ❌ |
+| ≥ 50 % months positive | 12 / 25 | ❌ |
+
+Calmar 3.9, Sharpe(daily) 1.7, Sortino 4.5. Monte Carlo over 2,000 session orders: max drawdown
+-10R typical, **-16R in the worst 5 %**, losing streak 8 typical, **12 in the worst 5 %**.
+
+**Verdict: the most promising rule found so far, and still not proven.** It fails two gates
+narrowly. It is not added to live trading under the pre-registered rule. It is a
+candidate for a forward paper test.

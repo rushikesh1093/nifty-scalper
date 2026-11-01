@@ -397,6 +397,37 @@ async def get_option_chain(
 
 # ── Feed management ────────────────────────────────────────────────────────────
 
+@router.get("/data-health")
+async def data_health():
+    """Live market-data health (app.services.market_data.data_health): candle
+    integrity for both indices and their futures, and quote freshness, crossed /
+    one-sided / wide quotes and feed latency across every subscribed token.
+    Read-only; nothing is repaired or substituted."""
+    from datetime import timezone
+    from app.runtime.context import params as _p
+    from app.services.market_data import data_health as dh
+    now = datetime.now(timezone.utc)
+    p = _p()
+    try:
+        series = {"NIFTY": _settings.NIFTY_TOKEN, "BANKNIFTY": _settings.BANKNIFTY_TOKEN}
+        for und in ("NIFTY", "BANKNIFTY"):
+            fut = await redis_cache.get(f"fut_token:{und}")
+            if fut:
+                series[f"{und}_FUT"] = str(fut)
+        candles = {name: dh.candle_checks(await redis_cache.get_candles(tok, "ONE_MINUTE", 500), now)
+                   for name, tok in series.items()}
+        tokens = [t for toks in market_feed._subscriptions.values() for t in toks]
+        ticks = await asyncio.gather(*(redis_cache.get_tick(t) for t in tokens))
+        quotes = dh.quote_checks(dict(zip(tokens, ticks)), now, p.stale_tick_seconds,
+                                 p.quote_max_spread_pct)
+    except RedisError as exc:
+        raise HTTPException(status_code=503, detail=f"cache unavailable: {exc}")
+    return {"as_of": now.isoformat(), "in_session": dh.in_session(now),
+            "feed_connected": market_feed.is_connected,
+            "status": dh.overall([c["status"] for c in candles.values()] + [quotes["status"]]),
+            "candles": candles, "quotes": quotes}
+
+
 @router.get("/feed/status")
 async def feed_status():
     return {

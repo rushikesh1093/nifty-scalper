@@ -187,3 +187,13 @@ Details: [DATA_AND_EVIDENCE_PIPELINE.md](DATA_AND_EVIDENCE_PIPELINE.md).
 * Startup check 8: the database must be at `SCHEMA_HEAD` (0017); otherwise startup stops with
   `python -m alembic upgrade head`.
 * Tests: `tests/test_data_and_shadow.py`.
+
+## Master-brief pass (1 Nov 2026)
+
+Documents: SYSTEM_AUDIT, DATA_QUALITY_REPORT, STRATEGY_AUDIT, RISK_MANAGEMENT_AUDIT,
+IMPLEMENTATION_ROADMAP. Live data-health engine (`market_data/data_health.py`,
+`GET /api/v1/market/data-health`, Market page panel). Round 2 research: Bollinger squeeze
+(untestable as registered; post-hoc -0.24R) and CPR + VWAP (puts +0.16R, 7 of 9 gates, not
+added). Research metrics gain Calmar and a session-order Monte Carlo. The regime is not used
+for trading (user instruction). `pytest-timeout` (300 s per test) in `requirements-dev.txt` /
+`pytest.ini`. Suite: 1,231 passed, 1 skipped.
