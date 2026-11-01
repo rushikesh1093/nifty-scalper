@@ -22,6 +22,7 @@
 | VIX gap | 15 Jul - early Aug 2025 | VIX is a recorded feature only |
 | Stitched futures history | two tokens, one mislabelled | Highest-volume series per day; ratios only |
 | Regime volatility input | 20-minute window (noise) | Fixed to 486 candles (REGIME_REDESIGN.md) |
+| Futures candles after the close | cached to 15:39 (spot stops at 15:28), built from after-hours ticks | Found by the live data-health check, 1 Nov. Strategies and research read in-session candles only; not changed |
 
 ## Live data-health engine (new)
 
