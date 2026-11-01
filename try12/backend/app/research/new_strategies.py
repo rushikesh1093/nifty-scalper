@@ -246,3 +246,91 @@ class VWAPExtremeReversion(_OncePerDay):
         return self._plan_signal(direction, c, indicators,
                                  f"{stretch:+.1f} ATR from VWAP {v_now:.1f}, ADX {adx:.1f}, "
                                  f"reverting, close {c:.1f}", plan)
+
+
+# ── Round 2 (docs/NEW_STRATEGY_PREREGISTRATION.md) ────────────────────────────
+
+class BollingerSqueezeBreakout(_Trail5):
+    name = "BOLLINGER_SQUEEZE_BREAKOUT"
+    PERIOD, MULT = 20, 2.0
+    LOOKBACK, PCTL = 88, 25.0
+    WINDOW = (dtime(9, 45), dtime(14, 0))
+
+    async def evaluate(self, candles, indicators):
+        bars = self._ready(candles)
+        if bars is None or len(bars) < self.PERIOD + self.LOOKBACK + 1:
+            return None
+        last = bars[-1]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        cl = _arr(bars, "close")
+        t = len(bars) - 1
+
+        def band(i):                      # (lower, middle, upper) of the 20 closes ending at i
+            w = cl[i - self.PERIOD + 1:i + 1]
+            m, sd = float(w.mean()), float(w.std())
+            return m - self.MULT * sd, m, m + self.MULT * sd
+
+        widths = []
+        for i in range(t - self.LOOKBACK - 1, t):           # previous bar and the 88 before it
+            lo, mid, up = band(i)
+            widths.append((up - lo) / mid if mid else 0.0)
+        prev_w, ref = widths[-1], widths[:-1]
+        if prev_w > np.percentile(ref, self.PCTL):
+            return None
+        lo, mid, up = band(t)
+        c = last["close"]
+        for side, sgn, direction in SIDES:
+            if sgn * (c - (up if sgn > 0 else lo)) > 0:
+                plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(mid, 2))
+                return self._plan_signal(direction, c, indicators,
+                                         f"Bollinger squeeze breakout {side}, close {c:.1f}, "
+                                         f"band {lo:.1f}-{up:.1f}", plan)
+        return None
+
+
+class CPRVWAP(_Trail5):
+    name = "CPR_VWAP"
+    MAX_WIDTH_PCT = 0.20
+    WINDOW = (dtime(9, 30), dtime(13, 0))
+    NEEDS_PREV_SESSION = True
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._levels_day, self._prev = None, None
+
+    def set_prev_session(self, for_day, levels, reason: Optional[str] = None) -> None:
+        self._levels_day, self._prev = for_day, levels
+
+    def prev_session_problem(self) -> Optional[str]:
+        if self._levels_day != trading_day() or self._prev is None:
+            return "previous-session levels not resolved for today"
+        return None
+
+    async def evaluate(self, candles, indicators):
+        bars = resample(candles, 5)                        # today only
+        if len(bars) < 3 or not self._new_bar(bars) or self.open_positions \
+                or self._traded_day == trading_day() or self.prev_session_problem():
+            return None
+        last = bars[-1]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        h, l, c0 = float(self._prev.high), float(self._prev.low), float(self._prev.close)
+        p = (h + l + c0) / 3
+        bc = (h + l) / 2
+        tc = 2 * p - bc
+        top, bottom = max(tc, bc), min(tc, bc)
+        if (top - bottom) / p * 100 >= self.MAX_WIDTH_PCT:
+            return None
+        vw = _session_vwap_at(candles).get(last["end"])
+        if vw is None:
+            return None
+        c = last["close"]
+        for side, sgn, direction in SIDES:
+            level, stop = (top, bottom) if sgn > 0 else (bottom, top)
+            if sgn * (c - level) > 0 and sgn * (c - vw) > 0:
+                plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2))
+                return self._plan_signal(direction, c, indicators,
+                                         f"narrow CPR {bottom:.1f}-{top:.1f} broken {side} with VWAP "
+                                         f"{vw:.1f}, close {c:.1f}", plan)
+        return None

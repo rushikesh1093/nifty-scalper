@@ -14,7 +14,8 @@ from app.services.market_data.timestamps import IST
 from app.services.trading.exit_plan import ExitPlan
 from tests.test_research import _day
 
-CANDIDATES = (N.VolSqueezeBreakout, N.TrendDayContinuation, N.GapFade, N.VWAPExtremeReversion)
+CANDIDATES = (N.VolSqueezeBreakout, N.TrendDayContinuation, N.GapFade, N.VWAPExtremeReversion,
+              N.BollingerSqueezeBreakout, N.CPRVWAP)
 
 
 def _walk_days(seed: int, n: int = 6, vol: float = 6.0, drift: float = 0.0) -> list[Session]:

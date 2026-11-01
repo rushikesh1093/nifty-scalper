@@ -286,3 +286,14 @@ def test_archive_parses_symbols_and_keeps_only_session_minutes(tmp_path):
     assert q.quote("2026-10-27T09:30", "2026-11-03", 22050.0, "CE") == (99.8, 100.2)
     assert q.spot["2026-10-27T09:30"] == 22040.0
     assert options.Quotes(str(tmp_path / "a.db"), "BANKNIFTY").q == {}
+
+
+def test_calmar_and_monte_carlo():
+    rows = [{"r_net": v, "day": f"d{i:02d}"} for i, v in enumerate([1, -1, 2, -1, -1, 3, -1, 1] * 5)]
+    s = metrics.summarize(rows)
+    assert s["calmar"] is not None and s["calmar"] > 0
+    mc = metrics.monte_carlo(rows, n=300)
+    assert mc == metrics.monte_carlo(rows, n=300)                     # seeded, reproducible
+    assert mc["max_dd_r_p95"] <= mc["max_dd_r_p50"] <= mc["max_dd_r_p5"] <= 0
+    assert mc["losing_streak_p95"] >= mc["losing_streak_p50"] >= 1
+    assert metrics.monte_carlo([]) == {"paths": 0}

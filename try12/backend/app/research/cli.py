@@ -47,7 +47,9 @@ def new_specs() -> list[tuple]:
     return [("SQUEEZE", "VOL_SQUEEZE_BREAKOUT", "VolSqueezeBreakout", {}),
             ("TREND_DAY", "TREND_DAY_CONTINUATION", "TrendDayContinuation", {}),
             ("GAP_FADE", "GAP_FADE", "GapFade", {}),
-            ("VWAP_REV", "VWAP_EXTREME_REVERSION", "VWAPExtremeReversion", {})]
+            ("VWAP_REV", "VWAP_EXTREME_REVERSION", "VWAPExtremeReversion", {}),
+            ("BB_SQUEEZE", "BOLLINGER_SQUEEZE_BREAKOUT", "BollingerSqueezeBreakout", {}),
+            ("CPR_VWAP", "CPR_VWAP", "CPRVWAP", {})]
 
 
 def _cls(cls_name: str):

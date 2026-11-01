@@ -10,7 +10,13 @@ trades. Sharpe and Sortino are computed on DAILY R sums over sessions with at
 least one trade, annualised by sqrt(252); Sortino's downside deviation is
 the root mean square of min(daily R, 0) over all those days (target 0).
 Both are descriptive only: daily R sums of a strategy that trades on a
-minority of days are not a portfolio return series.
+minority of days are not a portfolio return series. Calmar = (mean daily R x
+252) / |max drawdown in R|, same caveat.
+
+Monte Carlo (``monte_carlo``): the order of whole SESSIONS is reshuffled
+(trades of one session stay together), giving the spread of max drawdown and
+of the worst losing run that the same trades could have produced in another
+order. The total R is the same in every path; the risk is what changes.
 """
 from __future__ import annotations
 
@@ -106,6 +112,7 @@ def summarize(rows: list[dict], r_key: str = "r_net", day_key: str = "day",
         "max_drawdown_r": max_drawdown(rs),
         "max_consecutive_losses": max_consecutive_losses(rs),
         "sharpe_daily_ann": round(mu / sd * math.sqrt(252), 3) if sd > 0 else None,
+        "calmar": (round(mu * 252 / abs(max_drawdown(rs)), 3) if max_drawdown(rs) < 0 else None),
         "sortino_daily_ann": round(mu / dsd * math.sqrt(252), 3) if dsd > 0 else None,
         "worst_session_r": round(min(d), 3), "best_session_r": round(max(d), 3),
         "expectancy_without_best_session": round((sum(rs) - max(d)) / max(1, n - 1), 4),
@@ -117,6 +124,32 @@ def summarize(rows: list[dict], r_key: str = "r_net", day_key: str = "day",
     if boot:
         out["expectancy_ci95"] = cluster_bootstrap_mean(rs, [r[day_key] for r in rows])
     return out
+
+
+def monte_carlo(rows: list[dict], r_key: str = "r_net", day_key: str = "day",
+                n: int = BOOTSTRAP_N, seed: int = BOOTSTRAP_SEED) -> dict:
+    """Max drawdown and longest losing streak under *n* random session orders.
+    Percentiles 5 / 50 / 95 (drawdown: 95 = the bad tail)."""
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[r[day_key]].append(float(r[r_key]))
+    days = [groups[k] for k in sorted(groups)]
+    if not days:
+        return {"paths": 0}
+    rng = random.Random(seed)
+    dds, streaks = [], []
+    for _ in range(n):
+        order = days[:]
+        rng.shuffle(order)
+        seq = [x for d in order for x in d]
+        dds.append(max_drawdown(seq))
+        streaks.append(max_consecutive_losses(seq))
+    dds.sort()
+    streaks.sort()
+    pick = lambda xs, q: xs[min(len(xs) - 1, int(q * len(xs)))]  # noqa: E731
+    return {"paths": n, "max_dd_r_p50": round(pick(dds, 0.5), 3), "max_dd_r_p95": round(pick(dds, 0.05), 3),
+            "max_dd_r_p5": round(pick(dds, 0.95), 3),
+            "losing_streak_p50": pick(streaks, 0.5), "losing_streak_p95": pick(streaks, 0.95)}
 
 
 def breakdown(rows: list[dict], key: Callable[[dict], object], r_key: str = "r_net",

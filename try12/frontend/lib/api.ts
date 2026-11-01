@@ -1,7 +1,7 @@
 import { http, rootHttp } from "@/lib/http";
 import type {
   Tick, Candle, OptionChain, Instrument, SessionStatus, FeedStatus,
-  RegimeStatus, RegimeSpan, RegimePerformanceRow, RegimeV2,
+  RegimeStatus, RegimeSpan, RegimePerformanceRow, RegimeV2, DataHealth,
 } from "@/types/market";
 
 // All versioned calls go through `http` (baseURL NEXT_PUBLIC_API_URL); failures arrive as ApiError.
@@ -53,6 +53,8 @@ export const healthCheck = () =>
   rootHttp.get<HealthStatus>("/health").then(r => r.data);
 
 // ── Regime ────────────────────────────────────────────────────────────────────
+export const getDataHealth = () => http.get<DataHealth>("/market/data-health").then(r => r.data);
+
 export const getRegimeV2 = (underlying = "NIFTY") =>
   http.get<RegimeV2>(`/regime/v2`, { params: { underlying } }).then(r => r.data);
 
