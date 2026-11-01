@@ -406,6 +406,9 @@ class FakeRedis:
     async def get_multiple_ltp(self, tokens):
         return {t: await self.get_ltp(t) for t in tokens}
 
+    async def get_multiple_ticks(self, tokens):
+        return {t: await self.get_tick(t) for t in tokens}
+
     async def get_tick(self, token):
         v = self.kv.get(f"tick:{token}")
         return copy.deepcopy(v) if v is not None else None

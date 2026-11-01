@@ -86,6 +86,14 @@ class RedisCache:
         val = await self._r().get(f"tick:{token}")
         return json.loads(val) if val else None
 
+    async def get_multiple_ticks(self, tokens: list[str]) -> dict[str, Optional[dict]]:
+        """Many ticks in ONE round trip (MGET): one pooled connection, however many
+        tokens. A gather of get_tick per token can exhaust the 20-connection pool."""
+        if not tokens:
+            return {}
+        values = await self._r().mget(*[f"tick:{t}" for t in tokens])
+        return {t: (json.loads(v) if v else None) for t, v in zip(tokens, values)}
+
     # ── OHLC candles ─────────────────────────────────────────────────────────
 
     async def push_candle(self, token: str, interval: str, candle: dict, max_candles: int = 500):

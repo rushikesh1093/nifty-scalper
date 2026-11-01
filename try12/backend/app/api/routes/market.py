@@ -417,9 +417,8 @@ async def data_health():
         candles = {name: dh.candle_checks(await redis_cache.get_candles(tok, "ONE_MINUTE", 500), now)
                    for name, tok in series.items()}
         tokens = [t for toks in market_feed._subscriptions.values() for t in toks]
-        ticks = await asyncio.gather(*(redis_cache.get_tick(t) for t in tokens))
-        quotes = dh.quote_checks(dict(zip(tokens, ticks)), now, p.stale_tick_seconds,
-                                 p.quote_max_spread_pct)
+        ticks = await redis_cache.get_multiple_ticks(tokens)       # one round trip
+        quotes = dh.quote_checks(ticks, now, p.stale_tick_seconds, p.quote_max_spread_pct)
     except RedisError as exc:
         raise HTTPException(status_code=503, detail=f"cache unavailable: {exc}")
     return {"as_of": now.isoformat(), "in_session": dh.in_session(now),

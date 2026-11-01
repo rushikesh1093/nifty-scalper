@@ -61,3 +61,32 @@ def test_overall_takes_the_worst():
     assert dh.overall([dh.OK, dh.FAIL, dh.WARN]) == dh.FAIL
     assert dh.overall([dh.CLOSED, dh.CLOSED]) == dh.CLOSED
     assert dh.overall([dh.CLOSED, dh.OK]) == dh.OK
+
+
+def test_endpoint_reads_all_ticks_in_one_round_trip(monkeypatch):
+    """Regression: the endpoint gathered one get_tick per subscribed token (173
+    live), exhausting the 20-connection Redis pool ("Too many connections")."""
+    import asyncio
+    from app.api.routes import market as m
+    calls = {"get_tick": 0, "multi": 0}
+
+    class _Cache:
+        async def get(self, key):
+            return None
+
+        async def get_candles(self, token, interval, n):
+            return []
+
+        async def get_tick(self, token):
+            calls["get_tick"] += 1
+            return None
+
+        async def get_multiple_ticks(self, tokens):
+            calls["multi"] += 1
+            return {t: None for t in tokens}
+
+    monkeypatch.setattr(m, "redis_cache", _Cache())
+    monkeypatch.setattr(m.market_feed, "_subscriptions", {1: [str(i) for i in range(173)]})
+    out = asyncio.run(m.data_health())
+    assert calls == {"get_tick": 0, "multi": 1}
+    assert out["quotes"]["tokens"] == 173
