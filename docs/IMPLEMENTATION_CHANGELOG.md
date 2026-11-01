@@ -167,3 +167,8 @@ probe; the UI labels shadow mode); new Strategy evidence panel (policy + per-str
 regime v2 on the regime card; Next 14.2.3 → 14.2.35 and `npm audit fix`, with
 `images.unoptimized`, `next dev -H 127.0.0.1` and Docker bound to 127.0.0.1:3000 against the
 advisories only Next 15.5+ fixes. Backend suite: 1,208 passed, 1 skipped.
+
+Next 14.2.35 → 16.4.3 with React 19.3.1 (15.5.28 still failed `npm audit` via its bundled
+postcss); async `params` on the run page, ESLint 9 flat config replacing `next lint`, nav bar
+scrolls in its own strip at 375 px. `npm audit --omit=dev`: 0 vulnerabilities. Details in
+FRONTEND_AUDIT.md, Security.
