@@ -917,6 +917,10 @@ class CPRVWAP(_Trail5):
         for side, sgn, direction in SIDES:
             level, stop = (top, bottom) if sgn > 0 else (bottom, top)
             if sgn * (c - level) > 0 and sgn * (c - vw) > 0:
+                # the day's first break only, whichever side and whatever the
+                # gates then do with it: the tested rule. A refused call (puts
+                # only) must not leave the day open for a later put.
+                self._traded_day = trading_day()
                 plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2))
                 return self._plan_signal(direction, c, indicators,
                                          f"narrow CPR {bottom:.1f}-{top:.1f} broken {side} with VWAP "

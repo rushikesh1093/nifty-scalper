@@ -98,8 +98,8 @@ class StudyCollector:
                 ist      = datetime.now(timezone(timedelta(hours=5, minutes=30)))
                 ist_mins = ist.hour * 60 + ist.minute
 
-                # Only during market hours 9:15 – 15:30
-                if 9 * 60 + 15 <= ist_mins <= 15 * 60 + 30:
+                # Only during market hours 9:15 – 15:30, Monday to Friday
+                if ist.weekday() < 5 and 9 * 60 + 15 <= ist_mins <= 15 * 60 + 30:
                     for underlying in ["NIFTY", "BANKNIFTY"]:
                         await self._take_snapshot(underlying)
                 else:
@@ -490,7 +490,9 @@ class StudyCollector:
                 ist_h = ist.hour
                 ist_m = ist.minute
 
-                if ist_h == 15 and 35 <= ist_m <= 36:
+                # weekdays only: a Saturday / Sunday row was built from stray
+                # off-hours ticks and became "the previous day" (1 Nov 2026)
+                if ist.weekday() < 5 and ist_h == 15 and 35 <= ist_m <= 36:
                     for underlying in ["NIFTY", "BANKNIFTY"]:
                         await self._save_daily_summary(underlying)
                     await self._fetch_vix()
@@ -558,15 +560,8 @@ class StudyCollector:
                 last_feat = feat_r.scalar_one_or_none()
 
                 # Prev day close
-                prev_r = await db.execute(
-                    select(MarketDailySnapshot)
-                    .where(
-                        MarketDailySnapshot.underlying == underlying,
-                        MarketDailySnapshot.date < today,
-                    )
-                    .order_by(desc(MarketDailySnapshot.date)).limit(1)
-                )
-                prev = prev_r.scalar_one_or_none()
+                from app.services.market_data.prev_session import prev_session_snapshot
+                prev = await prev_session_snapshot(db, underlying, today)
                 prev_close = prev.close if prev else day_open
 
                 # Expiry info

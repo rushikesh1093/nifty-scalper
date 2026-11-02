@@ -156,6 +156,21 @@ def resolve(day: date, minute_candles: Iterable[dict],
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
+async def prev_session_snapshot(db, underlying: str, before: date):
+    """The latest market_daily_snapshots row of *underlying* dated before *before*
+    on a weekday, or None. The 15:35 collector also ran on weekends (rows for
+    Sat 10 Oct and Sun 1 Nov 2026, built from stray off-hours ticks), so the
+    newest row is not always a real session."""
+    from sqlalchemy import desc, select
+    from app.db.models.market_study import MarketDailySnapshot
+    rows = (await db.execute(
+        select(MarketDailySnapshot)
+        .where(MarketDailySnapshot.underlying == underlying, MarketDailySnapshot.date < before)
+        .order_by(desc(MarketDailySnapshot.date)).limit(7)
+    )).scalars().all()
+    return next((r for r in rows if r.date.weekday() < 5), None)
+
+
 async def db_minute_candles(db, token: str, day: date) -> list[dict]:
     """1-min ohlc rows of *token* for the LOOKBACK_DAYS calendar days before *day*.
     Stored timestamps are UTC; naive ones (SQLite) are read as UTC."""

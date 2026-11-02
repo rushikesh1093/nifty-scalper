@@ -159,8 +159,8 @@ async def classify_day(db, underlying: str, day: date, params) -> DayCoverage:
     # facts first (all of them are reported, whichever criterion fails) ------
     candles = [c for c in await spot_candles(db, u, day) if _in_session(c["timestamp"])]
     cov.spot_candles = len(candles)
-    prev = (await db.execute(select(func.max(MarketDailySnapshot.date)).where(
-        MarketDailySnapshot.underlying == u, MarketDailySnapshot.date < day))).scalar()
+    from app.services.market_data.prev_session import prev_session_snapshot
+    prev = getattr(await prev_session_snapshot(db, u, day), "date", None)
     cov.prev_snapshot = prev.isoformat() if prev else None
 
     universe = await replay_instruments(db, u, day)
