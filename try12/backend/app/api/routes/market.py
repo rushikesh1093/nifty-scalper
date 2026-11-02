@@ -206,12 +206,8 @@ async def get_levels(
     try:
         async with AsyncSessionLocal() as db:
             candles, candle_source = await _load_candles_for_levels(db, spot_token, fetch_count)
-            snap = (await db.execute(
-                select(MarketDailySnapshot)
-                .where(MarketDailySnapshot.underlying == u, MarketDailySnapshot.date < session_date)
-                .order_by(desc(MarketDailySnapshot.date))
-                .limit(1)
-            )).scalar_one_or_none()
+            from app.services.market_data.prev_session import prev_session_snapshot
+            snap = await prev_session_snapshot(db, u, session_date)
             prev_day = (
                 {"high": snap.high, "low": snap.low, "close": snap.close, "date": snap.date.isoformat()}
                 if snap else None

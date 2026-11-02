@@ -467,6 +467,7 @@ async def get_signal_diagnostics():
     """
     # Function-local imports: gates/constants are read from the runner itself so
     # the reported thresholds can never drift from the ones the loop applies.
+    from app.runtime.context import params as _params
     from app.services.trading import strategy_runner as _sr
     from app.services.trading.signal_diagnostics import (
         SESSION_WINDOW_NOTE, derive_blockers, format_session_window, session_window_open, vix_gate,
@@ -655,11 +656,9 @@ async def get_signal_diagnostics():
         if db_available:
             try:
                 async with AsyncSessionLocal() as db:
-                    snap_date = (await db.execute(
-                        select(MarketDailySnapshot.date)
-                        .where(MarketDailySnapshot.underlying == u, MarketDailySnapshot.date < now_ist.date())
-                        .order_by(desc(MarketDailySnapshot.date)).limit(1)
-                    )).scalar()
+                    from app.services.market_data.prev_session import prev_session_snapshot
+                    prev_snap = await prev_session_snapshot(db, u, now_ist.date())
+                    snap_date = prev_snap.date if prev_snap else None
                     extra["prev_day_snapshot"] = snap_date.isoformat() if snap_date else None
                     info["prev_day_snapshot"] = extra["prev_day_snapshot"]
 
