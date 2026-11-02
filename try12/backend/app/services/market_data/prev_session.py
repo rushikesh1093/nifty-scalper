@@ -75,11 +75,16 @@ def _weekdays_between(a: date, b: date) -> list[date]:
 
 
 def _sessions(candles: Iterable[dict], before: date) -> dict[date, dict[datetime, dict]]:
-    """In-session 1-min candles before *before*, per IST date, de-duplicated on the minute."""
+    """In-session 1-min candles before *before*, per IST weekday, de-duplicated on the minute.
+
+    Weekend dates are dropped: stray off-hours ticks stamped on a Sunday (2 Nov
+    2026: 4 candles on 1 Nov) would otherwise become "the previous session" and
+    hide Friday's complete one. A special weekend session still counts through
+    the broker daily candle, which is not filtered."""
     out: dict[date, dict[datetime, dict]] = {}
     for c in candles:
         ts = try_normalize_candle_timestamp(c.get("timestamp"))
-        if ts is None or ts.date() >= before:
+        if ts is None or ts.date() >= before or ts.date().weekday() >= 5:
             continue
         if not (SESSION_OPEN <= ts.time().replace(tzinfo=None) < SESSION_CLOSE):
             continue

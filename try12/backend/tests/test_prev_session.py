@@ -55,6 +55,18 @@ def test_monday_uses_friday_not_calendar_yesterday():
     assert broker.levels.high == 22200.0
 
 
+def test_stray_weekend_candles_never_hide_friday():
+    """2 Nov 2026: 4 off-hours candles stamped Sunday 1 Nov made Sunday "the
+    previous session", so PIVOT_BOUNCE and CPR_VWAP had no levels on Monday."""
+    monday, friday = date(2026, 11, 2), datetime(2026, 10, 30, 9, 15)
+    stray = _session(datetime(2026, 11, 1, 12, 54), n=4)
+    res = ps.resolve(monday, _session(friday) + stray)
+    assert res.levels.day == friday.date() and res.levels.source == ps.MINUTE_1M
+    broker = ps.resolve(monday, _session(friday) + stray,
+                        [_daily(friday.date(), 22200.0, 21800.0, 22050.0)])
+    assert (broker.levels.day, broker.levels.source) == (friday.date(), ps.BROKER_DAILY)
+
+
 def test_the_day_after_a_holiday_uses_the_last_real_session():
     wed = date(2026, 9, 2)                     # Tuesday 1 Sep a holiday: no data
     res = ps.resolve(wed, [], [_daily(date(2026, 8, 31), 22300.0, 21950.0, 22100.0)])
