@@ -80,3 +80,15 @@ def test_gap_fade_enters_toward_the_previous_close():
     trades = sim.run_days(N.GapFade, [s], prev.candles, prev, "T")
     assert trades and trades[0].side == "SELL" and trades[0].signal_time == "09:35"
     assert trades[0].target == round(pc, 2) and trades[0].stop0 == round(o + 10, 2)
+
+
+def test_cpr_vwap_is_the_live_class_and_waits_for_prev_session_levels():
+    """CPR_VWAP moved into the live set (paper forward test): the research name
+    is the live class, the runner hands it yesterday's levels, and its rule date
+    starts a fresh evidence record."""
+    from app.services.metrics.strategy_evidence import RULE_SINCE
+    from app.strategies.strategies import CPRVWAP, build_strategies
+    assert N.CPRVWAP is CPRVWAP
+    s = next(s for s in build_strategies("NIFTY") if s.name == "CPR_VWAP")
+    assert s.NEEDS_PREV_SESSION and s.prev_session_problem()   # no levels yet: no trade
+    assert "CPR_VWAP" in RULE_SINCE

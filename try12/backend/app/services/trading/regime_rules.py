@@ -78,13 +78,14 @@ SAFETY_BLOCKED_REGIMES = frozenset({
 # The four strategies added 23 Oct: the opening breakout and momentum burst are
 # directional (trend + breakout regimes, the first candle also wherever ORB may
 # fire), the 15-min pullback trades trends, and the pivot bounce is a range play.
+# CPR_VWAP (1 Nov) breaks a narrow CPR, a compression: breakout and range regimes.
 _OPEN_BREAK = S.FIRST_CANDLE_BREAKOUT.value
 _TREND = frozenset({S.VWAP_EMA_PULLBACK.value, S.SUPERTREND_EMA.value, S.ORB_BREAKOUT.value,
                     _OPEN_BREAK, S.EMA_RSI_PULLBACK_15M.value, S.MOMENTUM_BURST.value})
 _BREAKOUT = frozenset({S.ORB_BREAKOUT.value, S.SUPERTREND_EMA.value,
                        S.VWAP_EMA_PULLBACK.value, _OPEN_BREAK, S.EMA_RSI_PULLBACK_15M.value,
-                       S.MOMENTUM_BURST.value})
-_RANGE = frozenset({S.ORB_BREAKOUT.value, _OPEN_BREAK, S.PIVOT_BOUNCE.value})
+                       S.MOMENTUM_BURST.value, S.CPR_VWAP.value})
+_RANGE = frozenset({S.ORB_BREAKOUT.value, _OPEN_BREAK, S.PIVOT_BOUNCE.value, S.CPR_VWAP.value})
 
 REGIME_RULES: dict[str, RegimeRule] = {
     # ── Trend regimes ────────────────────────────────────────────────────────

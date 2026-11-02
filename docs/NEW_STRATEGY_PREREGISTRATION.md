@@ -74,3 +74,51 @@ not fitted.
 
 Both are reported for both directions, and by side (CE / PE), because round 1 found calls
 negative almost everywhere.
+
+---
+
+# Round 3 (1 Nov 2026, before any result): volatility-risk-premium filters on the selling side
+
+Why: 22 directional option-buying rules have failed. The evidence that has held in both
+periods is about **volatility**, not direction: realised intraday moves are ~0.69x the
+VIX-implied move (FINDINGS.md §5), the volatility state predicts the next 30 minutes' range
+out of sample, and the expiry-day ATM iron fly is the only rule positive in both the old and
+fresh years (+0.15R, FINDINGS.md §6, §11). The standard way a premium seller improves is to
+sell only when premium is rich relative to what the market is actually delivering, and to
+stand aside on days that open violently (trend days are what kill short gamma). These are
+textbook filters, not fitted ones: each threshold is the stock's own trailing median, so
+there is no constant to tune.
+
+Harness: `research/protocol8_screen.py`, reusing `protocol3_screen.py`'s calibrated
+Black-Scholes pricing and charges and `protocol7_screen.py`'s `trade()` (lot 65, R = P&L /
+max loss). Same split: fresh = 23 Oct 2023 - 22 Oct 2025, seen = after.
+
+## Features (prior sessions only, or minutes before the 09:30 entry)
+* Implied daily move `IV1 = VIX(09:30) / 100 / sqrt(252)`.
+* Realised `RV10` = root-mean-square of ln(close 15:29 / open 09:15) over the **previous 10
+  sessions**.
+* `VRP = IV1 / RV10`. **VRP_HIGH**: today's VRP ≥ the median VRP of the previous 60 sessions.
+* Opening range `OR = (max - min of spot 09:15-09:29) / spot 09:30`. **QUIET_OPEN**: today's OR
+  ≤ the median OR of the previous 60 sessions.
+* The first 60 sessions of the data have no trailing window and are skipped by all rules
+  below (the unfiltered baselines are re-run on the same days for the comparison).
+
+## Rules (entry 09:30, exit 15:00, no stop)
+| ID | Days | Structure | Filter |
+|---|---|---|---|
+| `IF0_VRP` | expiry | ATM fly, wings ±200 | VRP_HIGH |
+| `IF0_QUIET` | expiry | ATM fly, wings ±200 | QUIET_OPEN |
+| `IF0_W300_VRP` | expiry | ATM fly, wings ±300 | VRP_HIGH |
+| `NX_FLY_BOTH` | non-expiry (nearest weekly) | ATM fly, wings ±200 | VRP_HIGH and QUIET_OPEN |
+
+## Pass criteria ("real" costs, Rs 0.25/leg, no haircut, as PROTOCOL7)
+1. Fresh: n ≥ 40, mean R > 0, bootstrap 95 % CI lower bound > -0.05, ≥ 5 of 9 quarters positive.
+2. Seen: mean R > 0.
+3. **The filter must separate**: mean R of the kept days > mean R of the skipped days, in
+   **both** fresh and seen.
+4. Harsh costs (3 % haircut + Rs 0.50/leg), fresh: mean R > -0.05.
+
+A pass is added to the iron-fly paper book as a **logged filter** (the fly still trades;
+the filter's verdict is stored per expiry), so forward data can confirm it before it ever
+skips a trade. A fail is reported and not built. Caveat written now: the unfiltered expiry
+fly has been studied on both periods, so a filter pass is weaker evidence than a fresh rule.

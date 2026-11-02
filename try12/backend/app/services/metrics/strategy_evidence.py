@@ -33,6 +33,7 @@ RULE_SINCE: dict[str, date] = {
     "EMA_RSI_PULLBACK_15M": date(2026, 11, 2),       # Supertrend trail exit + low-vol entry skip
     "ORB_BREAKOUT": date(2026, 11, 2),               # puts only
     "PIVOT_BOUNCE": date(2026, 11, 2),               # puts only
+    "CPR_VWAP": date(2026, 11, 2),                   # added as a paper forward test, puts only
 }
 
 

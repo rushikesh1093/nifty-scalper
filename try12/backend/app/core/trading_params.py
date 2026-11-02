@@ -139,8 +139,10 @@ class TradingParams:
     # lost in 14 of 15 strategy-years 2023-26 (IV falls as NIFTY rallies); puts
     # did better in most, and every year for PIVOT_BOUNCE. ORB calls: -0.17 /
     # -0.20 / -0.21 R. A forward hypothesis (found in the same data): judge it
-    # on paper evidence. () = both directions.
-    pe_only_strategies: tuple = ("ORB_BREAKOUT", "PIVOT_BOUNCE", "FIRST_CANDLE_BREAKOUT")
+    # on paper evidence. CPR_VWAP: puts +0.10 / +0.08 / +0.25 R by year, calls
+    # negative every year (NEW_STRATEGY_RESULTS.md round 2). () = both directions.
+    pe_only_strategies: tuple = ("ORB_BREAKOUT", "PIVOT_BOUNCE", "FIRST_CANDLE_BREAKOUT",
+                                  "CPR_VWAP")
     # Option-buying trades a day, on top of the operator's max_trades_per_day
     # (the lower applies). Fewer, larger trades: the fixed ~2.6-pt round-trip
     # cost is paid per trade. 0 = no extra cap.

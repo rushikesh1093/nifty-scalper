@@ -50,7 +50,7 @@ def test_a_partial_previous_session_is_a_warning():
     assert _codes(rep) == [rd.PREV_SESSION_INCOMPLETE, rd.PREV_SESSION_LEVELS_UNAVAILABLE]
     msg = rep.warnings[0]["message"]
     assert "172/375" in msg and "12:38-15:29" in msg and "203 missing" in msg
-    assert "PIVOT_BOUNCE is off today" in rep.warnings[1]["message"]
+    assert "PIVOT_BOUNCE and CPR_VWAP are off today" in rep.warnings[1]["message"]
     assert "levels UNAVAILABLE" in rep.summary() and "2 warning(s)" in rep.summary()
 
 

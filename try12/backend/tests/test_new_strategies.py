@@ -20,10 +20,10 @@ from tests.helpers import run
 from tests.test_three_strategies import OPEN, at, evaluate, expand
 
 
-def test_seven_strategies_are_registered():
+def test_eight_strategies_are_registered():
     names = [s.name for s in build_strategies("NIFTY")]
-    assert names[-4:] == ["FIRST_CANDLE_BREAKOUT", "EMA_RSI_PULLBACK_15M", "PIVOT_BOUNCE",
-                          "MOMENTUM_BURST"]
+    assert names[-5:] == ["FIRST_CANDLE_BREAKOUT", "EMA_RSI_PULLBACK_15M", "PIVOT_BOUNCE",
+                          "MOMENTUM_BURST", "CPR_VWAP"]
     from app.services.trading.regime_rules import REGIME_RULES
     enabled = set().union(*(r.enabled_strategies for r in REGIME_RULES.values()))
     assert set(names) <= enabled                     # every strategy can trade somewhere

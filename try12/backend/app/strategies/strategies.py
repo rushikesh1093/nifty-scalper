@@ -24,6 +24,13 @@ the premium hard stop (``sl_pct``):
                      pts in 10 min: reached ~15 % of the time on real data).
                      Exit on an adverse flip; 10-min time stop; 3-bar cooldown after an exit;
                      max 6 trades a day.
+  CPR_VWAP           5-min, 09:30-13:00, only when yesterday's CPR is narrow
+                     (|TC - BC| < 0.20 % of P). First close beyond the CPR on
+                     the same side of session VWAP. Stop: the other side of
+                     the CPR. Exit: 5-min Supertrend(10, 3) trail, close
+                     across it, 15:15. One trade a day; puts only
+                     (pe_only_strategies). A paper forward test: +0.16R after
+                     costs for puts 2023-26, not proven (NEW_STRATEGY_RESULTS.md).
 
 Point thresholds are NIFTY points, so these strategies are built for NIFTY
 only (build_strategies returns none for other underlyings).
@@ -814,6 +821,109 @@ class MomentumBurstStrategy(_PlanStrategy):
         return None
 
 
+# ─── Once-a-day 5-min strategies (docs/NEW_STRATEGY_PREREGISTRATION.md) ──────
+
+SIDES = (("BUY", 1, Direction.BUY), ("SELL", -1, Direction.SELL))
+
+
+def _arr(bars, key):
+    return np.array([b[key] for b in bars], dtype=float)
+
+
+class _OncePerDay(_PlanStrategy):
+    BAR_MINUTES = 5
+    sl_pct = 0.35                 # premium hard stop; the spot plan stop normally comes first
+    target_pct = 0.70
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._traded_day = None
+
+    def on_position_opened(self, signal) -> None:
+        self._traded_day = trading_day()
+
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._traded_day = trading_day() if positions else None
+
+    def _ready(self, candles) -> Optional[list[dict]]:
+        bars = self._bars(candles)
+        if not bars or not self._new_bar(bars) or self.open_positions \
+                or self._traded_day == trading_day():
+            return None
+        return bars
+
+
+class _Trail5(_OncePerDay):
+    ST_PERIOD, ST_MULT = 10, 3.0
+
+    def candle_exit(self, plan, candles, indicators) -> Optional[str]:
+        bars = self._bars(candles)
+        if len(bars) < self.ST_PERIOD + 5:
+            return None
+        new = _new_bars(plan, bars)
+        if not new:
+            return None
+        st = supertrend(_arr(bars, "high"), _arr(bars, "low"), _arr(bars, "close"),
+                        self.ST_PERIOD, self.ST_MULT)
+        for i in new:
+            if np.isnan(st.supertrend[i]):
+                continue
+            if int(st.direction[i]) == plan.sign:
+                plan.breakeven_done = True                 # trail armed
+                xp.tighten_stop(plan, round(float(st.supertrend[i]), 2))
+            elif plan.breakeven_done:
+                return xp.ST_FLIP
+        return None
+
+
+class CPRVWAP(_Trail5):
+    name = StrategyName.CPR_VWAP.value
+    MAX_WIDTH_PCT = 0.20
+    WINDOW = (dtime(9, 30), dtime(13, 0))
+    NEEDS_PREV_SESSION = True
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._levels_day, self._prev = None, None
+
+    def set_prev_session(self, for_day, levels, reason: Optional[str] = None) -> None:
+        self._levels_day, self._prev = for_day, levels
+
+    def prev_session_problem(self) -> Optional[str]:
+        if self._levels_day != trading_day() or self._prev is None:
+            return "previous-session levels not resolved for today"
+        return None
+
+    async def evaluate(self, candles, indicators):
+        bars = resample(candles, 5)                        # today only
+        if len(bars) < 3 or not self._new_bar(bars) or self.open_positions \
+                or self._traded_day == trading_day() or self.prev_session_problem():
+            return None
+        last = bars[-1]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        h, l, c0 = float(self._prev.high), float(self._prev.low), float(self._prev.close)
+        p = (h + l + c0) / 3
+        bc = (h + l) / 2
+        tc = 2 * p - bc
+        top, bottom = max(tc, bc), min(tc, bc)
+        if (top - bottom) / p * 100 >= self.MAX_WIDTH_PCT:
+            return None
+        vw = _session_vwap_at(candles).get(last["end"])
+        if vw is None:
+            return None
+        c = last["close"]
+        for side, sgn, direction in SIDES:
+            level, stop = (top, bottom) if sgn > 0 else (bottom, top)
+            if sgn * (c - level) > 0 and sgn * (c - vw) > 0:
+                plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2))
+                return self._plan_signal(direction, c, indicators,
+                                         f"narrow CPR {bottom:.1f}-{top:.1f} broken {side} with VWAP "
+                                         f"{vw:.1f}, close {c:.1f}", plan)
+        return None
+
+
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
 def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
@@ -828,6 +938,7 @@ def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
         EMARSIPullback15mStrategy(underlying),
         PivotBounceStrategy(underlying),
         MomentumBurstStrategy(underlying),
+        CPRVWAP(underlying),
     ]
 
 

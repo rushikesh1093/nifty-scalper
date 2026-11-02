@@ -218,8 +218,8 @@ def build(underlying: str, now: datetime, prev: PrevSessionCheck, today: TodayCh
                              f"({FULL_SESSION_CANDLES - prev.candles} missing)"})
     if levels is None and levels_problem:
         w.append({"code": PREV_SESSION_LEVELS_UNAVAILABLE,
-                  "message": f"{underlying}: previous-day levels unavailable, PIVOT_BOUNCE is "
-                             f"off today: {levels_problem}"})
+                  "message": f"{underlying}: previous-day levels unavailable, PIVOT_BOUNCE and "
+                             f"CPR_VWAP are off today: {levels_problem}"})
     if today.missing:
         shown = ", ".join(today.gaps[:MAX_GAP_RANGES_SHOWN])
         more = (f" and {len(today.gaps) - MAX_GAP_RANGES_SHOWN} more range(s)"
