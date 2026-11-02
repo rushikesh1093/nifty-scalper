@@ -217,6 +217,11 @@ class StrategyRunner:
                          "close": lv.close, "source": lv.source}, None, lv.day)
         return None, None, None
 
+    def prev_session_levels(self, underlying: str) -> Optional[dict]:
+        """Today's resolved previous-session {day, high, low, close, source} of
+        *underlying* (broker daily candle first), or None while unresolved."""
+        return self._levels_state(underlying)[0]
+
     async def check_session_readiness(self) -> dict:
         """Check the candle history of every underlying that runs strategies
         (app.services.market_data.session_readiness), log one summary line each
