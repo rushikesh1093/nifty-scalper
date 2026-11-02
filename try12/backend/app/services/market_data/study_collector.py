@@ -510,8 +510,16 @@ class StudyCollector:
             today = date.today()
             spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
 
-            # Today's candles for OHLC
-            candles = await redis_cache.get_candles(spot_token, "ONE_MINUTE", 500)
+            # Today's in-session candles for OHLC. The 500-candle cache spans two
+            # sessions, so without the filter the high/low (and ORB, VWAP) mixed
+            # yesterday in (Fri 30 Oct 2026: low 22825.05 stored, 22905.10 real).
+            from app.services.market_data.timestamps import try_normalize_candle_timestamp
+            def _today_in_session(c):
+                ts = try_normalize_candle_timestamp(c.get("timestamp"))
+                return (ts is not None and ts.date() == today
+                        and dtime(9, 15) <= ts.time().replace(tzinfo=None) < dtime(15, 30))
+            candles = [c for c in await redis_cache.get_candles(spot_token, "ONE_MINUTE", 500)
+                       if _today_in_session(c)]
             if not candles:
                 return
 

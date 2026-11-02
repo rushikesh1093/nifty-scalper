@@ -212,6 +212,15 @@ async def get_levels(
                 {"high": snap.high, "low": snap.low, "close": snap.close, "date": snap.date.isoformat()}
                 if snap else None
             )
+            # The runner's resolved levels (the broker's daily candle) are the
+            # ones PIVOT_BOUNCE / CPR_VWAP trade; a snapshot row written before
+            # 2 Nov 2026 can mix two sessions' high/low (Fri 30 Oct: L 22825.05
+            # stored, 22905.10 real), so the chart prefers the runner's.
+            from app.services.trading.strategy_runner import strategy_runner
+            lv = strategy_runner.prev_session_levels(u)
+            if lv is not None:
+                prev_day = {"high": lv["high"], "low": lv["low"], "close": lv["close"],
+                            "date": lv["day"]}
         logger.debug("levels %s: db session closed, entering compute_levels (%d bars)", u, len(candles))
         spot = await redis_cache.get_ltp(spot_token)
     except (RedisError, RuntimeError) as exc:

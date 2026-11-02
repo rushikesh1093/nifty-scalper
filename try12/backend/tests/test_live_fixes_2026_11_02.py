@@ -81,3 +81,66 @@ def test_cpr_vwap_takes_only_the_days_first_break(runtime_ctx):
     down = up + _bars_day(day, [22990, 22950, 22900])[: 15]     # later falls through the CPR
     for k in range(len(up) + 5, len(down) + 1, 5):
         assert run(s.evaluate(down[:k], {})) is None
+
+
+def test_the_eod_snapshot_uses_only_todays_session_candles(sqlite_db, monkeypatch):
+    """The 500-candle cache spans two sessions: Friday 30 Oct's stored low was
+    Thursday's (22825.05, real 22905.10)."""
+    from app.db.models.instrument import Instrument
+    from app.db.models.market_study import IntradayMarketFeature
+    from app.services.market_data import study_collector as sc
+
+    Snap = _snapshots_table(sqlite_db)
+
+    async def tables():
+        async with sqlite_db() as db:
+            for m in (IntradayMarketFeature, Instrument):
+                await db.run_sync(lambda s, m=m: m.__table__.create(s.connection()))
+    run(tables())
+
+    friday, thursday = date(2026, 10, 30), date(2026, 10, 29)
+
+    def bars(day, n, start, lo):
+        out, t = [], datetime.combine(day, start)
+        for k in range(n):
+            out.append({"timestamp": t.strftime("%Y-%m-%d %H:%M:%S"), "open": 23000.0,
+                        "high": 23050.0, "low": lo if k == 3 else 22990.0, "close": 23010.0,
+                        "volume": 10})
+            t += timedelta(minutes=1)
+        return out
+    cache = bars(thursday, 120, dtime(13, 30), 22825.05) + bars(friday, 375, dtime(9, 15), 22905.1) \
+        + bars(friday, 5, dtime(15, 31), 1.0)                     # after-hours junk
+
+    async def get_candles(token, interval, n):
+        return cache[-n:]
+
+    class _Day(date):
+        @classmethod
+        def today(cls):
+            return friday
+    monkeypatch.setattr(sc.redis_cache, "get_candles", get_candles)
+    monkeypatch.setattr(sc, "date", _Day)
+    run(sc.study_collector._save_daily_summary("NIFTY"))
+
+    async def read():
+        async with sqlite_db() as db:
+            from sqlalchemy import select
+            return (await db.execute(select(Snap))).scalars().all()
+    [row] = run(read())
+    assert (row.date, row.low, row.high) == (friday, 22905.1, 23050.0)
+
+
+def test_the_runner_exposes_todays_resolved_levels(runtime_ctx):
+    from app.runtime.context import trading_day
+    from app.services.trading.strategy_runner import StrategyRunner
+    from app.strategies.strategies import build_strategies
+
+    r = StrategyRunner()
+    r._strategies = {"NIFTY": build_strategies("NIFTY")}
+    assert r.prev_session_levels("NIFTY") is None
+    lv = SimpleNamespace(day=date(2026, 8, 31), high=23118.1, low=22905.1, close=23053.1,
+                         source="broker_daily")
+    for s in r._strategies["NIFTY"]:
+        if getattr(s, "NEEDS_PREV_SESSION", False):
+            s.set_prev_session(trading_day(), lv)
+    assert r.prev_session_levels("NIFTY")["low"] == 22905.1
