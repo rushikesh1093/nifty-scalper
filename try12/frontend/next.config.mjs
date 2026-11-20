@@ -2,6 +2,10 @@
 const nextConfig = {
   reactStrictMode: true,
 
+  experimental: {
+    agentUpgrade: "security",
+  },
+
   // The app uses no next/image. Unoptimized images skip the Image Optimization
   // API, the subject of several unpatched Next 14 advisories (docs/FRONTEND_AUDIT.md).
   images: { unoptimized: true },
