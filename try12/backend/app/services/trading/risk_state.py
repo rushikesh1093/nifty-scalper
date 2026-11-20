@@ -58,6 +58,15 @@ async def open_capital_used(db, run_id: str) -> float:
     )).scalar_one())
 
 
+async def open_direction_count(db, run_id: str, underlying: str, option_type: str) -> int:
+    """Open positions on *underlying* holding *option_type* (CE = long, PE = short)."""
+    return int((await db.execute(
+        select(func.count(PaperPosition.id)).where(
+            PaperPosition.run_id == run_id, PaperPosition.is_open == True,  # noqa: E712
+            PaperPosition.underlying == underlying, PaperPosition.option_type == option_type)
+    )).scalar_one() or 0)
+
+
 async def open_position_count(db, run_id: str) -> int:
     return int((await db.execute(
         select(func.count(PaperPosition.id))
@@ -156,6 +165,10 @@ async def _engage(db, run_id: str, day: date, halt_type: str, *, scope: Optional
     db.add(RiskHalt(run_id=run_id, trading_day=day, halt_type=halt_type, scope=scope,
                     reason=reason, context=context, engaged_at=now_utc()))
     await db.flush()
+    from app.core.alerts import alert, CRITICAL
+    alert(f"halt:{halt_type}:{scope or ''}:{day}",
+          f"Risk halt {halt_type}{' (' + scope + ')' if scope else ''}: {reason}",
+          level=CRITICAL)
 
 
 async def daily_loss_figure(db) -> DailyLoss:

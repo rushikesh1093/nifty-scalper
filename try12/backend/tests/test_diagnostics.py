@@ -122,12 +122,13 @@ def test_db_unavailable_runner_stopped_study_phase_caps_and_breaker():
         assert code in c
 
 
-def test_atr_vix_prev_day_and_cooldown():
+def test_atr_vix_and_cooldown():
     s = healthy(at(10, 0))
     s["underlyings"][0].update(atr=1.0, prev_day_snapshot=None, in_cooldown=True)
     s["vix"]["ltp"] = 30.0
     c = codes(derive_blockers(s))
-    assert {"ATR_BELOW_MIN", "VIX_OUT_OF_RANGE", "NO_PREV_DAY_SNAPSHOT", "REGIME_TRANSITION_COOLDOWN"} <= set(c)
+    assert {"ATR_BELOW_MIN", "VIX_OUT_OF_RANGE", "REGIME_TRANSITION_COOLDOWN"} <= set(c)
+    assert "NO_PREV_DAY_SNAPSHOT" not in c        # no strategy needs previous-day levels
 
 
 def test_probe_errors_become_warning_blockers():

@@ -130,6 +130,11 @@ export interface TradingConfig {
   daily_trades_count:  number;
   /** Persisted kill-switch halt (GET /trading/kill-switch for the reason). */
   trading_halted?:     boolean;
+  losing_streak_halt_n?: number;
+  post_loss_cooldown_minutes?: number;
+  kelly_min_trades?:   number;
+  /** Every resolved TradingParams field (GET /trading/config → params.resolved). */
+  params?:             { resolved?: Record<string, unknown>; cache_age_s?: number };
 }
 
 export interface CapitalSummary {
@@ -157,4 +162,32 @@ export interface TradePreviewRow {
   lots:           number;
   capital_used:   number;
   capital_needed: number;
+}
+
+/** GET /analytics/strategy-evidence — forward paper evidence per strategy and the active policy. */
+export type EvidenceStatus = "INSUFFICIENT_EVIDENCE" | "DISABLED_FOR_RESEARCH" | "PASSES_GATES";
+
+export interface StrategyEvidenceRow {
+  status:          EvidenceStatus;
+  reasons:         string[];
+  rule_since:      string | null;
+  counted:         number;
+  months_positive: string;
+  stats:           { n: number; expectancy_r?: number | null; profit_factor?: number | null };
+}
+
+export interface StrategyEvidence {
+  run_id:     string;
+  rule_since: Record<string, string>;
+  policy: {
+    evidence_blocked_strategies: string[];
+    evidence_auto_block:         boolean;
+    pe_only_strategies:          string[];
+    low_vol_skip_strategies:     string[];
+    max_option_buys_per_day:     number;
+    regime_gating:               boolean;
+  };
+  strategies: Record<string, StrategyEvidenceRow>;
+  /** What refused signals would have made: strategy → refusing rule → {n, mean net R}. */
+  shadow?: Record<string, Record<string, { n: number; mean_r_net: number }>>;
 }

@@ -53,23 +53,23 @@ def _seed_two_runs(Session, rc):
     """One PAPER and one RPL- row in every run-shared table the endpoints read."""
     at = rc.clock.now_utc() - timedelta(minutes=10)
     for run_id, net in (("PAPER", 500.0), (RPL, -700.0)):
-        run(add_closed(Session, net=net, at=at, run_id=run_id, strategy="ORB_VWAP",
+        run(add_closed(Session, net=net, at=at, run_id=run_id, strategy="ORB_BREAKOUT",
                        initial_risk=15.0, r_source="ENTRY", r_multiple=1.0 if net > 0 else -1.0,
                        entry_regime="BULL_TREND_NORMAL_VOL"))
 
     async def _rest():
         async with Session() as db:
             for run_id in ("PAPER", RPL):
-                db.add(StrategySignal(strategy_name="ORB_VWAP", underlying="NIFTY",
+                db.add(StrategySignal(strategy_name="ORB_BREAKOUT", underlying="NIFTY",
                                       direction="BUY", spot_price=22600.0, signal_time=at,
                                       run_id=run_id, skip_reason=run_id))
                 # /trading/pnl* read the wall-clock date (app/api is not ctx-clocked)
-                db.add(DailyPnLSummary(date=date.today(), strategy_name="ORB_VWAP",
+                db.add(DailyPnLSummary(date=date.today(), strategy_name="ORB_BREAKOUT",
                                        mode=TradingMode.PAPER, total_trades=1, winning_trades=0,
                                        losing_trades=0, gross_pnl=0.0, brokerage=0.0,
                                        net_pnl=1.0 if run_id == "PAPER" else -1.0, run_id=run_id))
                 db.add(RegimePerformanceModel(regime="BULL_TREND_NORMAL_VOL", underlying="NIFTY",
-                                              strategy_name="ORB_VWAP", total_trades=1,
+                                              strategy_name="ORB_BREAKOUT", total_trades=1,
                                               winning_trades=1, losing_trades=0, total_pnl=1,
                                               run_id=run_id))
                 db.add(RegimeStateModel(underlying="NIFTY", regime="BULL_TREND_NORMAL_VOL"
@@ -136,7 +136,7 @@ def test_no_endpoint_returns_rows_from_another_run(api, runtime_ctx):
         m = _get("/api/v1/analytics/metrics", run_id=run_id).json()["metrics"]
         assert m["trades"] == 1 and m["expectancy_inr"] == net
         by = _get("/api/v1/analytics/metrics/by/strategy", run_id=run_id).json()
-        assert by["groups"]["ORB_VWAP"]["trades"] == 1
+        assert by["groups"]["ORB_BREAKOUT"]["trades"] == 1
         ntd = _get("/api/v1/analytics/no-trade-decisions", run_id=run_id).json()
         assert [x["reason"] for x in ntd["items"]] == [run_id]
         summ = _get("/api/v1/analytics/no-trade-decisions/summary", run_id=run_id).json()
@@ -209,9 +209,9 @@ def test_trade_amount_converts_to_fixed_fraction_and_keeps_its_keys(api):
     assert b["fixed_fraction_pct"] == pytest.approx(10.0)
     assert run(get_config_row(api)).fixed_fraction_pct == pytest.approx(10.0)
     bad = _call("PUT", "/api/v1/trading/capital/trade-amount",
-                json={"trade_amount": 90000, "capital": 200000})     # 45% > the 40% ceiling
+                json={"trade_amount": 210000, "capital": 200000})    # 105% > the 100% ceiling
     assert bad.status_code == 400
-    assert any("fixed_fraction_pct" in v and "(0, 40]" in v
+    assert any("fixed_fraction_pct" in v and "(0, 100]" in v
                for v in bad.json()["detail"]["violations"])
 
 

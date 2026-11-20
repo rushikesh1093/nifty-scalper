@@ -206,16 +206,21 @@ async def get_levels(
     try:
         async with AsyncSessionLocal() as db:
             candles, candle_source = await _load_candles_for_levels(db, spot_token, fetch_count)
-            snap = (await db.execute(
-                select(MarketDailySnapshot)
-                .where(MarketDailySnapshot.underlying == u, MarketDailySnapshot.date < session_date)
-                .order_by(desc(MarketDailySnapshot.date))
-                .limit(1)
-            )).scalar_one_or_none()
+            from app.services.market_data.prev_session import prev_session_snapshot
+            snap = await prev_session_snapshot(db, u, session_date)
             prev_day = (
                 {"high": snap.high, "low": snap.low, "close": snap.close, "date": snap.date.isoformat()}
                 if snap else None
             )
+            # The runner's resolved levels (the broker's daily candle) are the
+            # ones PIVOT_BOUNCE / CPR_VWAP trade; a snapshot row written before
+            # 2 Nov 2026 can mix two sessions' high/low (Fri 30 Oct: L 22825.05
+            # stored, 22905.10 real), so the chart prefers the runner's.
+            from app.services.trading.strategy_runner import strategy_runner
+            lv = strategy_runner.prev_session_levels(u)
+            if lv is not None:
+                prev_day = {"high": lv["high"], "low": lv["low"], "close": lv["close"],
+                            "date": lv["day"]}
         logger.debug("levels %s: db session closed, entering compute_levels (%d bars)", u, len(candles))
         spot = await redis_cache.get_ltp(spot_token)
     except (RedisError, RuntimeError) as exc:
@@ -396,6 +401,36 @@ async def get_option_chain(
 
 
 # ── Feed management ────────────────────────────────────────────────────────────
+
+@router.get("/data-health")
+async def data_health():
+    """Live market-data health (app.services.market_data.data_health): candle
+    integrity for both indices and their futures, and quote freshness, crossed /
+    one-sided / wide quotes and feed latency across every subscribed token.
+    Read-only; nothing is repaired or substituted."""
+    from datetime import timezone
+    from app.runtime.context import params as _p
+    from app.services.market_data import data_health as dh
+    now = datetime.now(timezone.utc)
+    p = _p()
+    try:
+        series = {"NIFTY": _settings.NIFTY_TOKEN, "BANKNIFTY": _settings.BANKNIFTY_TOKEN}
+        for und in ("NIFTY", "BANKNIFTY"):
+            fut = await redis_cache.get(f"fut_token:{und}")
+            if fut:
+                series[f"{und}_FUT"] = str(fut)
+        candles = {name: dh.candle_checks(await redis_cache.get_candles(tok, "ONE_MINUTE", 500), now)
+                   for name, tok in series.items()}
+        tokens = [t for toks in market_feed._subscriptions.values() for t in toks]
+        ticks = await redis_cache.get_multiple_ticks(tokens)       # one round trip
+        quotes = dh.quote_checks(ticks, now, p.stale_tick_seconds, p.quote_max_spread_pct)
+    except RedisError as exc:
+        raise HTTPException(status_code=503, detail=f"cache unavailable: {exc}")
+    return {"as_of": now.isoformat(), "in_session": dh.in_session(now),
+            "feed_connected": market_feed.is_connected,
+            "status": dh.overall([c["status"] for c in candles.values()] + [quotes["status"]]),
+            "candles": candles, "quotes": quotes}
+
 
 @router.get("/feed/status")
 async def feed_status():

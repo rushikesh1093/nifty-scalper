@@ -66,7 +66,9 @@ services:
     container_name: nifty_frontend
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # This machine only: Next 14 is end-of-life and has unpatched advisories
+      # (docs/FRONTEND_AUDIT.md). "3000:3000" would publish it to the LAN.
+      - "127.0.0.1:3000:3000"
     environment:
       # Browser-side JS uses localhost (port-mapped through Docker host)
       NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1

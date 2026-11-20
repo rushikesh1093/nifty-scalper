@@ -61,7 +61,7 @@ def dataset(runtime_ctx, sqlite_db):
     _closed(sqlite_db, minute=30, net=0.5, r=0.004)                    # P&L flat, R_FLAT
     _closed(sqlite_db, minute=40, net=500.0, r=3.0, r_source="BACKFILL_UNVERIFIED")  # no R
     _closed(sqlite_db, minute=50, net=-150.0, r=None, risk=None)       # no R
-    _closed(sqlite_db, minute=60, net=250.0, r=1.5, charges=10.0, strategy="VWAP_PULLBACK",
+    _closed(sqlite_db, minute=60, net=250.0, r=1.5, charges=10.0, strategy="VWAP_EMA_PULLBACK",
             regime="RANGE_LOW_VOL")
     _closed(sqlite_db, minute=0, net=999.0, r=5.0, run_id="REPLAY1")   # other run, untouched
     run(add_position(sqlite_db, strategy_name="ORB", is_open=True, run_id="PAPER"))  # open: ignored
@@ -101,7 +101,7 @@ def test_reconcile_strategy_perf_buckets(dataset):
     assert sp.expectancy_inr == pytest.approx((300 - 200 - 100 + 0.5 + 500 - 150) / 6)
     assert sp.gross_profit == pytest.approx(800.5) and sp.gross_loss == pytest.approx(450.0)
 
-    other = run(_one(dataset, StrategyPerf, strategy_name="VWAP_PULLBACK", run_id="PAPER"))
+    other = run(_one(dataset, StrategyPerf, strategy_name="VWAP_EMA_PULLBACK", run_id="PAPER"))
     assert (other.total_trades, other.winning_trades_r) == (1, 1)
 
 
@@ -125,7 +125,7 @@ def test_reconcile_regime_and_daily(dataset):
     assert dp.max_equity_drawdown == pytest.approx(300.0)
     assert dp.gross_pnl - dp.brokerage - dp.statutory_charges == pytest.approx(dp.net_pnl)
 
-    vw = run(_one(dataset, DailyPnLSummary, strategy_name="VWAP_PULLBACK", run_id="PAPER"))
+    vw = run(_one(dataset, DailyPnLSummary, strategy_name="VWAP_EMA_PULLBACK", run_id="PAPER"))
     assert vw.statutory_charges == pytest.approx(10.0)
     assert vw.worst_trade_loss is None and vw.max_equity_drawdown == pytest.approx(0.0)
 

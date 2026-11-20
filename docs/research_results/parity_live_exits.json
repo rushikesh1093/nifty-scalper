@@ -1,0 +1,113 @@
+{
+ "FCB_NEW": {
+  "by_year": {
+   "Y1": [
+    182,
+    0.02
+   ],
+   "Y2": [
+    201,
+    0.04
+   ],
+   "Y3": [
+    177,
+    -0.07
+   ]
+  },
+  "post": {
+   "n": 378,
+   "sessions": 359,
+   "wins": 126,
+   "losses": 252,
+   "win_rate": 0.3333,
+   "win_rate_ci95": [
+    0.2877,
+    0.3823
+   ],
+   "gross_profit_r": 196.428,
+   "gross_loss_r": 200.72,
+   "profit_factor": 0.979,
+   "expectancy_r": -0.0114,
+   "avg_win_r": 1.559,
+   "avg_loss_r": -0.7965,
+   "payoff": 1.957,
+   "total_r": -4.292,
+   "max_drawdown_r": -42.9027,
+   "max_consecutive_losses": 19,
+   "sharpe_daily_ann": -0.129,
+   "sortino_daily_ann": -0.253,
+   "worst_session_r": -2.146,
+   "best_session_r": 6.87,
+   "expectancy_without_best_session": -0.0296,
+   "mean_r_gross": 0.0876,
+   "mean_mfe_r": 1.3134,
+   "mean_mae_r": -0.7152,
+   "mean_hold_min": 93.5185,
+   "mean_cost_r": 0.099,
+   "expectancy_ci95": [
+    -0.1497,
+    0.1429
+   ]
+  },
+  "exits": {
+   "EOD": 38,
+   "SPOT_SL": 522
+  }
+ },
+ "ER_NEW": {
+  "by_year": {
+   "Y1": [
+    154,
+    -0.092
+   ],
+   "Y2": [
+    146,
+    0.12
+   ],
+   "Y3": [
+    137,
+    0.042
+   ]
+  },
+  "post": {
+   "n": 283,
+   "sessions": 224,
+   "wins": 108,
+   "losses": 175,
+   "win_rate": 0.3816,
+   "win_rate_ci95": [
+    0.327,
+    0.4395
+   ],
+   "gross_profit_r": 114.516,
+   "gross_loss_r": 91.156,
+   "profit_factor": 1.256,
+   "expectancy_r": 0.0825,
+   "avg_win_r": 1.0603,
+   "avg_loss_r": -0.5209,
+   "payoff": 2.036,
+   "total_r": 23.36,
+   "max_drawdown_r": -21.4318,
+   "max_consecutive_losses": 11,
+   "sharpe_daily_ann": 1.093,
+   "sortino_daily_ann": 2.66,
+   "worst_session_r": -2.083,
+   "best_session_r": 9.604,
+   "expectancy_without_best_session": 0.0488,
+   "mean_r_gross": 0.1801,
+   "mean_mfe_r": 0.9194,
+   "mean_mae_r": -0.4391,
+   "mean_hold_min": 81.8516,
+   "mean_cost_r": 0.0975,
+   "expectancy_ci95": [
+    -0.0615,
+    0.2461
+   ]
+  },
+  "exits": {
+   "EOD": 32,
+   "ST_FLIP": 193,
+   "SPOT_SL": 212
+  }
+ }
+}

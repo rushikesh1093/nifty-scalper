@@ -1,0 +1,8305 @@
+{
+ "protocol": "\nChronological walk-forward, cost scenarios and evidence-based strategy\nstatus (Parts 9, 11, 12). Pure functions over trade rows (dicts with day,\nr_gross, risk_pts, hold_min, expiry, regime, candidate).\n\nProtocol (fixed before running):\n  * DESIGN window = the first 12 months. Variant thresholds come from it;\n    no test month inside it is scored.\n  * Fold f: train = 3 calendar months, validation = the next month, test =\n    the month after. Roll by one month. Only test months after the DESIGN\n    window count as out-of-sample.\n  * Selection per fold, per strategy: among its candidates (entry variants,\n    each with and without a regime filter learned on train), the highest\n    train net expectancy with train n >= MIN_TRAIN_N and expectancy > 0; it\n    trades the test month only if its validation expectancy is also > 0.\n    Otherwise the strategy stands aside (NO_TRADE) that month.\n  * The test month is never used to choose anything.\n",
+ "criteria": {
+  "min_trades": 100,
+  "preferred_trades": 200,
+  "min_sessions": 60,
+  "min_profit_factor": 1.2,
+  "max_drawdown_r": -25.0,
+  "min_positive_fold_share": 0.5,
+  "require_ci_lower_above": 0.0
+ },
+ "design_end": "2024-09-30",
+ "folds_definition": [
+  {
+   "train": [
+    "2024-06",
+    "2024-07",
+    "2024-08"
+   ],
+   "val": "2024-09",
+   "test": "2024-10"
+  },
+  {
+   "train": [
+    "2024-07",
+    "2024-08",
+    "2024-09"
+   ],
+   "val": "2024-10",
+   "test": "2024-11"
+  },
+  {
+   "train": [
+    "2024-08",
+    "2024-09",
+    "2024-10"
+   ],
+   "val": "2024-11",
+   "test": "2024-12"
+  },
+  {
+   "train": [
+    "2024-09",
+    "2024-10",
+    "2024-11"
+   ],
+   "val": "2024-12",
+   "test": "2025-01"
+  },
+  {
+   "train": [
+    "2024-10",
+    "2024-11",
+    "2024-12"
+   ],
+   "val": "2025-01",
+   "test": "2025-02"
+  },
+  {
+   "train": [
+    "2024-11",
+    "2024-12",
+    "2025-01"
+   ],
+   "val": "2025-02",
+   "test": "2025-03"
+  },
+  {
+   "train": [
+    "2024-12",
+    "2025-01",
+    "2025-02"
+   ],
+   "val": "2025-03",
+   "test": "2025-04"
+  },
+  {
+   "train": [
+    "2025-01",
+    "2025-02",
+    "2025-03"
+   ],
+   "val": "2025-04",
+   "test": "2025-05"
+  },
+  {
+   "train": [
+    "2025-02",
+    "2025-03",
+    "2025-04"
+   ],
+   "val": "2025-05",
+   "test": "2025-06"
+  },
+  {
+   "train": [
+    "2025-03",
+    "2025-04",
+    "2025-05"
+   ],
+   "val": "2025-06",
+   "test": "2025-07"
+  },
+  {
+   "train": [
+    "2025-04",
+    "2025-05",
+    "2025-06"
+   ],
+   "val": "2025-07",
+   "test": "2025-08"
+  },
+  {
+   "train": [
+    "2025-05",
+    "2025-06",
+    "2025-07"
+   ],
+   "val": "2025-08",
+   "test": "2025-09"
+  },
+  {
+   "train": [
+    "2025-06",
+    "2025-07",
+    "2025-08"
+   ],
+   "val": "2025-09",
+   "test": "2025-10"
+  },
+  {
+   "train": [
+    "2025-07",
+    "2025-08",
+    "2025-09"
+   ],
+   "val": "2025-10",
+   "test": "2025-11"
+  },
+  {
+   "train": [
+    "2025-08",
+    "2025-09",
+    "2025-10"
+   ],
+   "val": "2025-11",
+   "test": "2025-12"
+  },
+  {
+   "train": [
+    "2025-09",
+    "2025-10",
+    "2025-11"
+   ],
+   "val": "2025-12",
+   "test": "2026-01"
+  },
+  {
+   "train": [
+    "2025-10",
+    "2025-11",
+    "2025-12"
+   ],
+   "val": "2026-01",
+   "test": "2026-02"
+  },
+  {
+   "train": [
+    "2025-11",
+    "2025-12",
+    "2026-01"
+   ],
+   "val": "2026-02",
+   "test": "2026-03"
+  },
+  {
+   "train": [
+    "2025-12",
+    "2026-01",
+    "2026-02"
+   ],
+   "val": "2026-03",
+   "test": "2026-04"
+  },
+  {
+   "train": [
+    "2026-01",
+    "2026-02",
+    "2026-03"
+   ],
+   "val": "2026-04",
+   "test": "2026-05"
+  },
+  {
+   "train": [
+    "2026-02",
+    "2026-03",
+    "2026-04"
+   ],
+   "val": "2026-05",
+   "test": "2026-06"
+  },
+  {
+   "train": [
+    "2026-03",
+    "2026-04",
+    "2026-05"
+   ],
+   "val": "2026-06",
+   "test": "2026-07"
+  },
+  {
+   "train": [
+    "2026-04",
+    "2026-05",
+    "2026-06"
+   ],
+   "val": "2026-07",
+   "test": "2026-08"
+  },
+  {
+   "train": [
+    "2026-05",
+    "2026-06",
+    "2026-07"
+   ],
+   "val": "2026-08",
+   "test": "2026-09"
+  },
+  {
+   "train": [
+    "2026-06",
+    "2026-07",
+    "2026-08"
+   ],
+   "val": "2026-09",
+   "test": "2026-10"
+  }
+ ],
+ "strategies": {
+  "FIRST_CANDLE_BREAKOUT": {
+   "ZERO": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "FCB_STRONG/ALL",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 23,
+      "train_exp": 0.1337,
+      "val_n": 11,
+      "val_exp": 0.7553,
+      "test_n": 10,
+      "test_exp": -0.0059,
+      "test_total_r": -0.059
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 20,
+      "train_exp": 0.5056,
+      "val_n": 6,
+      "val_exp": -0.2038
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 31,
+      "train_exp": 0.5043,
+      "val_n": 5,
+      "val_exp": -0.0647
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "FCB_STRONG/ALL",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 26,
+      "train_exp": 0.3048,
+      "val_n": 10,
+      "val_exp": 0.4708,
+      "test_n": 11,
+      "test_exp": -0.2927,
+      "test_total_r": -3.22
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "FCB_BASE/ALL",
+      "candidate": "FCB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 52,
+      "train_exp": 0.1828,
+      "val_n": 20,
+      "val_exp": 0.2616,
+      "test_n": 18,
+      "test_exp": -0.2753,
+      "test_total_r": -4.956
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "FCB_STRONG/REGIME",
+      "candidate": "FCB_STRONG",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 20,
+      "train_exp": 0.3176,
+      "val_n": 8,
+      "val_exp": 0.4568,
+      "test_n": 8,
+      "test_exp": -0.3104,
+      "test_total_r": -2.483
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 25,
+      "train_exp": 0.3333,
+      "val_n": 8,
+      "val_exp": -0.3104
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 49,
+      "train_exp": 0.1022,
+      "val_n": 15,
+      "val_exp": -0.1515
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 30,
+      "train_exp": 0.2462,
+      "val_n": 5,
+      "val_exp": -0.1921
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "FCB_RETEST/ALL",
+      "candidate": "FCB_RETEST",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 23,
+      "train_exp": 0.1922,
+      "val_n": 3,
+      "val_exp": 0.0003,
+      "test_n": 4,
+      "test_exp": -0.3639,
+      "test_total_r": -1.456
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_RETEST",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 20,
+      "train_exp": 0.1747,
+      "val_n": 4,
+      "val_exp": -0.3639
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 34,
+      "train_exp": 0.0102,
+      "val_n": 9,
+      "val_exp": -0.2134
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "FCB_BASE/REGIME",
+      "candidate": "FCB_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 33,
+      "train_exp": 0.0098,
+      "val_n": 10,
+      "val_exp": 0.2896,
+      "test_n": 11,
+      "test_exp": 0.0069,
+      "test_total_r": 0.076
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "FCB_BASE/REGIME",
+      "candidate": "FCB_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 33,
+      "train_exp": 0.0418,
+      "val_n": 11,
+      "val_exp": 0.0069,
+      "test_n": 10,
+      "test_exp": -0.3219,
+      "test_total_r": -3.219
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 41,
+      "train_exp": 0.0332,
+      "val_n": 13,
+      "val_exp": -0.3223
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 72,
+     "sessions": 66,
+     "wins": 22,
+     "losses": 50,
+     "win_rate": 0.3056,
+     "win_rate_ci95": [
+      0.2113,
+      0.4195
+     ],
+     "gross_profit_r": 34.084,
+     "gross_loss_r": 49.4,
+     "profit_factor": 0.69,
+     "expectancy_r": -0.2127,
+     "avg_win_r": 1.5493,
+     "avg_loss_r": -0.988,
+     "payoff": 1.568,
+     "total_r": -15.316,
+     "max_drawdown_r": -18.0154,
+     "max_consecutive_losses": 7,
+     "sharpe_daily_ann": -2.698,
+     "sortino_daily_ann": -3.922,
+     "worst_session_r": -2.016,
+     "best_session_r": 3.012,
+     "expectancy_without_best_session": -0.2581,
+     "mean_r_gross": -0.2127,
+     "mean_mfe_r": 0.9126,
+     "mean_mae_r": -0.928,
+     "mean_hold_min": 82.1111,
+     "mean_cost_r": 0.0,
+     "expectancy_ci95": [
+      -0.4863,
+      0.0977
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 7,
+    "folds_positive": 1,
+    "worst_fold_r": -4.956,
+    "best_fold_r": 0.076,
+    "fold_r_std": 1.829,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "out-of-sample -0.213R on only 72 trades"
+    ],
+    "fixed_candidates_post_design": {
+     "FCB_BASE": {
+      "n": 378,
+      "sessions": 359,
+      "wins": 142,
+      "losses": 236,
+      "win_rate": 0.3757,
+      "win_rate_ci95": [
+       0.3283,
+       0.4255
+      ],
+      "gross_profit_r": 237.725,
+      "gross_loss_r": 233.938,
+      "profit_factor": 1.016,
+      "expectancy_r": 0.01,
+      "avg_win_r": 1.6741,
+      "avg_loss_r": -0.9913,
+      "payoff": 1.689,
+      "total_r": 3.787,
+      "max_drawdown_r": -32.3795,
+      "max_consecutive_losses": 14,
+      "sharpe_daily_ann": 0.117,
+      "sortino_daily_ann": 0.202,
+      "worst_session_r": -2.026,
+      "best_session_r": 5.563,
+      "expectancy_without_best_session": -0.0047,
+      "mean_r_gross": 0.01,
+      "mean_mfe_r": 1.0878,
+      "mean_mae_r": -0.8666,
+      "mean_hold_min": 96.2619,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.1277,
+       0.1529
+      ]
+     },
+     "FCB_STRONG": {
+      "n": 191,
+      "sessions": 188,
+      "wins": 74,
+      "losses": 117,
+      "win_rate": 0.3874,
+      "win_rate_ci95": [
+       0.3212,
+       0.4581
+      ],
+      "gross_profit_r": 127.119,
+      "gross_loss_r": 115.861,
+      "profit_factor": 1.097,
+      "expectancy_r": 0.0589,
+      "avg_win_r": 1.7178,
+      "avg_loss_r": -0.9903,
+      "payoff": 1.735,
+      "total_r": 11.259,
+      "max_drawdown_r": -23.3251,
+      "max_consecutive_losses": 6,
+      "sharpe_daily_ann": 0.662,
+      "sortino_daily_ann": 1.197,
+      "worst_session_r": -2.005,
+      "best_session_r": 3.817,
+      "expectancy_without_best_session": 0.0392,
+      "mean_r_gross": 0.0589,
+      "mean_mfe_r": 1.1302,
+      "mean_mae_r": -0.8585,
+      "mean_hold_min": 99.0,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.1528,
+       0.2613
+      ]
+     },
+     "FCB_RETEST": {
+      "n": 143,
+      "sessions": 142,
+      "wins": 47,
+      "losses": 96,
+      "win_rate": 0.3287,
+      "win_rate_ci95": [
+       0.257,
+       0.4093
+      ],
+      "gross_profit_r": 97.862,
+      "gross_loss_r": 95.386,
+      "profit_factor": 1.026,
+      "expectancy_r": 0.0173,
+      "avg_win_r": 2.0822,
+      "avg_loss_r": -0.9936,
+      "payoff": 2.096,
+      "total_r": 2.477,
+      "max_drawdown_r": -19.166,
+      "max_consecutive_losses": 12,
+      "sharpe_daily_ann": 0.171,
+      "sortino_daily_ann": 0.333,
+      "worst_session_r": -2.004,
+      "best_session_r": 6.188,
+      "expectancy_without_best_session": -0.0261,
+      "mean_r_gross": 0.0173,
+      "mean_mfe_r": 1.2074,
+      "mean_mae_r": -0.9388,
+      "mean_hold_min": 92.9161,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.2338,
+       0.2776
+      ]
+     }
+    }
+   },
+   "MEASURED": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "FCB_STRONG/ALL",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 23,
+      "train_exp": 0.0301,
+      "val_n": 11,
+      "val_exp": 0.6679,
+      "test_n": 10,
+      "test_exp": -0.0721,
+      "test_total_r": -0.721
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 20,
+      "train_exp": 0.4091,
+      "val_n": 6,
+      "val_exp": -0.2644
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 31,
+      "train_exp": 0.4165,
+      "val_n": 5,
+      "val_exp": -0.1238
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "FCB_STRONG/ALL",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 26,
+      "train_exp": 0.2311,
+      "val_n": 10,
+      "val_exp": 0.3463,
+      "test_n": 11,
+      "test_exp": -0.3796,
+      "test_total_r": -4.175
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "FCB_BASE/ALL",
+      "candidate": "FCB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 52,
+      "train_exp": 0.0979,
+      "val_n": 20,
+      "val_exp": 0.1668,
+      "test_n": 18,
+      "test_exp": -0.3534,
+      "test_total_r": -6.36
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "FCB_STRONG/REGIME",
+      "candidate": "FCB_STRONG",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 20,
+      "train_exp": 0.2224,
+      "val_n": 8,
+      "val_exp": 0.379,
+      "test_n": 8,
+      "test_exp": -0.38,
+      "test_total_r": -3.04
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 25,
+      "train_exp": 0.2393,
+      "val_n": 8,
+      "val_exp": -0.38
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 49,
+      "train_exp": 0.0111,
+      "val_n": 15,
+      "val_exp": -0.2589
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 30,
+      "train_exp": 0.1424,
+      "val_n": 5,
+      "val_exp": -0.3285
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_RETEST",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 23,
+      "train_exp": 0.0448,
+      "val_n": 3,
+      "val_exp": -0.1406
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_RETEST",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 20,
+      "train_exp": 0.0137,
+      "val_n": 4,
+      "val_exp": -0.5144
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 47,
+     "sessions": 41,
+     "wins": 13,
+     "losses": 34,
+     "win_rate": 0.2766,
+     "win_rate_ci95": [
+      0.1694,
+      0.4176
+     ],
+     "gross_profit_r": 21.912,
+     "gross_loss_r": 36.208,
+     "profit_factor": 0.605,
+     "expectancy_r": -0.3042,
+     "avg_win_r": 1.6856,
+     "avg_loss_r": -1.0649,
+     "payoff": 1.583,
+     "total_r": -14.296,
+     "max_drawdown_r": -17.906,
+     "max_consecutive_losses": 7,
+     "sharpe_daily_ann": -3.751,
+     "sortino_daily_ann": -5.086,
+     "worst_session_r": -2.138,
+     "best_session_r": 2.951,
+     "expectancy_without_best_session": -0.3749,
+     "mean_r_gross": -0.228,
+     "mean_mfe_r": 0.945,
+     "mean_mae_r": -0.9894,
+     "mean_hold_min": 47.8085,
+     "mean_cost_r": 0.0761,
+     "expectancy_ci95": [
+      -0.6659,
+      0.1152
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 4,
+    "folds_positive": 0,
+    "worst_fold_r": -6.36,
+    "best_fold_r": -0.721,
+    "fold_r_std": 2.349,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "out-of-sample -0.304R on only 47 trades"
+    ],
+    "fixed_candidates_post_design": {
+     "FCB_BASE": {
+      "n": 378,
+      "sessions": 359,
+      "wins": 138,
+      "losses": 240,
+      "win_rate": 0.3651,
+      "win_rate_ci95": [
+       0.3181,
+       0.4147
+      ],
+      "gross_profit_r": 219.581,
+      "gross_loss_r": 253.719,
+      "profit_factor": 0.865,
+      "expectancy_r": -0.0903,
+      "avg_win_r": 1.5912,
+      "avg_loss_r": -1.0572,
+      "payoff": 1.505,
+      "total_r": -34.138,
+      "max_drawdown_r": -60.7062,
+      "max_consecutive_losses": 14,
+      "sharpe_daily_ann": -1.067,
+      "sortino_daily_ann": -1.682,
+      "worst_session_r": -2.173,
+      "best_session_r": 5.367,
+      "expectancy_without_best_session": -0.1048,
+      "mean_r_gross": 0.01,
+      "mean_mfe_r": 1.0878,
+      "mean_mae_r": -0.8666,
+      "mean_hold_min": 96.2619,
+      "mean_cost_r": 0.1003,
+      "expectancy_ci95": [
+       -0.2262,
+       0.0499
+      ]
+     },
+     "FCB_STRONG": {
+      "n": 191,
+      "sessions": 188,
+      "wins": 72,
+      "losses": 119,
+      "win_rate": 0.377,
+      "win_rate_ci95": [
+       0.3113,
+       0.4475
+      ],
+      "gross_profit_r": 117.516,
+      "gross_loss_r": 125.663,
+      "profit_factor": 0.935,
+      "expectancy_r": -0.0427,
+      "avg_win_r": 1.6322,
+      "avg_loss_r": -1.056,
+      "payoff": 1.546,
+      "total_r": -8.148,
+      "max_drawdown_r": -31.066,
+      "max_consecutive_losses": 6,
+      "sharpe_daily_ann": -0.486,
+      "sortino_daily_ann": -0.801,
+      "worst_session_r": -2.124,
+      "best_session_r": 3.631,
+      "expectancy_without_best_session": -0.062,
+      "mean_r_gross": 0.0589,
+      "mean_mfe_r": 1.1302,
+      "mean_mae_r": -0.8585,
+      "mean_hold_min": 99.0,
+      "mean_cost_r": 0.1016,
+      "expectancy_ci95": [
+       -0.2531,
+       0.1545
+      ]
+     },
+     "FCB_RETEST": {
+      "n": 143,
+      "sessions": 142,
+      "wins": 47,
+      "losses": 96,
+      "win_rate": 0.3287,
+      "win_rate_ci95": [
+       0.257,
+       0.4093
+      ],
+      "gross_profit_r": 88.458,
+      "gross_loss_r": 105.725,
+      "profit_factor": 0.837,
+      "expectancy_r": -0.1207,
+      "avg_win_r": 1.8821,
+      "avg_loss_r": -1.1013,
+      "payoff": 1.709,
+      "total_r": -17.267,
+      "max_drawdown_r": -33.6284,
+      "max_consecutive_losses": 12,
+      "sharpe_daily_ann": -1.227,
+      "sortino_daily_ann": -2.1,
+      "worst_session_r": -2.157,
+      "best_session_r": 5.736,
+      "expectancy_without_best_session": -0.162,
+      "mean_r_gross": 0.0173,
+      "mean_mfe_r": 1.2074,
+      "mean_mae_r": -0.9388,
+      "mean_hold_min": 92.9161,
+      "mean_cost_r": 0.1381,
+      "expectancy_ci95": [
+       -0.3666,
+       0.1315
+      ]
+     }
+    }
+   },
+   "HARSH": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 20,
+      "train_exp": 0.3068,
+      "val_n": 6,
+      "val_exp": -0.3067
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 31,
+      "train_exp": 0.3289,
+      "val_n": 5,
+      "val_exp": -0.1636
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "FCB_STRONG/ALL",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 26,
+      "train_exp": 0.1667,
+      "val_n": 10,
+      "val_exp": 0.1976,
+      "test_n": 11,
+      "test_exp": -0.4657,
+      "test_total_r": -5.122
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "FCB_BASE/ALL",
+      "candidate": "FCB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 52,
+      "train_exp": 0.0155,
+      "val_n": 20,
+      "val_exp": 0.0673,
+      "test_n": 18,
+      "test_exp": -0.4241,
+      "test_total_r": -7.633
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 55,
+      "train_exp": 0.1265,
+      "val_n": 18,
+      "val_exp": -0.4241
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 25,
+      "train_exp": 0.1419,
+      "val_n": 8,
+      "val_exp": -0.4372
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE",
+      "candidate": "FCB_STRONG",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 30,
+      "train_exp": 0.0284,
+      "val_n": 5,
+      "val_exp": -0.4972
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 29,
+     "sessions": 25,
+     "wins": 6,
+     "losses": 23,
+     "win_rate": 0.2069,
+     "win_rate_ci95": [
+      0.0985,
+      0.3839
+     ],
+     "gross_profit_r": 11.809,
+     "gross_loss_r": 24.565,
+     "profit_factor": 0.481,
+     "expectancy_r": -0.4399,
+     "avg_win_r": 1.9682,
+     "avg_loss_r": -1.068,
+     "payoff": 1.843,
+     "total_r": -12.756,
+     "max_drawdown_r": -17.1875,
+     "max_consecutive_losses": 11,
+     "sharpe_daily_ann": -5.241,
+     "sortino_daily_ann": -6.702,
+     "worst_session_r": -2.223,
+     "best_session_r": 2.909,
+     "expectancy_without_best_session": -0.5595,
+     "mean_r_gross": -0.2819,
+     "mean_mfe_r": 0.8891,
+     "mean_mae_r": -1.011,
+     "mean_hold_min": 58.0,
+     "mean_cost_r": 0.1579,
+     "expectancy_ci95": [
+      -0.8622,
+      0.1053
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 2,
+    "folds_positive": 0,
+    "worst_fold_r": -7.633,
+    "best_fold_r": -5.122,
+    "fold_r_std": 1.776,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "out-of-sample -0.440R on only 29 trades"
+    ],
+    "fixed_candidates_post_design": {
+     "FCB_BASE": {
+      "n": 378,
+      "sessions": 359,
+      "wins": 133,
+      "losses": 245,
+      "win_rate": 0.3519,
+      "win_rate_ci95": [
+       0.3054,
+       0.4013
+      ],
+      "gross_profit_r": 198.739,
+      "gross_loss_r": 273.848,
+      "profit_factor": 0.726,
+      "expectancy_r": -0.1987,
+      "avg_win_r": 1.4943,
+      "avg_loss_r": -1.1177,
+      "payoff": 1.337,
+      "total_r": -75.109,
+      "max_drawdown_r": -92.7827,
+      "max_consecutive_losses": 14,
+      "sharpe_daily_ann": -2.393,
+      "sortino_daily_ann": -3.446,
+      "worst_session_r": -2.336,
+      "best_session_r": 5.099,
+      "expectancy_without_best_session": -0.2128,
+      "mean_r_gross": 0.01,
+      "mean_mfe_r": 1.0878,
+      "mean_mae_r": -0.8666,
+      "mean_hold_min": 96.2619,
+      "mean_cost_r": 0.2087,
+      "expectancy_ci95": [
+       -0.3334,
+       -0.0611
+      ]
+     },
+     "FCB_STRONG": {
+      "n": 191,
+      "sessions": 188,
+      "wins": 70,
+      "losses": 121,
+      "win_rate": 0.3665,
+      "win_rate_ci95": [
+       0.3014,
+       0.4368
+      ],
+      "gross_profit_r": 106.319,
+      "gross_loss_r": 135.585,
+      "profit_factor": 0.784,
+      "expectancy_r": -0.1532,
+      "avg_win_r": 1.5188,
+      "avg_loss_r": -1.1205,
+      "payoff": 1.355,
+      "total_r": -29.266,
+      "max_drawdown_r": -46.4565,
+      "max_consecutive_losses": 6,
+      "sharpe_daily_ann": -1.78,
+      "sortino_daily_ann": -2.681,
+      "worst_session_r": -2.2,
+      "best_session_r": 3.381,
+      "expectancy_without_best_session": -0.1718,
+      "mean_r_gross": 0.0589,
+      "mean_mfe_r": 1.1302,
+      "mean_mae_r": -0.8585,
+      "mean_hold_min": 99.0,
+      "mean_cost_r": 0.2122,
+      "expectancy_ci95": [
+       -0.3567,
+       0.0399
+      ]
+     },
+     "FCB_RETEST": {
+      "n": 143,
+      "sessions": 142,
+      "wins": 45,
+      "losses": 98,
+      "win_rate": 0.3147,
+      "win_rate_ci95": [
+       0.2443,
+       0.3948
+      ],
+      "gross_profit_r": 76.796,
+      "gross_loss_r": 115.067,
+      "profit_factor": 0.667,
+      "expectancy_r": -0.2676,
+      "avg_win_r": 1.7066,
+      "avg_loss_r": -1.1742,
+      "payoff": 1.453,
+      "total_r": -38.271,
+      "max_drawdown_r": -52.8189,
+      "max_consecutive_losses": 12,
+      "sharpe_daily_ann": -2.833,
+      "sortino_daily_ann": -4.279,
+      "worst_session_r": -2.296,
+      "best_session_r": 5.455,
+      "expectancy_without_best_session": -0.3079,
+      "mean_r_gross": 0.0173,
+      "mean_mfe_r": 1.2074,
+      "mean_mae_r": -0.9388,
+      "mean_hold_min": 92.9161,
+      "mean_cost_r": 0.2849,
+      "expectancy_ci95": [
+       -0.5057,
+       -0.0262
+      ]
+     }
+    }
+   }
+  },
+  "ORB_BREAKOUT": {
+   "ZERO": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE",
+      "candidate": "ORB_RETEST",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 20,
+      "train_exp": 0.0105,
+      "val_n": 2,
+      "val_exp": -0.2555
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "ORB_VOLUME/ALL",
+      "candidate": "ORB_VOLUME",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 26,
+      "train_exp": 0.0754,
+      "val_n": 4,
+      "val_exp": 0.9468,
+      "test_n": 0,
+      "test_exp": null,
+      "test_total_r": 0
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE",
+      "candidate": "ORB_VOLUME",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 26,
+      "train_exp": 0.327,
+      "val_n": 0,
+      "val_exp": null
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "ORB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 23,
+      "train_exp": 0.2408,
+      "val_n": 2,
+      "val_exp": -0.51
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "ORB_BASE/ALL",
+      "candidate": "ORB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 22,
+      "train_exp": 0.08,
+      "val_n": 13,
+      "val_exp": 0.1663,
+      "test_n": 7,
+      "test_exp": -0.0928,
+      "test_total_r": -0.649
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE",
+      "candidate": "ORB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 28,
+      "train_exp": 0.1128,
+      "val_n": 7,
+      "val_exp": -0.0928
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "ORB_BASE/ALL",
+      "candidate": "ORB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 23,
+      "train_exp": 0.0959,
+      "val_n": 4,
+      "val_exp": 0.2865,
+      "test_n": 0,
+      "test_exp": null,
+      "test_total_r": 0
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "ORB_BASE/ALL",
+      "candidate": "ORB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 20,
+      "train_exp": 0.0036,
+      "val_n": 4,
+      "val_exp": 0.9257,
+      "test_n": 5,
+      "test_exp": -0.0128,
+      "test_total_r": -0.064
+     }
+    ],
+    "oos": {
+     "n": 12,
+     "sessions": 12,
+     "wins": 6,
+     "losses": 6,
+     "win_rate": 0.5,
+     "win_rate_ci95": [
+      0.2538,
+      0.7462
+     ],
+     "gross_profit_r": 5.198,
+     "gross_loss_r": 5.912,
+     "profit_factor": 0.879,
+     "expectancy_r": -0.0595,
+     "avg_win_r": 0.8663,
+     "avg_loss_r": -0.9853,
+     "payoff": 0.879,
+     "total_r": -0.714,
+     "max_drawdown_r": -3.5681,
+     "max_consecutive_losses": 3,
+     "sharpe_daily_ann": -0.725,
+     "sortino_daily_ann": -1.354,
+     "worst_session_r": -1.016,
+     "best_session_r": 2.854,
+     "expectancy_without_best_session": -0.3244,
+     "mean_r_gross": -0.0595,
+     "mean_mfe_r": 1.1441,
+     "mean_mae_r": -0.8447,
+     "mean_hold_min": 27.0,
+     "mean_cost_r": 0.0,
+     "expectancy_ci95": [
+      -0.6574,
+      0.7881
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 2,
+    "folds_positive": 0,
+    "worst_fold_r": -0.649,
+    "best_fold_r": -0.064,
+    "fold_r_std": 0.414,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "out-of-sample -0.059R on only 12 trades"
+    ],
+    "fixed_candidates_post_design": {
+     "ORB_BASE": {
+      "n": 155,
+      "sessions": 150,
+      "wins": 75,
+      "losses": 80,
+      "win_rate": 0.4839,
+      "win_rate_ci95": [
+       0.4065,
+       0.562
+      ],
+      "gross_profit_r": 74.478,
+      "gross_loss_r": 53.602,
+      "profit_factor": 1.389,
+      "expectancy_r": 0.1347,
+      "avg_win_r": 0.993,
+      "avg_loss_r": -0.67,
+      "payoff": 1.482,
+      "total_r": 20.876,
+      "max_drawdown_r": -5.2669,
+      "max_consecutive_losses": 4,
+      "sharpe_daily_ann": 1.937,
+      "sortino_daily_ann": 3.817,
+      "worst_session_r": -1.11,
+      "best_session_r": 3.713,
+      "expectancy_without_best_session": 0.1114,
+      "mean_r_gross": 0.1347,
+      "mean_mfe_r": 1.0711,
+      "mean_mae_r": -0.6467,
+      "mean_hold_min": 38.4258,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0384,
+       0.3158
+      ]
+     },
+     "ORB_DISPLACEMENT": {
+      "n": 63,
+      "sessions": 60,
+      "wins": 33,
+      "losses": 30,
+      "win_rate": 0.5238,
+      "win_rate_ci95": [
+       0.4027,
+       0.6422
+      ],
+      "gross_profit_r": 28.385,
+      "gross_loss_r": 16.496,
+      "profit_factor": 1.721,
+      "expectancy_r": 0.1887,
+      "avg_win_r": 0.8602,
+      "avg_loss_r": -0.5499,
+      "payoff": 1.564,
+      "total_r": 11.889,
+      "max_drawdown_r": -5.7278,
+      "max_consecutive_losses": 4,
+      "sharpe_daily_ann": 2.864,
+      "sortino_daily_ann": 6.295,
+      "worst_session_r": -1.052,
+      "best_session_r": 3.713,
+      "expectancy_without_best_session": 0.1319,
+      "mean_r_gross": 0.1887,
+      "mean_mfe_r": 1.0073,
+      "mean_mae_r": -0.5646,
+      "mean_hold_min": 25.6984,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0717,
+       0.4698
+      ]
+     },
+     "ORB_VOLUME": {
+      "n": 79,
+      "sessions": 75,
+      "wins": 41,
+      "losses": 38,
+      "win_rate": 0.519,
+      "win_rate_ci95": [
+       0.4105,
+       0.6257
+      ],
+      "gross_profit_r": 39.967,
+      "gross_loss_r": 23.626,
+      "profit_factor": 1.692,
+      "expectancy_r": 0.2068,
+      "avg_win_r": 0.9748,
+      "avg_loss_r": -0.6217,
+      "payoff": 1.568,
+      "total_r": 16.34,
+      "max_drawdown_r": -4.7439,
+      "max_consecutive_losses": 4,
+      "sharpe_daily_ann": 2.953,
+      "sortino_daily_ann": 6.458,
+      "worst_session_r": -1.11,
+      "best_session_r": 3.713,
+      "expectancy_without_best_session": 0.1619,
+      "mean_r_gross": 0.2068,
+      "mean_mfe_r": 1.0722,
+      "mean_mae_r": -0.5726,
+      "mean_hold_min": 31.6835,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0255,
+       0.488
+      ]
+     },
+     "ORB_VWAP": {
+      "n": 155,
+      "sessions": 150,
+      "wins": 75,
+      "losses": 80,
+      "win_rate": 0.4839,
+      "win_rate_ci95": [
+       0.4065,
+       0.562
+      ],
+      "gross_profit_r": 74.478,
+      "gross_loss_r": 53.602,
+      "profit_factor": 1.389,
+      "expectancy_r": 0.1347,
+      "avg_win_r": 0.993,
+      "avg_loss_r": -0.67,
+      "payoff": 1.482,
+      "total_r": 20.876,
+      "max_drawdown_r": -5.2669,
+      "max_consecutive_losses": 4,
+      "sharpe_daily_ann": 1.937,
+      "sortino_daily_ann": 3.817,
+      "worst_session_r": -1.11,
+      "best_session_r": 3.713,
+      "expectancy_without_best_session": 0.1114,
+      "mean_r_gross": 0.1347,
+      "mean_mfe_r": 1.0711,
+      "mean_mae_r": -0.6467,
+      "mean_hold_min": 38.4258,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0384,
+       0.3158
+      ]
+     },
+     "ORB_RETEST": {
+      "n": 103,
+      "sessions": 103,
+      "wins": 51,
+      "losses": 52,
+      "win_rate": 0.4951,
+      "win_rate_ci95": [
+       0.4005,
+       0.5901
+      ],
+      "gross_profit_r": 39.884,
+      "gross_loss_r": 45.015,
+      "profit_factor": 0.886,
+      "expectancy_r": -0.0498,
+      "avg_win_r": 0.782,
+      "avg_loss_r": -0.8657,
+      "payoff": 0.903,
+      "total_r": -5.131,
+      "max_drawdown_r": -9.0879,
+      "max_consecutive_losses": 5,
+      "sharpe_daily_ann": -0.769,
+      "sortino_daily_ann": -1.206,
+      "worst_session_r": -1.067,
+      "best_session_r": 2.879,
+      "expectancy_without_best_session": -0.0785,
+      "mean_r_gross": -0.0498,
+      "mean_mfe_r": 0.774,
+      "mean_mae_r": -0.7017,
+      "mean_hold_min": 31.9223,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.2435,
+       0.1439
+      ]
+     }
+    }
+   },
+   "MEASURED": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE",
+      "candidate": "ORB_VOLUME",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 26,
+      "train_exp": 0.2394,
+      "val_n": 0,
+      "val_exp": null
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "ORB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 23,
+      "train_exp": 0.146,
+      "val_n": 2,
+      "val_exp": -0.5652
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "ORB_BASE": {
+      "n": 155,
+      "sessions": 150,
+      "wins": 51,
+      "losses": 104,
+      "win_rate": 0.329,
+      "win_rate_ci95": [
+       0.26,
+       0.4064
+      ],
+      "gross_profit_r": 67.081,
+      "gross_loss_r": 64.573,
+      "profit_factor": 1.039,
+      "expectancy_r": 0.0162,
+      "avg_win_r": 1.3153,
+      "avg_loss_r": -0.6209,
+      "payoff": 2.118,
+      "total_r": 2.508,
+      "max_drawdown_r": -8.5272,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": 0.235,
+      "sortino_daily_ann": 0.407,
+      "worst_session_r": -1.246,
+      "best_session_r": 3.511,
+      "expectancy_without_best_session": -0.0065,
+      "mean_r_gross": 0.1347,
+      "mean_mfe_r": 1.0711,
+      "mean_mae_r": -0.6467,
+      "mean_hold_min": 38.4258,
+      "mean_cost_r": 0.1185,
+      "expectancy_ci95": [
+       -0.1553,
+       0.1947
+      ]
+     },
+     "ORB_DISPLACEMENT": {
+      "n": 63,
+      "sessions": 60,
+      "wins": 21,
+      "losses": 42,
+      "win_rate": 0.3333,
+      "win_rate_ci95": [
+       0.2295,
+       0.4563
+      ],
+      "gross_profit_r": 26.135,
+      "gross_loss_r": 19.982,
+      "profit_factor": 1.308,
+      "expectancy_r": 0.0977,
+      "avg_win_r": 1.2445,
+      "avg_loss_r": -0.4758,
+      "payoff": 2.616,
+      "total_r": 6.153,
+      "max_drawdown_r": -6.6757,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": 1.498,
+      "sortino_daily_ann": 2.931,
+      "worst_session_r": -1.174,
+      "best_session_r": 3.511,
+      "expectancy_without_best_session": 0.0426,
+      "mean_r_gross": 0.1887,
+      "mean_mfe_r": 1.0073,
+      "mean_mae_r": -0.5646,
+      "mean_hold_min": 25.6984,
+      "mean_cost_r": 0.0911,
+      "expectancy_ci95": [
+       -0.1619,
+       0.3761
+      ]
+     },
+     "ORB_VOLUME": {
+      "n": 79,
+      "sessions": 75,
+      "wins": 27,
+      "losses": 52,
+      "win_rate": 0.3418,
+      "win_rate_ci95": [
+       0.2467,
+       0.4515
+      ],
+      "gross_profit_r": 36.682,
+      "gross_loss_r": 28.714,
+      "profit_factor": 1.277,
+      "expectancy_r": 0.1009,
+      "avg_win_r": 1.3586,
+      "avg_loss_r": -0.5522,
+      "payoff": 2.46,
+      "total_r": 7.967,
+      "max_drawdown_r": -5.7247,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": 1.458,
+      "sortino_daily_ann": 2.799,
+      "worst_session_r": -1.246,
+      "best_session_r": 3.511,
+      "expectancy_without_best_session": 0.0571,
+      "mean_r_gross": 0.2068,
+      "mean_mfe_r": 1.0722,
+      "mean_mae_r": -0.5726,
+      "mean_hold_min": 31.6835,
+      "mean_cost_r": 0.106,
+      "expectancy_ci95": [
+       -0.1305,
+       0.3737
+      ]
+     },
+     "ORB_VWAP": {
+      "n": 155,
+      "sessions": 150,
+      "wins": 51,
+      "losses": 104,
+      "win_rate": 0.329,
+      "win_rate_ci95": [
+       0.26,
+       0.4064
+      ],
+      "gross_profit_r": 67.081,
+      "gross_loss_r": 64.573,
+      "profit_factor": 1.039,
+      "expectancy_r": 0.0162,
+      "avg_win_r": 1.3153,
+      "avg_loss_r": -0.6209,
+      "payoff": 2.118,
+      "total_r": 2.508,
+      "max_drawdown_r": -8.5272,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": 0.235,
+      "sortino_daily_ann": 0.407,
+      "worst_session_r": -1.246,
+      "best_session_r": 3.511,
+      "expectancy_without_best_session": -0.0065,
+      "mean_r_gross": 0.1347,
+      "mean_mfe_r": 1.0711,
+      "mean_mae_r": -0.6467,
+      "mean_hold_min": 38.4258,
+      "mean_cost_r": 0.1185,
+      "expectancy_ci95": [
+       -0.1553,
+       0.1947
+      ]
+     },
+     "ORB_RETEST": {
+      "n": 103,
+      "sessions": 103,
+      "wins": 37,
+      "losses": 66,
+      "win_rate": 0.3592,
+      "win_rate_ci95": [
+       0.2732,
+       0.4554
+      ],
+      "gross_profit_r": 35.293,
+      "gross_loss_r": 52.022,
+      "profit_factor": 0.678,
+      "expectancy_r": -0.1624,
+      "avg_win_r": 0.9539,
+      "avg_loss_r": -0.7882,
+      "payoff": 1.21,
+      "total_r": -16.73,
+      "max_drawdown_r": -19.8331,
+      "max_consecutive_losses": 6,
+      "sharpe_daily_ann": -2.529,
+      "sortino_daily_ann": -3.508,
+      "worst_session_r": -1.241,
+      "best_session_r": 2.776,
+      "expectancy_without_best_session": -0.1912,
+      "mean_r_gross": -0.0498,
+      "mean_mfe_r": 0.774,
+      "mean_mae_r": -0.7017,
+      "mean_hold_min": 31.9223,
+      "mean_cost_r": 0.1126,
+      "expectancy_ci95": [
+       -0.3581,
+       0.0281
+      ]
+     }
+    }
+   },
+   "HARSH": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE",
+      "candidate": "ORB_VOLUME",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 26,
+      "train_exp": 0.1752,
+      "val_n": 0,
+      "val_exp": null
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "ORB_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 23,
+      "train_exp": 0.0671,
+      "val_n": 2,
+      "val_exp": -0.6022
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "ORB_BASE": {
+      "n": 155,
+      "sessions": 150,
+      "wins": 47,
+      "losses": 108,
+      "win_rate": 0.3032,
+      "win_rate_ci95": [
+       0.2363,
+       0.3796
+      ],
+      "gross_profit_r": 61.238,
+      "gross_loss_r": 74.239,
+      "profit_factor": 0.825,
+      "expectancy_r": -0.0839,
+      "avg_win_r": 1.3029,
+      "avg_loss_r": -0.6874,
+      "payoff": 1.895,
+      "total_r": -13.001,
+      "max_drawdown_r": -15.5871,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": -1.235,
+      "sortino_daily_ann": -1.93,
+      "worst_session_r": -1.395,
+      "best_session_r": 3.321,
+      "expectancy_without_best_session": -0.106,
+      "mean_r_gross": 0.1347,
+      "mean_mfe_r": 1.0711,
+      "mean_mae_r": -0.6467,
+      "mean_hold_min": 38.4258,
+      "mean_cost_r": 0.2186,
+      "expectancy_ci95": [
+       -0.2506,
+       0.0928
+      ]
+     },
+     "ORB_DISPLACEMENT": {
+      "n": 63,
+      "sessions": 60,
+      "wins": 20,
+      "losses": 43,
+      "win_rate": 0.3175,
+      "win_rate_ci95": [
+       0.2159,
+       0.44
+      ],
+      "gross_profit_r": 24.604,
+      "gross_loss_r": 22.846,
+      "profit_factor": 1.077,
+      "expectancy_r": 0.0279,
+      "avg_win_r": 1.2302,
+      "avg_loss_r": -0.5313,
+      "payoff": 2.315,
+      "total_r": 1.758,
+      "max_drawdown_r": -7.4053,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": 0.433,
+      "sortino_daily_ann": 0.777,
+      "worst_session_r": -1.301,
+      "best_session_r": 3.321,
+      "expectancy_without_best_session": -0.0252,
+      "mean_r_gross": 0.1887,
+      "mean_mfe_r": 1.0073,
+      "mean_mae_r": -0.5646,
+      "mean_hold_min": 25.6984,
+      "mean_cost_r": 0.1608,
+      "expectancy_ci95": [
+       -0.2282,
+       0.3015
+      ]
+     },
+     "ORB_VOLUME": {
+      "n": 79,
+      "sessions": 75,
+      "wins": 25,
+      "losses": 54,
+      "win_rate": 0.3165,
+      "win_rate_ci95": [
+       0.2245,
+       0.4255
+      ],
+      "gross_profit_r": 34.118,
+      "gross_loss_r": 32.859,
+      "profit_factor": 1.038,
+      "expectancy_r": 0.0159,
+      "avg_win_r": 1.3647,
+      "avg_loss_r": -0.6085,
+      "payoff": 2.243,
+      "total_r": 1.26,
+      "max_drawdown_r": -6.4357,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": 0.234,
+      "sortino_daily_ann": 0.407,
+      "worst_session_r": -1.329,
+      "best_session_r": 3.321,
+      "expectancy_without_best_session": -0.0264,
+      "mean_r_gross": 0.2068,
+      "mean_mfe_r": 1.0722,
+      "mean_mae_r": -0.5726,
+      "mean_hold_min": 31.6835,
+      "mean_cost_r": 0.1909,
+      "expectancy_ci95": [
+       -0.2127,
+       0.2841
+      ]
+     },
+     "ORB_VWAP": {
+      "n": 155,
+      "sessions": 150,
+      "wins": 47,
+      "losses": 108,
+      "win_rate": 0.3032,
+      "win_rate_ci95": [
+       0.2363,
+       0.3796
+      ],
+      "gross_profit_r": 61.238,
+      "gross_loss_r": 74.239,
+      "profit_factor": 0.825,
+      "expectancy_r": -0.0839,
+      "avg_win_r": 1.3029,
+      "avg_loss_r": -0.6874,
+      "payoff": 1.895,
+      "total_r": -13.001,
+      "max_drawdown_r": -15.5871,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": -1.235,
+      "sortino_daily_ann": -1.93,
+      "worst_session_r": -1.395,
+      "best_session_r": 3.321,
+      "expectancy_without_best_session": -0.106,
+      "mean_r_gross": 0.1347,
+      "mean_mfe_r": 1.0711,
+      "mean_mae_r": -0.6467,
+      "mean_hold_min": 38.4258,
+      "mean_cost_r": 0.2186,
+      "expectancy_ci95": [
+       -0.2506,
+       0.0928
+      ]
+     },
+     "ORB_RETEST": {
+      "n": 103,
+      "sessions": 103,
+      "wins": 36,
+      "losses": 67,
+      "win_rate": 0.3495,
+      "win_rate_ci95": [
+       0.2643,
+       0.4455
+      ],
+      "gross_profit_r": 31.442,
+      "gross_loss_r": 57.638,
+      "profit_factor": 0.546,
+      "expectancy_r": -0.2543,
+      "avg_win_r": 0.8734,
+      "avg_loss_r": -0.8603,
+      "payoff": 1.015,
+      "total_r": -26.196,
+      "max_drawdown_r": -29.182,
+      "max_consecutive_losses": 6,
+      "sharpe_daily_ann": -4.003,
+      "sortino_daily_ann": -5.062,
+      "worst_session_r": -1.457,
+      "best_session_r": 2.704,
+      "expectancy_without_best_session": -0.2833,
+      "mean_r_gross": -0.0498,
+      "mean_mfe_r": 0.774,
+      "mean_mae_r": -0.7017,
+      "mean_hold_min": 31.9223,
+      "mean_cost_r": 0.2045,
+      "expectancy_ci95": [
+       -0.451,
+       -0.0675
+      ]
+     }
+    }
+   }
+  },
+  "SUPERTREND_EMA": {
+   "ZERO": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "TREND_UP_STRONG"
+      ],
+      "train_n": 118,
+      "train_exp": 0.2764,
+      "val_n": 52,
+      "val_exp": -0.0847
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 152,
+      "train_exp": 0.1011,
+      "val_n": 68,
+      "val_exp": 0.0018,
+      "test_n": 45,
+      "test_exp": -0.0739,
+      "test_total_r": -3.325
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "ST_STRUCTURE/REGIME",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "TREND_UP_STRONG",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 55,
+      "train_exp": 0.0805,
+      "val_n": 20,
+      "val_exp": 0.0361,
+      "test_n": 20,
+      "test_exp": -0.2129,
+      "test_total_r": -4.257
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "TREND_UP_STRONG",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 53,
+      "train_exp": 0.078,
+      "val_n": 20,
+      "val_exp": -0.2129
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "HIGH_VOL_CHOP",
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "TREND_UP_STRONG"
+      ],
+      "train_n": 156,
+      "train_exp": 0.087,
+      "val_n": 53,
+      "val_exp": 0.0148,
+      "test_n": 39,
+      "test_exp": -0.0104,
+      "test_total_r": -0.406
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "RANGE",
+       "TREND_UP_STRONG"
+      ],
+      "train_n": 124,
+      "train_exp": 0.1492,
+      "val_n": 35,
+      "val_exp": 0.0889,
+      "test_n": 54,
+      "test_exp": 0.3574,
+      "test_total_r": 19.301
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "HIGH_VOL_CHOP",
+       "OPENING",
+       "RANGE",
+       "TREND_UP_STRONG"
+      ],
+      "train_n": 176,
+      "train_exp": 0.1555,
+      "val_n": 59,
+      "val_exp": 0.3203,
+      "test_n": 61,
+      "test_exp": 0.0884,
+      "test_total_r": 5.395
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "OPENING",
+       "RANGE",
+       "TREND_UP_STRONG",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 206,
+      "train_exp": 0.1845,
+      "val_n": 63,
+      "val_exp": 0.056,
+      "test_n": 65,
+      "test_exp": -0.2242,
+      "test_total_r": -14.576
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE",
+      "candidate": "ST_EMA921",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 34,
+      "train_exp": 0.2007,
+      "val_n": 15,
+      "val_exp": -0.2817
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "ST_BASE/REGIME",
+      "candidate": "ST_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 105,
+      "train_exp": 0.0957,
+      "val_n": 42,
+      "val_exp": 0.0077,
+      "test_n": 48,
+      "test_exp": 0.0194,
+      "test_total_r": 0.93
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "TREND_UP_STRONG",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 127,
+      "train_exp": 0.1524,
+      "val_n": 39,
+      "val_exp": -0.1137
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "TREND_DOWN_STRONG",
+       "TREND_UP_STRONG",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 177,
+      "train_exp": 0.1497,
+      "val_n": 48,
+      "val_exp": 0.0757,
+      "test_n": 44,
+      "test_exp": -0.4433,
+      "test_total_r": -19.507
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "TREND_UP_STRONG",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 212,
+      "train_exp": 0.2229,
+      "val_n": 57,
+      "val_exp": -0.2098
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 155,
+      "train_exp": 0.2319,
+      "val_n": 28,
+      "val_exp": 0.0153,
+      "test_n": 44,
+      "test_exp": -0.1349,
+      "test_total_r": -5.936
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 97,
+      "train_exp": 0.312,
+      "val_n": 28,
+      "val_exp": -0.2156
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 56,
+      "train_exp": 0.204,
+      "val_n": 21,
+      "val_exp": 0.0375,
+      "test_n": 11,
+      "test_exp": 0.3888,
+      "test_total_r": 4.277
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "ST_STRUCTURE/REGIME",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "TREND_UP_STRONG",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 82,
+      "train_exp": 0.1748,
+      "val_n": 20,
+      "val_exp": 0.0376,
+      "test_n": 31,
+      "test_exp": -0.0612,
+      "test_total_r": -1.897
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "HIGH_VOL_CHOP",
+       "OPENING",
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 153,
+      "train_exp": 0.1803,
+      "val_n": 45,
+      "val_exp": -0.0848
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "HIGH_VOL_CHOP",
+       "OPENING",
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 235,
+      "train_exp": 0.1205,
+      "val_n": 72,
+      "val_exp": 0.181,
+      "test_n": 58,
+      "test_exp": -0.2833,
+      "test_total_r": -16.431
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "HIGH_VOL_CHOP",
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "TREND_UP_STRONG",
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 210,
+      "train_exp": 0.1902,
+      "val_n": 73,
+      "val_exp": -0.2571
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE",
+      "candidate": "ST_EMA921",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "OPENING",
+       "TREND_UP_STRONG"
+      ],
+      "train_n": 54,
+      "train_exp": 0.1157,
+      "val_n": 15,
+      "val_exp": -0.3182
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 109,
+      "train_exp": 0.1677,
+      "val_n": 45,
+      "val_exp": 0.1483,
+      "test_n": 32,
+      "test_exp": 0.0699,
+      "test_total_r": 2.236
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 103,
+      "train_exp": 0.08,
+      "val_n": 32,
+      "val_exp": 0.0699,
+      "test_n": 44,
+      "test_exp": 0.0468,
+      "test_total_r": 2.06
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "OPENING",
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 233,
+      "train_exp": 0.131,
+      "val_n": 80,
+      "val_exp": 0.0204,
+      "test_n": 76,
+      "test_exp": 0.0157,
+      "test_total_r": 1.197
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "OPENING",
+       "RANGE",
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 197,
+      "train_exp": 0.1604,
+      "val_n": 57,
+      "val_exp": 0.0283,
+      "test_n": 32,
+      "test_exp": 0.1791,
+      "test_total_r": 5.731
+     }
+    ],
+    "oos": {
+     "n": 704,
+     "sessions": 261,
+     "wins": 305,
+     "losses": 399,
+     "win_rate": 0.4332,
+     "win_rate_ci95": [
+      0.3971,
+      0.4701
+     ],
+     "gross_profit_r": 301.068,
+     "gross_loss_r": 326.278,
+     "profit_factor": 0.923,
+     "expectancy_r": -0.0358,
+     "avg_win_r": 0.9871,
+     "avg_loss_r": -0.8177,
+     "payoff": 1.207,
+     "total_r": -25.209,
+     "max_drawdown_r": -60.6577,
+     "max_consecutive_losses": 13,
+     "sharpe_daily_ann": -0.906,
+     "sortino_daily_ann": -1.313,
+     "worst_session_r": -5.336,
+     "best_session_r": 6.069,
+     "expectancy_without_best_session": -0.0445,
+     "mean_r_gross": -0.0358,
+     "mean_mfe_r": 0.8664,
+     "mean_mae_r": -0.7856,
+     "mean_hold_min": 4.6364,
+     "mean_cost_r": 0.0,
+     "expectancy_ci95": [
+      -0.1137,
+      0.039
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 16,
+    "folds_positive": 8,
+    "worst_fold_r": -19.507,
+    "best_fold_r": 19.301,
+    "fold_r_std": 9.507,
+    "status": "DISABLED_FOR_RESEARCH",
+    "status_reasons": [
+     "out-of-sample -0.036R (n=704, CI (-0.1137, 0.039))"
+    ],
+    "fixed_candidates_post_design": {
+     "ST_BASE": {
+      "n": 2450,
+      "sessions": 496,
+      "wins": 1265,
+      "losses": 1183,
+      "win_rate": 0.5163,
+      "win_rate_ci95": [
+       0.4965,
+       0.5361
+      ],
+      "gross_profit_r": 716.358,
+      "gross_loss_r": 763.958,
+      "profit_factor": 0.938,
+      "expectancy_r": -0.0194,
+      "avg_win_r": 0.5663,
+      "avg_loss_r": -0.6458,
+      "payoff": 0.877,
+      "total_r": -47.6,
+      "max_drawdown_r": -59.3822,
+      "max_consecutive_losses": 15,
+      "sharpe_daily_ann": -0.957,
+      "sortino_daily_ann": -1.287,
+      "worst_session_r": -4.898,
+      "best_session_r": 6.497,
+      "expectancy_without_best_session": -0.0221,
+      "mean_r_gross": -0.0194,
+      "mean_mfe_r": 0.523,
+      "mean_mae_r": -0.547,
+      "mean_hold_min": 5.3918,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.048,
+       0.0092
+      ]
+     },
+     "ST_EMA921": {
+      "n": 1093,
+      "sessions": 446,
+      "wins": 555,
+      "losses": 537,
+      "win_rate": 0.5078,
+      "win_rate_ci95": [
+       0.4782,
+       0.5373
+      ],
+      "gross_profit_r": 312.424,
+      "gross_loss_r": 359.159,
+      "profit_factor": 0.87,
+      "expectancy_r": -0.0428,
+      "avg_win_r": 0.5629,
+      "avg_loss_r": -0.6688,
+      "payoff": 0.842,
+      "total_r": -46.735,
+      "max_drawdown_r": -57.2413,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": -1.517,
+      "sortino_daily_ann": -2.008,
+      "worst_session_r": -3.887,
+      "best_session_r": 3.223,
+      "expectancy_without_best_session": -0.0457,
+      "mean_r_gross": -0.0428,
+      "mean_mfe_r": 0.5305,
+      "mean_mae_r": -0.5532,
+      "mean_hold_min": 5.2827,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0873,
+       -0.0017
+      ]
+     },
+     "ST_PULLBACK": {
+      "n": 2168,
+      "sessions": 491,
+      "wins": 1000,
+      "losses": 1168,
+      "win_rate": 0.4613,
+      "win_rate_ci95": [
+       0.4404,
+       0.4823
+      ],
+      "gross_profit_r": 1065.241,
+      "gross_loss_r": 984.321,
+      "profit_factor": 1.082,
+      "expectancy_r": 0.0373,
+      "avg_win_r": 1.0652,
+      "avg_loss_r": -0.8427,
+      "payoff": 1.264,
+      "total_r": 80.921,
+      "max_drawdown_r": -36.5579,
+      "max_consecutive_losses": 13,
+      "sharpe_daily_ann": 1.135,
+      "sortino_daily_ann": 1.88,
+      "worst_session_r": -5.53,
+      "best_session_r": 10.437,
+      "expectancy_without_best_session": 0.0325,
+      "mean_r_gross": 0.0373,
+      "mean_mfe_r": 0.9288,
+      "mean_mae_r": -0.7919,
+      "mean_hold_min": 4.4912,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0104,
+       0.0852
+      ]
+     },
+     "ST_STRUCTURE": {
+      "n": 1796,
+      "sessions": 490,
+      "wins": 943,
+      "losses": 852,
+      "win_rate": 0.5251,
+      "win_rate_ci95": [
+       0.5019,
+       0.5481
+      ],
+      "gross_profit_r": 513.174,
+      "gross_loss_r": 527.88,
+      "profit_factor": 0.972,
+      "expectancy_r": -0.0082,
+      "avg_win_r": 0.5442,
+      "avg_loss_r": -0.6196,
+      "payoff": 0.878,
+      "total_r": -14.706,
+      "max_drawdown_r": -23.7047,
+      "max_consecutive_losses": 9,
+      "sharpe_daily_ann": -0.372,
+      "sortino_daily_ann": -0.503,
+      "worst_session_r": -3.584,
+      "best_session_r": 3.219,
+      "expectancy_without_best_session": -0.01,
+      "mean_r_gross": -0.0082,
+      "mean_mfe_r": 0.5098,
+      "mean_mae_r": -0.524,
+      "mean_hold_min": 5.4293,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0401,
+       0.0231
+      ]
+     }
+    }
+   },
+   "MEASURED": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "TREND_UP_STRONG"
+      ],
+      "train_n": 90,
+      "train_exp": 0.0971,
+      "val_n": 42,
+      "val_exp": -0.3637
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "TREND_UP_STRONG"
+      ],
+      "train_n": 47,
+      "train_exp": 0.0662,
+      "val_n": 10,
+      "val_exp": 0.0221,
+      "test_n": 31,
+      "test_exp": -0.0223,
+      "test_total_r": -0.692
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "HIGH_VOL_CHOP",
+       "TREND_UP_STRONG"
+      ],
+      "train_n": 52,
+      "train_exp": 0.0876,
+      "val_n": 32,
+      "val_exp": -0.0561
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "TREND_UP_STRONG"
+      ],
+      "train_n": 103,
+      "train_exp": 0.0223,
+      "val_n": 29,
+      "val_exp": -0.0917
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "RANGE"
+      ],
+      "train_n": 53,
+      "train_exp": 0.1136,
+      "val_n": 24,
+      "val_exp": -0.4762
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE",
+      "candidate": "ST_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 36,
+      "train_exp": 0.0547,
+      "val_n": 13,
+      "val_exp": -0.1869
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 83,
+      "train_exp": 0.0975,
+      "val_n": 32,
+      "val_exp": -0.3708
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "TREND_UP_STRONG",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 58,
+      "train_exp": 0.0386,
+      "val_n": 19,
+      "val_exp": -0.4269
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION"
+      ],
+      "train_n": 41,
+      "train_exp": 0.0048,
+      "val_n": 12,
+      "val_exp": -0.8877
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 70,
+      "train_exp": 0.0683,
+      "val_n": 22,
+      "val_exp": -0.1805
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 64,
+      "train_exp": 0.141,
+      "val_n": 21,
+      "val_exp": -0.7583
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "ST_BASE/REGIME",
+      "candidate": "ST_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION"
+      ],
+      "train_n": 22,
+      "train_exp": 0.0459,
+      "val_n": 13,
+      "val_exp": 0.1491,
+      "test_n": 2,
+      "test_exp": -0.2592,
+      "test_total_r": -0.518
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION"
+      ],
+      "train_n": 24,
+      "train_exp": 0.1485,
+      "val_n": 1,
+      "val_exp": -1.1466
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "HIGH_VOL_CHOP"
+      ],
+      "train_n": 21,
+      "train_exp": 0.1594,
+      "val_n": 1,
+      "val_exp": -1.2241
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 48,
+      "train_exp": 0.0805,
+      "val_n": 14,
+      "val_exp": -0.1387
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 67,
+      "train_exp": 0.118,
+      "val_n": 8,
+      "val_exp": -0.4199
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "ST_PULLBACK/REGIME",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE"
+      ],
+      "train_n": 33,
+      "train_exp": 0.1198,
+      "val_n": 11,
+      "val_exp": 0.0423,
+      "test_n": 20,
+      "test_exp": -0.2245,
+      "test_total_r": -4.489
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 55,
+      "train_exp": 0.1297,
+      "val_n": 32,
+      "val_exp": -0.0808
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 24,
+      "train_exp": 0.0141,
+      "val_n": 10,
+      "val_exp": -0.1781
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE",
+      "candidate": "ST_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "TREND_DOWN_STRONG"
+      ],
+      "train_n": 69,
+      "train_exp": 0.0102,
+      "val_n": 20,
+      "val_exp": -0.346
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 79,
+      "train_exp": 0.0666,
+      "val_n": 21,
+      "val_exp": -0.1152
+     }
+    ],
+    "oos": {
+     "n": 53,
+     "sessions": 26,
+     "wins": 25,
+     "losses": 28,
+     "win_rate": 0.4717,
+     "win_rate_ci95": [
+      0.3438,
+      0.6034
+     ],
+     "gross_profit_r": 25.032,
+     "gross_loss_r": 30.732,
+     "profit_factor": 0.815,
+     "expectancy_r": -0.1075,
+     "avg_win_r": 1.0013,
+     "avg_loss_r": -1.0976,
+     "payoff": 0.912,
+     "total_r": -5.7,
+     "max_drawdown_r": -12.9419,
+     "max_consecutive_losses": 8,
+     "sharpe_daily_ann": -2.05,
+     "sortino_daily_ann": -2.618,
+     "worst_session_r": -4.716,
+     "best_session_r": 2.72,
+     "expectancy_without_best_session": -0.1619,
+     "mean_r_gross": 0.1496,
+     "mean_mfe_r": 1.0273,
+     "mean_mae_r": -0.7522,
+     "mean_hold_min": 4.5472,
+     "mean_cost_r": 0.2572,
+     "expectancy_ci95": [
+      -0.4307,
+      0.223
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 3,
+    "folds_positive": 0,
+    "worst_fold_r": -4.489,
+    "best_fold_r": -0.518,
+    "fold_r_std": 2.244,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "out-of-sample -0.107R on only 53 trades"
+    ],
+    "fixed_candidates_post_design": {
+     "ST_BASE": {
+      "n": 2450,
+      "sessions": 496,
+      "wins": 1181,
+      "losses": 1265,
+      "win_rate": 0.482,
+      "win_rate_ci95": [
+       0.4623,
+       0.5018
+      ],
+      "gross_profit_r": 568.47,
+      "gross_loss_r": 929.339,
+      "profit_factor": 0.612,
+      "expectancy_r": -0.1473,
+      "avg_win_r": 0.4813,
+      "avg_loss_r": -0.7347,
+      "payoff": 0.655,
+      "total_r": -360.868,
+      "max_drawdown_r": -366.6604,
+      "max_consecutive_losses": 15,
+      "sharpe_daily_ann": -7.193,
+      "sortino_daily_ann": -7.231,
+      "worst_session_r": -5.551,
+      "best_session_r": 5.393,
+      "expectancy_without_best_session": -0.1496,
+      "mean_r_gross": -0.0194,
+      "mean_mfe_r": 0.523,
+      "mean_mae_r": -0.547,
+      "mean_hold_min": 5.3918,
+      "mean_cost_r": 0.1279,
+      "expectancy_ci95": [
+       -0.1757,
+       -0.1185
+      ]
+     },
+     "ST_EMA921": {
+      "n": 1093,
+      "sessions": 446,
+      "wins": 515,
+      "losses": 578,
+      "win_rate": 0.4712,
+      "win_rate_ci95": [
+       0.4417,
+       0.5008
+      ],
+      "gross_profit_r": 247.055,
+      "gross_loss_r": 438.2,
+      "profit_factor": 0.564,
+      "expectancy_r": -0.1749,
+      "avg_win_r": 0.4797,
+      "avg_loss_r": -0.7581,
+      "payoff": 0.633,
+      "total_r": -191.145,
+      "max_drawdown_r": -193.484,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": -6.082,
+      "sortino_daily_ann": -6.379,
+      "worst_session_r": -4.745,
+      "best_session_r": 2.634,
+      "expectancy_without_best_session": -0.1775,
+      "mean_r_gross": -0.0428,
+      "mean_mfe_r": 0.5305,
+      "mean_mae_r": -0.5532,
+      "mean_hold_min": 5.2827,
+      "mean_cost_r": 0.1321,
+      "expectancy_ci95": [
+       -0.2192,
+       -0.1343
+      ]
+     },
+     "ST_PULLBACK": {
+      "n": 2168,
+      "sessions": 491,
+      "wins": 927,
+      "losses": 1239,
+      "win_rate": 0.4276,
+      "win_rate_ci95": [
+       0.4069,
+       0.4485
+      ],
+      "gross_profit_r": 850.11,
+      "gross_loss_r": 1300.111,
+      "profit_factor": 0.654,
+      "expectancy_r": -0.2076,
+      "avg_win_r": 0.9171,
+      "avg_loss_r": -1.0493,
+      "payoff": 0.874,
+      "total_r": -450.002,
+      "max_drawdown_r": -455.3552,
+      "max_consecutive_losses": 13,
+      "sharpe_daily_ann": -6.231,
+      "sortino_daily_ann": -6.691,
+      "worst_session_r": -7.752,
+      "best_session_r": 8.69,
+      "expectancy_without_best_session": -0.2117,
+      "mean_r_gross": 0.0373,
+      "mean_mfe_r": 0.9288,
+      "mean_mae_r": -0.7919,
+      "mean_hold_min": 4.4912,
+      "mean_cost_r": 0.2449,
+      "expectancy_ci95": [
+       -0.2562,
+       -0.1583
+      ]
+     },
+     "ST_STRUCTURE": {
+      "n": 1796,
+      "sessions": 490,
+      "wins": 877,
+      "losses": 916,
+      "win_rate": 0.4883,
+      "win_rate_ci95": [
+       0.4652,
+       0.5114
+      ],
+      "gross_profit_r": 407.984,
+      "gross_loss_r": 641.683,
+      "profit_factor": 0.636,
+      "expectancy_r": -0.1301,
+      "avg_win_r": 0.4652,
+      "avg_loss_r": -0.7005,
+      "payoff": 0.664,
+      "total_r": -233.699,
+      "max_drawdown_r": -236.0572,
+      "max_consecutive_losses": 11,
+      "sharpe_daily_ann": -5.805,
+      "sortino_daily_ann": -6.075,
+      "worst_session_r": -4.322,
+      "best_session_r": 2.493,
+      "expectancy_without_best_session": -0.1316,
+      "mean_r_gross": -0.0082,
+      "mean_mfe_r": 0.5098,
+      "mean_mae_r": -0.524,
+      "mean_hold_min": 5.4293,
+      "mean_cost_r": 0.1219,
+      "expectancy_ci95": [
+       -0.1615,
+       -0.0986
+      ]
+     }
+    }
+   },
+   "HARSH": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "WEAK_TREND_DOWN",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 42,
+      "train_exp": 0.036,
+      "val_n": 19,
+      "val_exp": -0.554
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 26,
+      "train_exp": 0.0786,
+      "val_n": 8,
+      "val_exp": -0.3827
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE",
+       "TREND_DOWN_STRONG",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 83,
+      "train_exp": 0.0317,
+      "val_n": 32,
+      "val_exp": -0.4579
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 29,
+      "train_exp": 0.0871,
+      "val_n": 9,
+      "val_exp": -0.9571
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION"
+      ],
+      "train_n": 24,
+      "train_exp": 0.0516,
+      "val_n": 1,
+      "val_exp": -1.2387
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "HIGH_VOL_CHOP"
+      ],
+      "train_n": 21,
+      "train_exp": 0.0344,
+      "val_n": 1,
+      "val_exp": -1.3495
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 25,
+      "train_exp": 0.0159,
+      "val_n": 6,
+      "val_exp": -0.1676
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE",
+      "candidate": "ST_STRUCTURE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "TREND_UP_STRONG",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 62,
+      "train_exp": 0.016,
+      "val_n": 22,
+      "val_exp": -0.2675
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE"
+      ],
+      "train_n": 33,
+      "train_exp": 0.0088,
+      "val_n": 11,
+      "val_exp": -0.0636
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE",
+      "candidate": "ST_PULLBACK",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "RANGE"
+      ],
+      "train_n": 32,
+      "train_exp": 0.0793,
+      "val_n": 20,
+      "val_exp": -0.3798
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 0
+    },
+    "folds_total": 25,
+    "folds_traded": 0,
+    "folds_positive": 0,
+    "worst_fold_r": null,
+    "best_fold_r": null,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "no out-of-sample trades (stood aside every month)"
+    ],
+    "fixed_candidates_post_design": {
+     "ST_BASE": {
+      "n": 2450,
+      "sessions": 496,
+      "wins": 1128,
+      "losses": 1322,
+      "win_rate": 0.4604,
+      "win_rate_ci95": [
+       0.4407,
+       0.4802
+      ],
+      "gross_profit_r": 487.764,
+      "gross_loss_r": 1035.975,
+      "profit_factor": 0.471,
+      "expectancy_r": -0.2238,
+      "avg_win_r": 0.4324,
+      "avg_loss_r": -0.7836,
+      "payoff": 0.552,
+      "total_r": -548.21,
+      "max_drawdown_r": -552.1834,
+      "max_consecutive_losses": 15,
+      "sharpe_daily_ann": -10.755,
+      "sortino_daily_ann": -9.332,
+      "worst_session_r": -5.98,
+      "best_session_r": 4.744,
+      "expectancy_without_best_session": -0.2258,
+      "mean_r_gross": -0.0194,
+      "mean_mfe_r": 0.523,
+      "mean_mae_r": -0.547,
+      "mean_hold_min": 5.3918,
+      "mean_cost_r": 0.2043,
+      "expectancy_ci95": [
+       -0.2523,
+       -0.1949
+      ]
+     },
+     "ST_EMA921": {
+      "n": 1093,
+      "sessions": 446,
+      "wins": 493,
+      "losses": 600,
+      "win_rate": 0.4511,
+      "win_rate_ci95": [
+       0.4218,
+       0.4807
+      ],
+      "gross_profit_r": 211.777,
+      "gross_loss_r": 489.242,
+      "profit_factor": 0.433,
+      "expectancy_r": -0.2539,
+      "avg_win_r": 0.4296,
+      "avg_loss_r": -0.8154,
+      "payoff": 0.527,
+      "total_r": -277.464,
+      "max_drawdown_r": -279.2846,
+      "max_consecutive_losses": 8,
+      "sharpe_daily_ann": -8.562,
+      "sortino_daily_ann": -8.037,
+      "worst_session_r": -5.315,
+      "best_session_r": 2.283,
+      "expectancy_without_best_session": -0.2562,
+      "mean_r_gross": -0.0428,
+      "mean_mfe_r": 0.5305,
+      "mean_mae_r": -0.5532,
+      "mean_hold_min": 5.2827,
+      "mean_cost_r": 0.2111,
+      "expectancy_ci95": [
+       -0.298,
+       -0.2134
+      ]
+     },
+     "ST_PULLBACK": {
+      "n": 2168,
+      "sessions": 491,
+      "wins": 881,
+      "losses": 1287,
+      "win_rate": 0.4064,
+      "win_rate_ci95": [
+       0.3859,
+       0.4272
+      ],
+      "gross_profit_r": 733.725,
+      "gross_loss_r": 1494.408,
+      "profit_factor": 0.491,
+      "expectancy_r": -0.3509,
+      "avg_win_r": 0.8328,
+      "avg_loss_r": -1.1612,
+      "payoff": 0.717,
+      "total_r": -760.683,
+      "max_drawdown_r": -763.2918,
+      "max_consecutive_losses": 15,
+      "sharpe_daily_ann": -10.245,
+      "sortino_daily_ann": -9.149,
+      "worst_session_r": -9.113,
+      "best_session_r": 7.693,
+      "expectancy_without_best_session": -0.3546,
+      "mean_r_gross": 0.0373,
+      "mean_mfe_r": 0.9288,
+      "mean_mae_r": -0.7919,
+      "mean_hold_min": 4.4912,
+      "mean_cost_r": 0.3882,
+      "expectancy_ci95": [
+       -0.4011,
+       -0.301
+      ]
+     },
+     "ST_STRUCTURE": {
+      "n": 1796,
+      "sessions": 490,
+      "wins": 837,
+      "losses": 959,
+      "win_rate": 0.466,
+      "win_rate_ci95": [
+       0.4431,
+       0.4892
+      ],
+      "gross_profit_r": 350.908,
+      "gross_loss_r": 715.615,
+      "profit_factor": 0.49,
+      "expectancy_r": -0.2031,
+      "avg_win_r": 0.4192,
+      "avg_loss_r": -0.7462,
+      "payoff": 0.562,
+      "total_r": -364.707,
+      "max_drawdown_r": -366.3847,
+      "max_consecutive_losses": 11,
+      "sharpe_daily_ann": -8.838,
+      "sortino_daily_ann": -8.16,
+      "worst_session_r": -4.76,
+      "best_session_r": 2.069,
+      "expectancy_without_best_session": -0.2043,
+      "mean_r_gross": -0.0082,
+      "mean_mfe_r": 0.5098,
+      "mean_mae_r": -0.524,
+      "mean_hold_min": 5.4293,
+      "mean_cost_r": 0.1949,
+      "expectancy_ci95": [
+       -0.235,
+       -0.1714
+      ]
+     }
+    }
+   }
+  },
+  "EMA_RSI_PULLBACK_15M": {
+   "ZERO": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "RANGE"
+      ],
+      "train_n": 24,
+      "train_exp": 0.2171,
+      "val_n": 8,
+      "val_exp": -0.4857
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "ER_3M/REGIME",
+      "candidate": "ER_3M",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 21,
+      "train_exp": 0.1573,
+      "val_n": 8,
+      "val_exp": 0.2395,
+      "test_n": 11,
+      "test_exp": -0.0456,
+      "test_total_r": -0.502
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "ER_BASE/ALL",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 38,
+      "train_exp": 0.1866,
+      "val_n": 9,
+      "val_exp": 0.3869,
+      "test_n": 11,
+      "test_exp": -0.1909,
+      "test_total_r": -2.1
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 24,
+      "train_exp": 0.2762,
+      "val_n": 8,
+      "val_exp": -0.2771
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "ER_3M/REGIME",
+      "candidate": "ER_3M",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 26,
+      "train_exp": 0.2419,
+      "val_n": 7,
+      "val_exp": 0.291,
+      "test_n": 9,
+      "test_exp": -0.4394,
+      "test_total_r": -3.955
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "OPENING",
+       "WEAK_TREND_DOWN"
+      ],
+      "train_n": 33,
+      "train_exp": 0.1721,
+      "val_n": 14,
+      "val_exp": -0.3397
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "RANGE"
+      ],
+      "train_n": 26,
+      "train_exp": 0.1227,
+      "val_n": 8,
+      "val_exp": -0.25
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "COMPRESSION",
+       "RANGE"
+      ],
+      "train_n": 26,
+      "train_exp": 0.0537,
+      "val_n": 7,
+      "val_exp": -0.5854
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "ER_BASE/ALL",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 31,
+      "train_exp": 0.0368,
+      "val_n": 11,
+      "val_exp": 0.1589,
+      "test_n": 4,
+      "test_exp": 0.6447,
+      "test_total_r": 2.579
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "ER_BASE/ALL",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 34,
+      "train_exp": 0.0308,
+      "val_n": 4,
+      "val_exp": 0.6447,
+      "test_n": 8,
+      "test_exp": 0.0019,
+      "test_total_r": 0.015
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "ER_BASE/ALL",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 28,
+      "train_exp": 0.219,
+      "val_n": 8,
+      "val_exp": 0.0019,
+      "test_n": 10,
+      "test_exp": -0.036,
+      "test_total_r": -0.36
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "ER_3M/ALL",
+      "candidate": "ER_3M",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 44,
+      "train_exp": 0.2166,
+      "val_n": 14,
+      "val_exp": 0.2226,
+      "test_n": 18,
+      "test_exp": 0.014,
+      "test_total_r": 0.252
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "ER_3M/ALL",
+      "candidate": "ER_3M",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 40,
+      "train_exp": 0.271,
+      "val_n": 18,
+      "val_exp": 0.014,
+      "test_n": 22,
+      "test_exp": -0.634,
+      "test_total_r": -13.948
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 42,
+      "train_exp": 0.1732,
+      "val_n": 14,
+      "val_exp": -0.7047
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 25,
+      "train_exp": 0.0334,
+      "val_n": 9,
+      "val_exp": -0.4799
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "ER_3M_CONFIRM/ALL",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 33,
+      "train_exp": 0.3313,
+      "val_n": 11,
+      "val_exp": 0.0049,
+      "test_n": 10,
+      "test_exp": 0.1218,
+      "test_total_r": 1.218
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "ER_3M_CONFIRM/ALL",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 33,
+      "train_exp": 0.2432,
+      "val_n": 10,
+      "val_exp": 0.1218,
+      "test_n": 17,
+      "test_exp": -0.3325,
+      "test_total_r": -5.652
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 33,
+      "train_exp": 0.1289,
+      "val_n": 17,
+      "val_exp": -0.3325
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 32,
+      "train_exp": 0.08,
+      "val_n": 11,
+      "val_exp": -0.1938
+     }
+    ],
+    "oos": {
+     "n": 120,
+     "sessions": 85,
+     "wins": 41,
+     "losses": 79,
+     "win_rate": 0.3417,
+     "win_rate_ci95": [
+      0.2629,
+      0.4303
+     ],
+     "gross_profit_r": 42.735,
+     "gross_loss_r": 65.186,
+     "profit_factor": 0.656,
+     "expectancy_r": -0.1871,
+     "avg_win_r": 1.0423,
+     "avg_loss_r": -0.8251,
+     "payoff": 1.263,
+     "total_r": -22.451,
+     "max_drawdown_r": -26.7204,
+     "max_consecutive_losses": 8,
+     "sharpe_daily_ann": -3.06,
+     "sortino_daily_ann": -3.856,
+     "worst_session_r": -4.143,
+     "best_session_r": 2.169,
+     "expectancy_without_best_session": -0.2069,
+     "mean_r_gross": -0.1871,
+     "mean_mfe_r": 0.9119,
+     "mean_mae_r": -0.769,
+     "mean_hold_min": 74.975,
+     "mean_cost_r": 0.0,
+     "expectancy_ci95": [
+      -0.3763,
+      0.0196
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 10,
+    "folds_positive": 4,
+    "worst_fold_r": -13.948,
+    "best_fold_r": 2.579,
+    "fold_r_std": 4.769,
+    "status": "DISABLED_FOR_RESEARCH",
+    "status_reasons": [
+     "out-of-sample -0.187R (n=120, CI (-0.3763, 0.0196))"
+    ],
+    "fixed_candidates_post_design": {
+     "ER_BASE": {
+      "n": 255,
+      "sessions": 224,
+      "wins": 110,
+      "losses": 145,
+      "win_rate": 0.4314,
+      "win_rate_ci95": [
+       0.372,
+       0.4927
+      ],
+      "gross_profit_r": 116.24,
+      "gross_loss_r": 105.64,
+      "profit_factor": 1.1,
+      "expectancy_r": 0.0416,
+      "avg_win_r": 1.0567,
+      "avg_loss_r": -0.7285,
+      "payoff": 1.45,
+      "total_r": 10.601,
+      "max_drawdown_r": -13.6878,
+      "max_consecutive_losses": 7,
+      "sharpe_daily_ann": 0.663,
+      "sortino_daily_ann": 1.073,
+      "worst_session_r": -2.873,
+      "best_session_r": 2.206,
+      "expectancy_without_best_session": 0.033,
+      "mean_r_gross": 0.0416,
+      "mean_mfe_r": 0.9382,
+      "mean_mae_r": -0.6677,
+      "mean_hold_min": 132.2706,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0761,
+       0.1764
+      ]
+     },
+     "ER_3M": {
+      "n": 428,
+      "sessions": 268,
+      "wins": 165,
+      "losses": 263,
+      "win_rate": 0.3855,
+      "win_rate_ci95": [
+       0.3406,
+       0.4324
+      ],
+      "gross_profit_r": 208.957,
+      "gross_loss_r": 200.652,
+      "profit_factor": 1.041,
+      "expectancy_r": 0.0194,
+      "avg_win_r": 1.2664,
+      "avg_loss_r": -0.7629,
+      "payoff": 1.66,
+      "total_r": 8.305,
+      "max_drawdown_r": -19.8997,
+      "max_consecutive_losses": 12,
+      "sharpe_daily_ann": 0.318,
+      "sortino_daily_ann": 0.474,
+      "worst_session_r": -4.143,
+      "best_session_r": 4.255,
+      "expectancy_without_best_session": 0.0095,
+      "mean_r_gross": 0.0194,
+      "mean_mfe_r": 1.1026,
+      "mean_mae_r": -0.7448,
+      "mean_hold_min": 40.0864,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0938,
+       0.1354
+      ]
+     },
+     "ER_3M_CONFIRM": {
+      "n": 355,
+      "sessions": 245,
+      "wins": 133,
+      "losses": 222,
+      "win_rate": 0.3746,
+      "win_rate_ci95": [
+       0.3259,
+       0.4261
+      ],
+      "gross_profit_r": 161.909,
+      "gross_loss_r": 170.157,
+      "profit_factor": 0.952,
+      "expectancy_r": -0.0232,
+      "avg_win_r": 1.2174,
+      "avg_loss_r": -0.7665,
+      "payoff": 1.588,
+      "total_r": -8.248,
+      "max_drawdown_r": -16.1527,
+      "max_consecutive_losses": 11,
+      "sharpe_daily_ann": -0.371,
+      "sortino_daily_ann": -0.536,
+      "worst_session_r": -3.061,
+      "best_session_r": 2.169,
+      "expectancy_without_best_session": -0.0294,
+      "mean_r_gross": -0.0232,
+      "mean_mfe_r": 1.0718,
+      "mean_mae_r": -0.7447,
+      "mean_hold_min": 44.3408,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.1403,
+       0.107
+      ]
+     }
+    }
+   },
+   "MEASURED": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "ER_3M/REGIME",
+      "candidate": "ER_3M",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "WEAK_TREND_UP"
+      ],
+      "train_n": 21,
+      "train_exp": 0.0349,
+      "val_n": 8,
+      "val_exp": 0.1511,
+      "test_n": 11,
+      "test_exp": -0.1418,
+      "test_total_r": -1.56
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "ER_BASE/ALL",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 38,
+      "train_exp": 0.0946,
+      "val_n": 9,
+      "val_exp": 0.3084,
+      "test_n": 11,
+      "test_exp": -0.2898,
+      "test_total_r": -3.188
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 33,
+      "train_exp": 0.1164,
+      "val_n": 11,
+      "val_exp": -0.2898
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "ER_BASE/ALL",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 34,
+      "train_exp": 0.0483,
+      "val_n": 9,
+      "val_exp": 0.2377,
+      "test_n": 10,
+      "test_exp": 0.0349,
+      "test_total_r": 0.349
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "ER_BASE/ALL",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 29,
+      "train_exp": 0.0596,
+      "val_n": 10,
+      "val_exp": 0.0349,
+      "test_n": 15,
+      "test_exp": -0.5891,
+      "test_total_r": -8.837
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 28,
+      "train_exp": 0.0849,
+      "val_n": 8,
+      "val_exp": -0.1153
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 23,
+      "train_exp": 0.055,
+      "val_n": 10,
+      "val_exp": -0.1453
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 31,
+      "train_exp": 0.1171,
+      "val_n": 17,
+      "val_exp": -0.0959
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 42,
+      "train_exp": 0.0393,
+      "val_n": 14,
+      "val_exp": -0.817
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 33,
+      "train_exp": 0.2377,
+      "val_n": 11,
+      "val_exp": -0.1235
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 33,
+      "train_exp": 0.1317,
+      "val_n": 10,
+      "val_exp": -0.0487
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 47,
+     "sessions": 36,
+     "wins": 12,
+     "losses": 35,
+     "win_rate": 0.2553,
+     "win_rate_ci95": [
+      0.1525,
+      0.3951
+     ],
+     "gross_profit_r": 15.019,
+     "gross_loss_r": 28.254,
+     "profit_factor": 0.532,
+     "expectancy_r": -0.2816,
+     "avg_win_r": 1.2516,
+     "avg_loss_r": -0.8073,
+     "payoff": 1.55,
+     "total_r": -13.235,
+     "max_drawdown_r": -15.4058,
+     "max_consecutive_losses": 7,
+     "sharpe_daily_ann": -4.376,
+     "sortino_daily_ann": -5.215,
+     "worst_session_r": -3.47,
+     "best_session_r": 1.918,
+     "expectancy_without_best_session": -0.3294,
+     "mean_r_gross": -0.1688,
+     "mean_mfe_r": 0.8773,
+     "mean_mae_r": -0.777,
+     "mean_hold_min": 107.5745,
+     "mean_cost_r": 0.1128,
+     "expectancy_ci95": [
+      -0.5676,
+      0.0429
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 4,
+    "folds_positive": 1,
+    "worst_fold_r": -8.837,
+    "best_fold_r": 0.349,
+    "fold_r_std": 3.959,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "out-of-sample -0.282R on only 47 trades"
+    ],
+    "fixed_candidates_post_design": {
+     "ER_BASE": {
+      "n": 255,
+      "sessions": 224,
+      "wins": 88,
+      "losses": 167,
+      "win_rate": 0.3451,
+      "win_rate_ci95": [
+       0.2894,
+       0.4054
+      ],
+      "gross_profit_r": 106.291,
+      "gross_loss_r": 122.425,
+      "profit_factor": 0.868,
+      "expectancy_r": -0.0633,
+      "avg_win_r": 1.2079,
+      "avg_loss_r": -0.7331,
+      "payoff": 1.648,
+      "total_r": -16.133,
+      "max_drawdown_r": -30.6064,
+      "max_consecutive_losses": 11,
+      "sharpe_daily_ann": -1.002,
+      "sortino_daily_ann": -1.45,
+      "worst_session_r": -3.47,
+      "best_session_r": 1.979,
+      "expectancy_without_best_session": -0.0713,
+      "mean_r_gross": 0.0416,
+      "mean_mfe_r": 0.9382,
+      "mean_mae_r": -0.6677,
+      "mean_hold_min": 132.2706,
+      "mean_cost_r": 0.1048,
+      "expectancy_ci95": [
+       -0.1833,
+       0.0707
+      ]
+     },
+     "ER_3M": {
+      "n": 428,
+      "sessions": 268,
+      "wins": 106,
+      "losses": 322,
+      "win_rate": 0.2477,
+      "win_rate_ci95": [
+       0.2091,
+       0.2907
+      ],
+      "gross_profit_r": 190.127,
+      "gross_loss_r": 244.361,
+      "profit_factor": 0.778,
+      "expectancy_r": -0.1267,
+      "avg_win_r": 1.7937,
+      "avg_loss_r": -0.7589,
+      "payoff": 2.364,
+      "total_r": -54.233,
+      "max_drawdown_r": -61.8367,
+      "max_consecutive_losses": 18,
+      "sharpe_daily_ann": -2.046,
+      "sortino_daily_ann": -2.646,
+      "worst_session_r": -4.952,
+      "best_session_r": 3.807,
+      "expectancy_without_best_session": -0.1359,
+      "mean_r_gross": 0.0194,
+      "mean_mfe_r": 1.1026,
+      "mean_mae_r": -0.7448,
+      "mean_hold_min": 40.0864,
+      "mean_cost_r": 0.1461,
+      "expectancy_ci95": [
+       -0.2385,
+       -0.011
+      ]
+     },
+     "ER_3M_CONFIRM": {
+      "n": 355,
+      "sessions": 245,
+      "wins": 83,
+      "losses": 272,
+      "win_rate": 0.2338,
+      "win_rate_ci95": [
+       0.1928,
+       0.2805
+      ],
+      "gross_profit_r": 149.778,
+      "gross_loss_r": 205.615,
+      "profit_factor": 0.728,
+      "expectancy_r": -0.1573,
+      "avg_win_r": 1.8046,
+      "avg_loss_r": -0.7559,
+      "payoff": 2.387,
+      "total_r": -55.837,
+      "max_drawdown_r": -58.8936,
+      "max_consecutive_losses": 21,
+      "sharpe_daily_ann": -2.449,
+      "sortino_daily_ann": -3.142,
+      "worst_session_r": -3.79,
+      "best_session_r": 1.996,
+      "expectancy_without_best_session": -0.1634,
+      "mean_r_gross": -0.0232,
+      "mean_mfe_r": 1.0718,
+      "mean_mae_r": -0.7447,
+      "mean_hold_min": 44.3408,
+      "mean_cost_r": 0.1341,
+      "expectancy_ci95": [
+       -0.273,
+       -0.0286
+      ]
+     }
+    }
+   },
+   "HARSH": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "ER_BASE/ALL",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 38,
+      "train_exp": 0.0058,
+      "val_n": 9,
+      "val_exp": 0.2447,
+      "test_n": 11,
+      "test_exp": -0.4087,
+      "test_total_r": -4.496
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE",
+      "candidate": "ER_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 33,
+      "train_exp": 0.0363,
+      "val_n": 11,
+      "val_exp": -0.4087
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 31,
+      "train_exp": 0.001,
+      "val_n": 17,
+      "val_exp": -0.1932
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 33,
+      "train_exp": 0.1622,
+      "val_n": 11,
+      "val_exp": -0.2313
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE",
+      "candidate": "ER_3M_CONFIRM",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 33,
+      "train_exp": 0.0434,
+      "val_n": 10,
+      "val_exp": -0.2037
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 11,
+     "sessions": 10,
+     "wins": 2,
+     "losses": 9,
+     "win_rate": 0.1818,
+     "win_rate_ci95": [
+      0.0514,
+      0.477
+     ],
+     "gross_profit_r": 2.421,
+     "gross_loss_r": 6.917,
+     "profit_factor": 0.35,
+     "expectancy_r": -0.4087,
+     "avg_win_r": 1.2103,
+     "avg_loss_r": -0.7685,
+     "payoff": 1.575,
+     "total_r": -4.496,
+     "max_drawdown_r": -5.5984,
+     "max_consecutive_losses": 7,
+     "sharpe_daily_ann": -6.508,
+     "sortino_daily_ann": -7.396,
+     "worst_session_r": -2.257,
+     "best_session_r": 1.76,
+     "expectancy_without_best_session": -0.6256,
+     "mean_r_gross": -0.1909,
+     "mean_mfe_r": 1.0049,
+     "mean_mae_r": -0.6742,
+     "mean_hold_min": 174.7273,
+     "mean_cost_r": 0.2179,
+     "expectancy_ci95": [
+      -0.8617,
+      0.1882
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 1,
+    "folds_positive": 0,
+    "worst_fold_r": -4.496,
+    "best_fold_r": -4.496,
+    "fold_r_std": null,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "out-of-sample -0.409R on only 11 trades"
+    ],
+    "fixed_candidates_post_design": {
+     "ER_BASE": {
+      "n": 255,
+      "sessions": 224,
+      "wins": 81,
+      "losses": 174,
+      "win_rate": 0.3176,
+      "win_rate_ci95": [
+       0.2636,
+       0.3771
+      ],
+      "gross_profit_r": 95.888,
+      "gross_loss_r": 139.355,
+      "profit_factor": 0.688,
+      "expectancy_r": -0.1705,
+      "avg_win_r": 1.1838,
+      "avg_loss_r": -0.8009,
+      "payoff": 1.478,
+      "total_r": -43.467,
+      "max_drawdown_r": -53.1387,
+      "max_consecutive_losses": 11,
+      "sharpe_daily_ann": -2.684,
+      "sortino_daily_ann": -3.518,
+      "worst_session_r": -3.882,
+      "best_session_r": 1.923,
+      "expectancy_without_best_session": -0.1787,
+      "mean_r_gross": 0.0416,
+      "mean_mfe_r": 0.9382,
+      "mean_mae_r": -0.6677,
+      "mean_hold_min": 132.2706,
+      "mean_cost_r": 0.212,
+      "expectancy_ci95": [
+       -0.294,
+       -0.0391
+      ]
+     },
+     "ER_3M": {
+      "n": 428,
+      "sessions": 268,
+      "wins": 106,
+      "losses": 322,
+      "win_rate": 0.2477,
+      "win_rate_ci95": [
+       0.2091,
+       0.2907
+      ],
+      "gross_profit_r": 176.561,
+      "gross_loss_r": 279.751,
+      "profit_factor": 0.631,
+      "expectancy_r": -0.2411,
+      "avg_win_r": 1.6657,
+      "avg_loss_r": -0.8688,
+      "payoff": 1.917,
+      "total_r": -103.191,
+      "max_drawdown_r": -108.7336,
+      "max_consecutive_losses": 18,
+      "sharpe_daily_ann": -3.837,
+      "sortino_daily_ann": -4.514,
+      "worst_session_r": -5.732,
+      "best_session_r": 3.478,
+      "expectancy_without_best_session": -0.2498,
+      "mean_r_gross": 0.0194,
+      "mean_mfe_r": 1.1026,
+      "mean_mae_r": -0.7448,
+      "mean_hold_min": 40.0864,
+      "mean_cost_r": 0.2605,
+      "expectancy_ci95": [
+       -0.3505,
+       -0.1261
+      ]
+     },
+     "ER_3M_CONFIRM": {
+      "n": 355,
+      "sessions": 245,
+      "wins": 83,
+      "losses": 272,
+      "win_rate": 0.2338,
+      "win_rate_ci95": [
+       0.1928,
+       0.2805
+      ],
+      "gross_profit_r": 140.181,
+      "gross_loss_r": 235.249,
+      "profit_factor": 0.596,
+      "expectancy_r": -0.2678,
+      "avg_win_r": 1.6889,
+      "avg_loss_r": -0.8649,
+      "payoff": 1.953,
+      "total_r": -95.067,
+      "max_drawdown_r": -97.6849,
+      "max_consecutive_losses": 21,
+      "sharpe_daily_ann": -4.097,
+      "sortino_daily_ann": -4.826,
+      "worst_session_r": -4.271,
+      "best_session_r": 1.964,
+      "expectancy_without_best_session": -0.2741,
+      "mean_r_gross": -0.0232,
+      "mean_mfe_r": 1.0718,
+      "mean_mae_r": -0.7447,
+      "mean_hold_min": 44.3408,
+      "mean_cost_r": 0.2446,
+      "expectancy_ci95": [
+       -0.3825,
+       -0.1395
+      ]
+     }
+    }
+   }
+  },
+  "PIVOT_BOUNCE": {
+   "ZERO": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 45,
+      "train_exp": 0.5699,
+      "val_n": 12,
+      "val_exp": -0.0951
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 47,
+      "train_exp": 0.0532,
+      "val_n": 17,
+      "val_exp": -0.5736
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 45,
+      "train_exp": 0.0967,
+      "val_n": 9,
+      "val_exp": 0.3393,
+      "test_n": 21,
+      "test_exp": 0.206,
+      "test_total_r": 4.326
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "PV_SWEEP_CLOSE/ALL",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 37,
+      "train_exp": 0.1753,
+      "val_n": 19,
+      "val_exp": 0.1608,
+      "test_n": 18,
+      "test_exp": -0.1555,
+      "test_total_r": -2.8
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 44,
+      "train_exp": 0.2428,
+      "val_n": 18,
+      "val_exp": -0.1555
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 49,
+      "train_exp": 0.4733,
+      "val_n": 14,
+      "val_exp": -0.6159
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 54,
+      "train_exp": 0.2132,
+      "val_n": 16,
+      "val_exp": 1.606,
+      "test_n": 15,
+      "test_exp": -0.6229,
+      "test_total_r": -9.344
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 49,
+      "train_exp": 0.6711,
+      "val_n": 15,
+      "val_exp": -0.6229
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 45,
+      "train_exp": 0.1718,
+      "val_n": 15,
+      "val_exp": 0.0561,
+      "test_n": 18,
+      "test_exp": 0.1257,
+      "test_total_r": 2.263
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 46,
+      "train_exp": 0.3738,
+      "val_n": 18,
+      "val_exp": 0.1257,
+      "test_n": 17,
+      "test_exp": 0.1153,
+      "test_total_r": 1.959
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 20,
+      "train_exp": 0.2105,
+      "val_n": 1,
+      "val_exp": -0.9736
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 50,
+      "train_exp": 0.1013,
+      "val_n": 13,
+      "val_exp": 0.1628,
+      "test_n": 16,
+      "test_exp": 0.0196,
+      "test_total_r": 0.314
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 48,
+      "train_exp": 0.1321,
+      "val_n": 16,
+      "val_exp": 0.0196,
+      "test_n": 8,
+      "test_exp": -0.5925,
+      "test_total_r": -4.74
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 46,
+      "train_exp": 0.0954,
+      "val_n": 8,
+      "val_exp": -0.5925
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 49,
+      "train_exp": 0.1197,
+      "val_n": 15,
+      "val_exp": 0.6384,
+      "test_n": 6,
+      "test_exp": 1.6406,
+      "test_total_r": 9.844
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "PV_BASE/REGIME",
+      "candidate": "PV_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "RANGE"
+      ],
+      "train_n": 23,
+      "train_exp": 0.9459,
+      "val_n": 3,
+      "val_exp": 0.9793,
+      "test_n": 0,
+      "test_exp": null,
+      "test_total_r": 0
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 38,
+      "train_exp": 0.8536,
+      "val_n": 3,
+      "val_exp": 2.4986,
+      "test_n": 6,
+      "test_exp": 0.5617,
+      "test_total_r": 3.37
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 24,
+      "train_exp": 1.1215,
+      "val_n": 6,
+      "val_exp": 0.5617,
+      "test_n": 13,
+      "test_exp": 0.5139,
+      "test_total_r": 6.681
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 22,
+      "train_exp": 1.7953,
+      "val_n": 9,
+      "val_exp": -0.1853
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 22,
+      "train_exp": 1.2725,
+      "val_n": 17,
+      "val_exp": -0.0321
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 36,
+      "train_exp": 0.6309,
+      "val_n": 12,
+      "val_exp": -0.0188
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 138,
+     "sessions": 104,
+     "wins": 42,
+     "losses": 96,
+     "win_rate": 0.3043,
+     "win_rate_ci95": [
+      0.2337,
+      0.3856
+     ],
+     "gross_profit_r": 105.03,
+     "gross_loss_r": 93.154,
+     "profit_factor": 1.127,
+     "expectancy_r": 0.0861,
+     "avg_win_r": 2.5007,
+     "avg_loss_r": -0.9704,
+     "payoff": 2.577,
+     "total_r": 11.876,
+     "max_drawdown_r": -19.0148,
+     "max_consecutive_losses": 10,
+     "sharpe_daily_ann": 0.768,
+     "sortino_daily_ann": 1.768,
+     "worst_session_r": -3.025,
+     "best_session_r": 12.875,
+     "expectancy_without_best_session": -0.0073,
+     "mean_r_gross": 0.0861,
+     "mean_mfe_r": 1.4684,
+     "mean_mae_r": -0.9457,
+     "mean_hold_min": 46.2609,
+     "mean_cost_r": 0.0,
+     "expectancy_ci95": [
+      -0.2311,
+      0.4326
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 10,
+    "folds_positive": 7,
+    "worst_fold_r": -9.344,
+    "best_fold_r": 9.844,
+    "fold_r_std": 5.619,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "profit factor 1.127 < 1.2",
+     "expectancy CI (-0.2311, 0.4326) includes 0",
+     "not positive without its best session"
+    ],
+    "fixed_candidates_post_design": {
+     "PV_BASE": {
+      "n": 336,
+      "sessions": 257,
+      "wins": 108,
+      "losses": 228,
+      "win_rate": 0.3214,
+      "win_rate_ci95": [
+       0.2738,
+       0.3731
+      ],
+      "gross_profit_r": 287.147,
+      "gross_loss_r": 224.685,
+      "profit_factor": 1.278,
+      "expectancy_r": 0.1859,
+      "avg_win_r": 2.6588,
+      "avg_loss_r": -0.9855,
+      "payoff": 2.698,
+      "total_r": 62.462,
+      "max_drawdown_r": -24.2719,
+      "max_consecutive_losses": 16,
+      "sharpe_daily_ann": 1.605,
+      "sortino_daily_ann": 3.866,
+      "worst_session_r": -3.025,
+      "best_session_r": 12.875,
+      "expectancy_without_best_session": 0.148,
+      "mean_r_gross": 0.1859,
+      "mean_mfe_r": 1.5827,
+      "mean_mae_r": -0.9522,
+      "mean_hold_min": 55.625,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0358,
+       0.4123
+      ]
+     },
+     "PV_SWEEP_CLOSE": {
+      "n": 326,
+      "sessions": 255,
+      "wins": 80,
+      "losses": 246,
+      "win_rate": 0.2454,
+      "win_rate_ci95": [
+       0.2018,
+       0.2949
+      ],
+      "gross_profit_r": 295.487,
+      "gross_loss_r": 243.989,
+      "profit_factor": 1.211,
+      "expectancy_r": 0.158,
+      "avg_win_r": 3.6936,
+      "avg_loss_r": -0.9918,
+      "payoff": 3.724,
+      "total_r": 51.499,
+      "max_drawdown_r": -33.581,
+      "max_consecutive_losses": 12,
+      "sharpe_daily_ann": 1.122,
+      "sortino_daily_ann": 2.939,
+      "worst_session_r": -3.18,
+      "best_session_r": 15.744,
+      "expectancy_without_best_session": 0.11,
+      "mean_r_gross": 0.158,
+      "mean_mfe_r": 1.8931,
+      "mean_mae_r": -1.0457,
+      "mean_hold_min": 45.3712,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.0989,
+       0.4413
+      ]
+     },
+     "PV_SWEEP_CONFIRM": {
+      "n": 153,
+      "sessions": 135,
+      "wins": 57,
+      "losses": 96,
+      "win_rate": 0.3725,
+      "win_rate_ci95": [
+       0.2999,
+       0.4514
+      ],
+      "gross_profit_r": 102.362,
+      "gross_loss_r": 92.714,
+      "profit_factor": 1.104,
+      "expectancy_r": 0.0631,
+      "avg_win_r": 1.7958,
+      "avg_loss_r": -0.9658,
+      "payoff": 1.859,
+      "total_r": 9.648,
+      "max_drawdown_r": -21.7721,
+      "max_consecutive_losses": 12,
+      "sharpe_daily_ann": 0.658,
+      "sortino_daily_ann": 1.291,
+      "worst_session_r": -2.024,
+      "best_session_r": 6.815,
+      "expectancy_without_best_session": 0.0186,
+      "mean_r_gross": 0.0631,
+      "mean_mfe_r": 1.2506,
+      "mean_mae_r": -0.8562,
+      "mean_hold_min": 59.7516,
+      "mean_cost_r": 0.0,
+      "expectancy_ci95": [
+       -0.1917,
+       0.3179
+      ]
+     }
+    }
+   },
+   "MEASURED": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 45,
+      "train_exp": 0.3591,
+      "val_n": 12,
+      "val_exp": -0.3467
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 44,
+      "train_exp": 0.0689,
+      "val_n": 18,
+      "val_exp": -0.3234
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 49,
+      "train_exp": 0.3384,
+      "val_n": 14,
+      "val_exp": -0.7705
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 54,
+      "train_exp": 0.0742,
+      "val_n": 16,
+      "val_exp": 1.4,
+      "test_n": 15,
+      "test_exp": -0.7384,
+      "test_total_r": -11.077
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 49,
+      "train_exp": 0.5042,
+      "val_n": 15,
+      "val_exp": -0.7384
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 45,
+      "train_exp": 0.0119,
+      "val_n": 15,
+      "val_exp": -0.0962
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 46,
+      "train_exp": 0.2148,
+      "val_n": 18,
+      "val_exp": -0.0112
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING"
+      ],
+      "train_n": 20,
+      "train_exp": 0.0833,
+      "val_n": 1,
+      "val_exp": -1.3849
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "PV_BASE/REGIME",
+      "candidate": "PV_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "RANGE"
+      ],
+      "train_n": 23,
+      "train_exp": 0.7677,
+      "val_n": 3,
+      "val_exp": 0.8993,
+      "test_n": 0,
+      "test_exp": null,
+      "test_total_r": 0
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 38,
+      "train_exp": 0.6917,
+      "val_n": 3,
+      "val_exp": 2.2795,
+      "test_n": 6,
+      "test_exp": 0.385,
+      "test_total_r": 2.31
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 24,
+      "train_exp": 0.9499,
+      "val_n": 6,
+      "val_exp": 0.385,
+      "test_n": 13,
+      "test_exp": 0.3436,
+      "test_total_r": 4.467
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 22,
+      "train_exp": 1.5988,
+      "val_n": 9,
+      "val_exp": -0.4062
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 22,
+      "train_exp": 1.0488,
+      "val_n": 17,
+      "val_exp": -0.3062
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 36,
+      "train_exp": 0.3837,
+      "val_n": 12,
+      "val_exp": -0.2592
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 34,
+     "sessions": 27,
+     "wins": 8,
+     "losses": 26,
+     "win_rate": 0.2353,
+     "win_rate_ci95": [
+      0.1244,
+      0.4
+     ],
+     "gross_profit_r": 25.178,
+     "gross_loss_r": 29.477,
+     "profit_factor": 0.854,
+     "expectancy_r": -0.1264,
+     "avg_win_r": 3.1473,
+     "avg_loss_r": -1.1337,
+     "payoff": 2.776,
+     "total_r": -4.299,
+     "max_drawdown_r": -15.7413,
+     "max_consecutive_losses": 7,
+     "sharpe_daily_ann": -1.132,
+     "sortino_daily_ann": -2.086,
+     "worst_session_r": -2.271,
+     "best_session_r": 6.441,
+     "expectancy_without_best_session": -0.3255,
+     "mean_r_gross": 0.0208,
+     "mean_mfe_r": 1.4739,
+     "mean_mae_r": -0.9863,
+     "mean_hold_min": 45.0882,
+     "mean_cost_r": 0.1473,
+     "expectancy_ci95": [
+      -0.7481,
+      0.5955
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 3,
+    "folds_positive": 2,
+    "worst_fold_r": -11.077,
+    "best_fold_r": 4.467,
+    "fold_r_std": 8.421,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "out-of-sample -0.126R on only 34 trades"
+    ],
+    "fixed_candidates_post_design": {
+     "PV_BASE": {
+      "n": 336,
+      "sessions": 257,
+      "wins": 104,
+      "losses": 232,
+      "win_rate": 0.3095,
+      "win_rate_ci95": [
+       0.2625,
+       0.3609
+      ],
+      "gross_profit_r": 265.629,
+      "gross_loss_r": 257.318,
+      "profit_factor": 1.032,
+      "expectancy_r": 0.0247,
+      "avg_win_r": 2.5541,
+      "avg_loss_r": -1.1091,
+      "payoff": 2.303,
+      "total_r": 8.311,
+      "max_drawdown_r": -40.9132,
+      "max_consecutive_losses": 16,
+      "sharpe_daily_ann": 0.218,
+      "sortino_daily_ann": 0.451,
+      "worst_session_r": -3.37,
+      "best_session_r": 12.406,
+      "expectancy_without_best_session": -0.0122,
+      "mean_r_gross": 0.1859,
+      "mean_mfe_r": 1.5827,
+      "mean_mae_r": -0.9522,
+      "mean_hold_min": 55.625,
+      "mean_cost_r": 0.1612,
+      "expectancy_ci95": [
+       -0.1923,
+       0.2481
+      ]
+     },
+     "PV_SWEEP_CLOSE": {
+      "n": 326,
+      "sessions": 255,
+      "wins": 77,
+      "losses": 249,
+      "win_rate": 0.2362,
+      "win_rate_ci95": [
+       0.1933,
+       0.2852
+      ],
+      "gross_profit_r": 274.372,
+      "gross_loss_r": 291.962,
+      "profit_factor": 0.94,
+      "expectancy_r": -0.054,
+      "avg_win_r": 3.5633,
+      "avg_loss_r": -1.1725,
+      "payoff": 3.039,
+      "total_r": -17.59,
+      "max_drawdown_r": -64.3832,
+      "max_consecutive_losses": 15,
+      "sharpe_daily_ann": -0.389,
+      "sortino_daily_ann": -0.836,
+      "worst_session_r": -3.542,
+      "best_session_r": 15.153,
+      "expectancy_without_best_session": -0.1007,
+      "mean_r_gross": 0.158,
+      "mean_mfe_r": 1.8931,
+      "mean_mae_r": -1.0457,
+      "mean_hold_min": 45.3712,
+      "mean_cost_r": 0.2119,
+      "expectancy_ci95": [
+       -0.3089,
+       0.2228
+      ]
+     },
+     "PV_SWEEP_CONFIRM": {
+      "n": 153,
+      "sessions": 135,
+      "wins": 55,
+      "losses": 98,
+      "win_rate": 0.3595,
+      "win_rate_ci95": [
+       0.2877,
+       0.4381
+      ],
+      "gross_profit_r": 93.802,
+      "gross_loss_r": 104.426,
+      "profit_factor": 0.898,
+      "expectancy_r": -0.0694,
+      "avg_win_r": 1.7055,
+      "avg_loss_r": -1.0656,
+      "payoff": 1.601,
+      "total_r": -10.624,
+      "max_drawdown_r": -34.3844,
+      "max_consecutive_losses": 12,
+      "sharpe_daily_ann": -0.73,
+      "sortino_daily_ann": -1.265,
+      "worst_session_r": -2.318,
+      "best_session_r": 6.575,
+      "expectancy_without_best_session": -0.1132,
+      "mean_r_gross": 0.0631,
+      "mean_mfe_r": 1.2506,
+      "mean_mae_r": -0.8562,
+      "mean_hold_min": 59.7516,
+      "mean_cost_r": 0.1325,
+      "expectancy_ci95": [
+       -0.3263,
+       0.1813
+      ]
+     }
+    }
+   },
+   "HARSH": {
+    "folds": [
+     {
+      "test": "2024-10",
+      "train": [
+       "2024-06",
+       "2024-07",
+       "2024-08"
+      ],
+      "val": "2024-09",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 45,
+      "train_exp": 0.1701,
+      "val_n": 12,
+      "val_exp": -0.5685
+     },
+     {
+      "test": "2024-11",
+      "train": [
+       "2024-07",
+       "2024-08",
+       "2024-09"
+      ],
+      "val": "2024-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2024-12",
+      "train": [
+       "2024-08",
+       "2024-09",
+       "2024-10"
+      ],
+      "val": "2024-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-01",
+      "train": [
+       "2024-09",
+       "2024-10",
+       "2024-11"
+      ],
+      "val": "2024-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-02",
+      "train": [
+       "2024-10",
+       "2024-11",
+       "2024-12"
+      ],
+      "val": "2025-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-03",
+      "train": [
+       "2024-11",
+       "2024-12",
+       "2025-01"
+      ],
+      "val": "2025-02",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 49,
+      "train_exp": 0.2192,
+      "val_n": 14,
+      "val_exp": -0.9074
+     },
+     {
+      "test": "2025-04",
+      "train": [
+       "2024-12",
+       "2025-01",
+       "2025-02"
+      ],
+      "val": "2025-03",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-05",
+      "train": [
+       "2025-01",
+       "2025-02",
+       "2025-03"
+      ],
+      "val": "2025-04",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 49,
+      "train_exp": 0.3408,
+      "val_n": 15,
+      "val_exp": -0.8198
+     },
+     {
+      "test": "2025-06",
+      "train": [
+       "2025-02",
+       "2025-03",
+       "2025-04"
+      ],
+      "val": "2025-05",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-07",
+      "train": [
+       "2025-03",
+       "2025-04",
+       "2025-05"
+      ],
+      "val": "2025-06",
+      "choice": "NO_TRADE",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 46,
+      "train_exp": 0.0672,
+      "val_n": 18,
+      "val_exp": -0.125
+     },
+     {
+      "test": "2025-08",
+      "train": [
+       "2025-04",
+       "2025-05",
+       "2025-06"
+      ],
+      "val": "2025-07",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-09",
+      "train": [
+       "2025-05",
+       "2025-06",
+       "2025-07"
+      ],
+      "val": "2025-08",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-10",
+      "train": [
+       "2025-06",
+       "2025-07",
+       "2025-08"
+      ],
+      "val": "2025-09",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-11",
+      "train": [
+       "2025-07",
+       "2025-08",
+       "2025-09"
+      ],
+      "val": "2025-10",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2025-12",
+      "train": [
+       "2025-08",
+       "2025-09",
+       "2025-10"
+      ],
+      "val": "2025-11",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-01",
+      "train": [
+       "2025-09",
+       "2025-10",
+       "2025-11"
+      ],
+      "val": "2025-12",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-02",
+      "train": [
+       "2025-10",
+       "2025-11",
+       "2025-12"
+      ],
+      "val": "2026-01",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-03",
+      "train": [
+       "2025-11",
+       "2025-12",
+       "2026-01"
+      ],
+      "val": "2026-02",
+      "choice": "NO_TRADE"
+     },
+     {
+      "test": "2026-04",
+      "train": [
+       "2025-12",
+       "2026-01",
+       "2026-02"
+      ],
+      "val": "2026-03",
+      "choice": "PV_BASE/REGIME",
+      "candidate": "PV_BASE",
+      "filter": "REGIME",
+      "allowed_regimes": [
+       "OPENING",
+       "RANGE"
+      ],
+      "train_n": 23,
+      "train_exp": 0.5866,
+      "val_n": 3,
+      "val_exp": 0.8409,
+      "test_n": 0,
+      "test_exp": null,
+      "test_total_r": 0
+     },
+     {
+      "test": "2026-05",
+      "train": [
+       "2026-01",
+       "2026-02",
+       "2026-03"
+      ],
+      "val": "2026-04",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 38,
+      "train_exp": 0.5292,
+      "val_n": 3,
+      "val_exp": 2.0255,
+      "test_n": 6,
+      "test_exp": 0.2091,
+      "test_total_r": 1.255
+     },
+     {
+      "test": "2026-06",
+      "train": [
+       "2026-02",
+       "2026-03",
+       "2026-04"
+      ],
+      "val": "2026-05",
+      "choice": "PV_BASE/ALL",
+      "candidate": "PV_BASE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 24,
+      "train_exp": 0.7739,
+      "val_n": 6,
+      "val_exp": 0.2091,
+      "test_n": 13,
+      "test_exp": 0.1783,
+      "test_total_r": 2.319
+     },
+     {
+      "test": "2026-07",
+      "train": [
+       "2026-03",
+       "2026-04",
+       "2026-05"
+      ],
+      "val": "2026-06",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 22,
+      "train_exp": 1.4219,
+      "val_n": 9,
+      "val_exp": -0.6025
+     },
+     {
+      "test": "2026-08",
+      "train": [
+       "2026-04",
+       "2026-05",
+       "2026-06"
+      ],
+      "val": "2026-07",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 22,
+      "train_exp": 0.8453,
+      "val_n": 17,
+      "val_exp": -0.5842
+     },
+     {
+      "test": "2026-09",
+      "train": [
+       "2026-05",
+       "2026-06",
+       "2026-07"
+      ],
+      "val": "2026-08",
+      "choice": "NO_TRADE",
+      "candidate": "PV_SWEEP_CLOSE",
+      "filter": "ALL",
+      "allowed_regimes": null,
+      "train_n": 36,
+      "train_exp": 0.1469,
+      "val_n": 12,
+      "val_exp": -0.451
+     },
+     {
+      "test": "2026-10",
+      "train": [
+       "2026-06",
+       "2026-07",
+       "2026-08"
+      ],
+      "val": "2026-09",
+      "choice": "NO_TRADE"
+     }
+    ],
+    "oos": {
+     "n": 19,
+     "sessions": 17,
+     "wins": 6,
+     "losses": 13,
+     "win_rate": 0.3158,
+     "win_rate_ci95": [
+      0.1536,
+      0.5399
+     ],
+     "gross_profit_r": 20.283,
+     "gross_loss_r": 16.71,
+     "profit_factor": 1.214,
+     "expectancy_r": 0.1881,
+     "avg_win_r": 3.3805,
+     "avg_loss_r": -1.2854,
+     "payoff": 2.63,
+     "total_r": 3.573,
+     "max_drawdown_r": -9.5974,
+     "max_consecutive_losses": 5,
+     "sharpe_daily_ann": 1.377,
+     "sortino_daily_ann": 3.142,
+     "worst_session_r": -1.749,
+     "best_session_r": 6.154,
+     "expectancy_without_best_session": -0.1434,
+     "mean_r_gross": 0.529,
+     "mean_mfe_r": 2.0879,
+     "mean_mae_r": -0.9453,
+     "mean_hold_min": 65.8947,
+     "mean_cost_r": 0.341,
+     "expectancy_ci95": [
+      -0.7695,
+      1.2659
+     ]
+    },
+    "folds_total": 25,
+    "folds_traded": 2,
+    "folds_positive": 2,
+    "worst_fold_r": 1.255,
+    "best_fold_r": 2.319,
+    "fold_r_std": 0.752,
+    "status": "INSUFFICIENT_EVIDENCE",
+    "status_reasons": [
+     "19 trades < 100",
+     "17 sessions < 60",
+     "expectancy CI (-0.7695, 1.2659) includes 0",
+     "not positive without its best session"
+    ],
+    "fixed_candidates_post_design": {
+     "PV_BASE": {
+      "n": 336,
+      "sessions": 257,
+      "wins": 98,
+      "losses": 238,
+      "win_rate": 0.2917,
+      "win_rate_ci95": [
+       0.2456,
+       0.3424
+      ],
+      "gross_profit_r": 243.163,
+      "gross_loss_r": 285.328,
+      "profit_factor": 0.852,
+      "expectancy_r": -0.1255,
+      "avg_win_r": 2.4813,
+      "avg_loss_r": -1.1989,
+      "payoff": 2.07,
+      "total_r": -42.165,
+      "max_drawdown_r": -60.7142,
+      "max_consecutive_losses": 16,
+      "sharpe_daily_ann": -1.14,
+      "sortino_daily_ann": -2.066,
+      "worst_session_r": -3.617,
+      "best_session_r": 11.903,
+      "expectancy_without_best_session": -0.1614,
+      "mean_r_gross": 0.1859,
+      "mean_mfe_r": 1.5827,
+      "mean_mae_r": -0.9522,
+      "mean_hold_min": 55.625,
+      "mean_cost_r": 0.3114,
+      "expectancy_ci95": [
+       -0.3374,
+       0.0935
+      ]
+     },
+     "PV_SWEEP_CLOSE": {
+      "n": 326,
+      "sessions": 255,
+      "wins": 72,
+      "losses": 254,
+      "win_rate": 0.2209,
+      "win_rate_ci95": [
+       0.1792,
+       0.269
+      ],
+      "gross_profit_r": 251.899,
+      "gross_loss_r": 329.491,
+      "profit_factor": 0.765,
+      "expectancy_r": -0.238,
+      "avg_win_r": 3.4986,
+      "avg_loss_r": -1.2972,
+      "payoff": 2.697,
+      "total_r": -77.592,
+      "max_drawdown_r": -96.8488,
+      "max_consecutive_losses": 15,
+      "sharpe_daily_ann": -1.764,
+      "sortino_daily_ann": -3.251,
+      "worst_session_r": -4.092,
+      "best_session_r": 14.508,
+      "expectancy_without_best_session": -0.2834,
+      "mean_r_gross": 0.158,
+      "mean_mfe_r": 1.8931,
+      "mean_mae_r": -1.0457,
+      "mean_hold_min": 45.3712,
+      "mean_cost_r": 0.396,
+      "expectancy_ci95": [
+       -0.4865,
+       0.0334
+      ]
+     },
+     "PV_SWEEP_CONFIRM": {
+      "n": 153,
+      "sessions": 135,
+      "wins": 53,
+      "losses": 100,
+      "win_rate": 0.3464,
+      "win_rate_ci95": [
+       0.2756,
+       0.4247
+      ],
+      "gross_profit_r": 85.614,
+      "gross_loss_r": 115.18,
+      "profit_factor": 0.743,
+      "expectancy_r": -0.1932,
+      "avg_win_r": 1.6153,
+      "avg_loss_r": -1.1518,
+      "payoff": 1.402,
+      "total_r": -29.567,
+      "max_drawdown_r": -45.605,
+      "max_consecutive_losses": 12,
+      "sharpe_daily_ann": -2.061,
+      "sortino_daily_ann": -3.209,
+      "worst_session_r": -2.594,
+      "best_session_r": 6.297,
+      "expectancy_without_best_session": -0.2359,
+      "mean_r_gross": 0.0631,
+      "mean_mfe_r": 1.2506,
+      "mean_mae_r": -0.8562,
+      "mean_hold_min": 59.7516,
+      "mean_cost_r": 0.2563,
+      "expectancy_ci95": [
+       -0.4479,
+       0.0521
+      ]
+     }
+    }
+   }
+  }
+ }
+}

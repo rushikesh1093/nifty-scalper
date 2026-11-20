@@ -196,11 +196,12 @@ def reset_process_state() -> None:
     paper_engine._square_off_cache = None
     regime_detector._regime_history.clear()
     regime_detector._last_log_time.clear()
+    from app.services.trading.regime_stabilizer import regime_stabilizer
+    regime_stabilizer.reset()
     strategy_orchestrator._regime_cooldown.clear()
     strategy_orchestrator._flag_state.clear()
     strategy_orchestrator._current_regime.clear()
     getattr(strategy_orchestrator, "_daily_halts", {}).clear()
-    strategy_runner._oi_iv_warned.clear()
     strategy_runner._seen.clear()
     strategy_runner._seen_day = None
     strategy_runner._strategy_gate_last.clear()
@@ -365,9 +366,13 @@ class ReplayEngine:
 
         # one merged, time-ordered stream of candle closes (§14.4) so the shared
         # caps interleave across underlyings exactly as they would live
+        # Only this day's candles are stepped: the loaded series also carries the
+        # previous sessions as indicator history (data_loader.HISTORY_LOOKBACK_DAYS).
         closes: dict[datetime, list[str]] = {}
         for u in unds:
             for c in data.candles.get(spot_token(u), []):
+                if utc(c["timestamp"]).astimezone(IST).date() != day:
+                    continue
                 closes.setdefault(utc(c["timestamp"]) + CANDLE, []).append(u)
         square_off = parse_square_off(cfg.square_off_time)
         squared = False

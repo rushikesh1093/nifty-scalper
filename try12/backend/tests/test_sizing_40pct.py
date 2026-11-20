@@ -1,7 +1,7 @@
 """
-Up to 40% of capital per trade.
+Up to 100% of capital per trade (this file began at the 40% bound).
 
-``TradingParams.validate()`` bounds ``fixed_fraction_pct`` in (0, 40] in one
+``TradingParams.validate()`` bounds ``fixed_fraction_pct`` in (0, 100] in one
 place (``MAX_FIXED_FRACTION_PCT``). Kelly is capped at
 ``min(kelly_fraction_cap_pct, fixed_fraction_pct)`` so it can only size DOWN from
 the fixed fraction, and the old ``kelly_fraction_cap_pct >= fixed_fraction_pct``
@@ -71,7 +71,7 @@ def _rows(Session, model):
     return run(_all())
 
 
-def _decide(Session, strategy="VWAP_PULLBACK") -> FractionDecision:
+def _decide(Session, strategy="VWAP_EMA_PULLBACK") -> FractionDecision:
     async def _go():
         async with Session() as db:
             return await fraction_decision(db, strategy)
@@ -80,14 +80,15 @@ def _decide(Session, strategy="VWAP_PULLBACK") -> FractionDecision:
 
 # ── the bound ────────────────────────────────────────────────────────────────
 
-BOUND_TEXT = "(0, 40]"     # validate()'s fixed_fraction_pct message names the bound
+BOUND_TEXT = "(0, 100]"     # validate()'s fixed_fraction_pct message names the bound
 
 
-def test_the_bound_is_40_and_lives_in_one_place():
-    # looked up at test time so this file still collects against pre-40% code
-    assert getattr(trading_params, "MAX_FIXED_FRACTION_PCT", None) == 40.0
-    assert TradingParams(fixed_fraction_pct=40.0).validate() == []
-    for bad in (40.01, 0.0, -1.0):
+def test_the_bound_is_100_and_lives_in_one_place():
+    # one trade may be sized on all of the capital; above that is refused
+    assert getattr(trading_params, "MAX_FIXED_FRACTION_PCT", None) == 100.0
+    for ok in (40.0, 100.0):
+        assert TradingParams(fixed_fraction_pct=ok).validate() == []
+    for bad in (100.01, 0.0, -1.0):
         v = TradingParams(fixed_fraction_pct=bad).validate()
         assert v and all("fixed_fraction_pct" in x for x in v), v
         assert BOUND_TEXT in v[0]
@@ -132,8 +133,8 @@ def test_pre_update_live_row_still_validates():
     assert validate_overrides(overlay_from_row(LIVE_ROW_BEFORE)) == []
 
 
-def test_fraction_above_40_on_the_live_row_names_the_field():
-    v = validate_overrides(overlay_from_row(dict(LIVE_ROW_40, fixed_fraction_pct=40.01)))
+def test_fraction_above_100_on_the_live_row_names_the_field():
+    v = validate_overrides(overlay_from_row(dict(LIVE_ROW_40, fixed_fraction_pct=100.01)))
     assert v and all("fixed_fraction_pct" in x for x in v)
     # the bound itself, not just any message mentioning the field
     assert any("fixed_fraction_pct" in x and BOUND_TEXT in x for x in v), v
@@ -188,10 +189,10 @@ def test_the_old_live_fraction_affords_none_of_them(runtime_ctx, fake_redis):
     with using(with_instruments(runtime_ctx, rows)):
         old = run(option_selector.select(
             None, Direction.BUY, "NIFTY", 22600.0, sl_pct=0.15, target_pct=0.30,
-            params=TradingParams(), base_amount=before, regime_multiplier=1.0))
+            params=TradingParams(max_otm_strikes=20), base_amount=before, regime_multiplier=1.0))
         new = run(option_selector.select(
             None, Direction.BUY, "NIFTY", 22600.0, sl_pct=0.15, target_pct=0.30,
-            params=TradingParams(), base_amount=6000.0, regime_multiplier=1.0))
+            params=TradingParams(max_otm_strikes=20), base_amount=6000.0, regime_multiplier=1.0))
     assert old.candidate is None and old.rejections == {"PREMIUM_ABOVE_AFFORDABLE": 3}
     assert new.candidate is not None and new.rejections == {}
 
@@ -209,7 +210,7 @@ def test_startup_summary_logs_the_ceiling_sizing_applies(runtime_ctx, caplog):
 def test_capital_warning_reads_correctly_at_40pct():
     tp = TradingParams(**overlay_from_row(LIVE_ROW_40))
     (nifty,) = [w for w in capital_sufficiency_warnings(15500, tp, {"NIFTY": 65}) if "NIFTY" in w]
-    assert "fixed_fraction_pct 40% (max 40%)" in nifty
+    assert "fixed_fraction_pct 40% (max 100%)" in nifty
     assert "base ₹6,000" in nifty and "92.31" in nifty
     assert "1 ATM lot needs ≈ ₹16,500" in nifty
 
@@ -226,7 +227,7 @@ WEAK_EDGE = dict(winning_trades_r=16, losing_trades_r=14, sum_r_win=32.0, sum_r_
 def test_kelly_never_exceeds_the_fixed_fraction(runtime_ctx, sqlite_db, fixed, cap, edge):
     async def _seed():
         async with sqlite_db() as db:
-            db.add(StrategyPerf(strategy_name="VWAP_PULLBACK", run_id="PAPER", **edge))
+            db.add(StrategyPerf(strategy_name="VWAP_EMA_PULLBACK", run_id="PAPER", **edge))
             await db.commit()
     run(_seed())
     with using(_ctx40(runtime_ctx, fixed_fraction_pct=fixed, kelly_fraction_cap_pct=cap)):
@@ -263,7 +264,8 @@ def live40(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     _seed_live_row(sqlite_db)
     pin_ist_time(monkeypatch, dtime(10, 30))
     allow_regime(monkeypatch)
-    with using(_ctx40(runtime_ctx)):
+    # two BUY signals: lift the one-per-direction rule (D6) so the exposure cap decides
+    with using(_ctx40(runtime_ctx, max_open_per_direction=2)):
         yield sqlite_db
 
 

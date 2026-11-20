@@ -9,7 +9,7 @@ is the whole cache surface (tests/test_market_port_scan.py).
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 if TYPE_CHECKING:
     from app.core.trading_params import TradingParams
@@ -32,6 +32,9 @@ class MarketDataPort(Protocol):           # THE COMPLETE cache surface for tradi
     async def set(self, key: str, value: Any, ttl: int = 60) -> None: ...
     async def delete(self, key: str) -> None: ...
     async def publish_signal(self, strategy: str, signal: dict) -> None: ...   # matches redis_client
+    # Optional, live only (RedisMarketData): get_daily_candles(token, day) -> the
+    # broker's ONE_DAY rows before *day*, or None. The runner reads it with getattr,
+    # so the replay port, which has none, never reaches the broker.
 
 
 class RegimeConfigPort(Protocol):
@@ -59,3 +62,7 @@ class RunControlPort(Protocol):
 class InstrumentPort(Protocol):                    # §10.4: universe resolution, no wall clock
     async def instruments_for(self, db, underlying: str) -> list["Instrument"]: ...
     def invalidate(self) -> None: ...
+    # Nearest option expiry on or after the trading day, from the instrument
+    # MASTER (not only contracts that traded): what "is today an expiry day"
+    # must be answered from. Optional: the runner falls back to instruments_for.
+    async def nearest_expiry(self, db, underlying: str) -> Optional["date"]: ...

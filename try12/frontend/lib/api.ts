@@ -1,7 +1,7 @@
 import { http, rootHttp } from "@/lib/http";
 import type {
   Tick, Candle, OptionChain, Instrument, SessionStatus, FeedStatus,
-  RegimeStatus, RegimeSpan, RegimePerformanceRow,
+  RegimeStatus, RegimeSpan, RegimePerformanceRow, RegimeV2, DataHealth,
 } from "@/types/market";
 
 // All versioned calls go through `http` (baseURL NEXT_PUBLIC_API_URL); failures arrive as ApiError.
@@ -42,11 +42,22 @@ export const triggerInstrumentSync = () =>
 
 // ── Health ────────────────────────────────────────────────────────────────────
 // /health is app-mounted (main.py), not under /api/v1 → the root instance (design §6.4).
-export interface HealthStatus { status: string; [k: string]: unknown }
+export interface HealthStatus {
+  status: string;
+  /** Free GB on the backend's drive; low_disk is true below LOW_DISK_WARN_GB. */
+  disk_free_gb?: number | null;
+  low_disk?: boolean;
+  [k: string]: unknown;
+}
 export const healthCheck = () =>
   rootHttp.get<HealthStatus>("/health").then(r => r.data);
 
 // ── Regime ────────────────────────────────────────────────────────────────────
+export const getDataHealth = () => http.get<DataHealth>("/market/data-health").then(r => r.data);
+
+export const getRegimeV2 = (underlying = "NIFTY") =>
+  http.get<RegimeV2>(`/regime/v2`, { params: { underlying } }).then(r => r.data);
+
 export const getCurrentRegime = (underlying = "NIFTY") =>
   http.get<RegimeStatus>(`/regime/current`, { params: { underlying } }).then(r => r.data);
 

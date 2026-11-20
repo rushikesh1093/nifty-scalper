@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 # ── Module-level TTL cache ────────────────────────────────────────────────────
 # key: underlying (or "GLOBAL"), value: (RegimeConfig, cached_at: datetime)
 _config_cache: dict[str, tuple["RegimeConfig", datetime]] = {}
+# underlyings whose "no DB session" fallback has been logged at WARNING
+_no_session_warned: set[str] = set()
 
 
 # ── Dataclass ─────────────────────────────────────────────────────────────────
@@ -40,6 +42,8 @@ class RegimeConfig:
     VWAP_CROSS_CHOP_THRESHOLD: int = 8
     VOLUME_SURGE_MULTIPLIER: float = 1.5
     REGIME_TRANSITION_WINDOW: int = 2
+    # Not read by the detector: it uses TradingParams.transition_cooldown_candles
+    # (the run's knob). Kept so the regime_config row still loads.
     TRANSITION_COOLDOWN_CANDLES: int = 3
 
 
@@ -100,10 +104,14 @@ def load_config(underlying: str, db_session=None) -> "RegimeConfig":
         Never raises — all exceptions are caught and logged.
     """
     if db_session is None:
-        logger.warning(
+        # Called every minute: WARNING once per underlying per process, then DEBUG.
+        first = underlying not in _no_session_warned
+        _no_session_warned.add(underlying)
+        logger.log(
+            logging.WARNING if first else logging.DEBUG,
             "[RegimeConfig] No DB session provided for underlying=%s — "
-            "using hardcoded defaults.",
-            underlying,
+            "using hardcoded defaults.%s",
+            underlying, " (logged once; repeats at DEBUG)" if first else "",
         )
         return RegimeConfig()
 

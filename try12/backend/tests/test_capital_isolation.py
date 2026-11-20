@@ -408,3 +408,24 @@ def test_nothing_reads_the_used_capital_cache_outside_reconcile():
             if named and id(n) not in allowed:
                 hits.append(f"{rel}:{getattr(n, 'lineno', getattr(n.value, 'lineno', 0))}")
     assert hits == []
+
+
+def test_the_duplicate_check_only_matches_the_named_contract(day, sqlite_db):
+    """D3 triage: with no contract named, the duplicate query matched ANY open
+    position and refused every entry beside it."""
+    run(add_position(sqlite_db, token="OPT1", trade_amount_used=3_000.0,
+                     entry_time=day.clock.now_utc()))
+
+    async def _go(**kw):
+        async with sqlite_db() as db:
+            return await risk_gate.enter(
+                db, run_id="PAPER", trading_day=day.clock.trading_day(), capital_used=1_000.0,
+                advisory_used=0.0, insert=_noop, **kw)
+
+    async def _noop(db):
+        return "inserted"
+
+    assert run(_go()).allowed                                      # nothing named
+    assert run(_go(duplicate_token="OPT2")).allowed                # another contract
+    d = run(_go(duplicate_token="OPT1"))                           # the same contract
+    assert not d.allowed and d.code.value == "DUPLICATE_OPEN_POSITION"

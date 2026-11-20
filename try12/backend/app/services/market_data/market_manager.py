@@ -9,7 +9,7 @@ Call market_manager.startup() from FastAPI lifespan.
 """
 import asyncio
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,8 +28,56 @@ logger = logging.getLogger(__name__)
 
 # How many strikes around ATM to subscribe (each side)
 ATM_STRIKE_RADIUS = 10
+# How many of the nearest expiries to subscribe. The option selector trades a
+# 2-14 DTE expiry, so the day before an expiry (DTE 1) it picks NEXT week's;
+# subscribing only the nearest left it with no quotes on those days.
+WATCH_EXPIRIES = 2
 # How many historical 1m candles to seed on startup
 HISTORICAL_CANDLE_LIMIT = 390  # full trading day
+# Spot / futures seed: this many calendar days back (covers a weekend plus a
+# holiday), trimmed to the newest SEED_KEEP_CANDLES — yesterday's session plus
+# today's, which is what the strategies' indicators warm up on.
+SEED_LOOKBACK_DAYS = 6
+SEED_KEEP_CANDLES = 500
+# AngelOne's historical API knows the NSE indices by "999"-prefixed tokens; the
+# short feed tokens (26000 / 26009 / 26017) return SUCCESS with zero candles.
+# Candles are still stored under the feed token, which is what everything reads.
+INDEX_HISTORICAL_TOKENS = {"26000": "99926000", "26009": "99926009", "26017": "99926017"}
+
+
+async def fill_ohlc_gaps(candles: list[dict], exchange: str) -> int:
+    """Write REST history into the ohlc table for minutes it does not have yet.
+    Minutes lost while the backend was down or the feed dropped otherwise stay
+    missing there for good (readiness: PREV_SESSION_INCOMPLETE / TODAY_CANDLE_GAPS).
+    Never overwrites a live candle; never raises. Returns the rows offered."""
+    from app.db.models.ohlc import OHLC
+    from app.services.market_data.timestamps import try_normalize_candle_timestamp as _ts
+    rows = []
+    for c in candles:
+        t = _ts(c.get("timestamp"))
+        if t is None:
+            continue
+        rows.append({"token": c["token"], "symbol": c["symbol"], "exchange": exchange,
+                     "interval": c.get("interval", "ONE_MINUTE"),
+                     "timestamp": t.astimezone(timezone.utc),
+                     "open": float(c["open"]), "high": float(c["high"]), "low": float(c["low"]),
+                     "close": float(c["close"]), "volume": int(c.get("volume") or 0)})
+    if not rows:
+        return 0
+    try:
+        async with AsyncSessionLocal() as db:
+            if db.bind.dialect.name == "postgresql":
+                from sqlalchemy.dialects.postgresql import insert
+            else:
+                from sqlalchemy.dialects.sqlite import insert
+            for k in range(0, len(rows), 500):
+                await db.execute(insert(OHLC).values(rows[k:k + 500]).on_conflict_do_nothing(
+                    index_elements=["token", "interval", "timestamp"]))
+            await db.commit()
+        return len(rows)
+    except Exception as exc:
+        logger.warning("ohlc gap fill failed for %s: %s", rows[0]["symbol"], exc)
+        return 0
 
 
 class MarketManager:
@@ -46,15 +94,10 @@ class MarketManager:
                 "ANGEL_TOTP_SECRET in your .env file."
             )
 
-        # 1. Login to AngelOne
-        await angel_client.login()
-        logger.info("AngelOne login OK")
-
-        # 2. Cache session tokens in Redis
-        from app.services.broker.angel_client import _session
-        await redis_cache.set_angel_session(
-            _session.jwt_token, _session.refresh_token, _session.feed_token
-        )
+        # 1-2. AngelOne session: reuse the one cached in Redis when AngelOne still
+        # accepts it, otherwise log in (login() caches the new session itself).
+        await angel_client.resume_or_login()
+        logger.info("AngelOne session ready")
 
         # 3. Sync instrument master
         async with AsyncSessionLocal() as db:
@@ -64,9 +107,6 @@ class MarketManager:
         # 4. Build watchlist (ATM ± radius for nearest expiry)
         watchlist = await self._build_watchlist()
         logger.info("Watchlist: %d tokens", len(watchlist))
-
-        # 5. Seed historical OHLC for watchlist tokens
-        await self._seed_historical_ohlc(watchlist)
 
         # 5b. Seed historical OHLC for SPOT underlyings (NIFTY / BANKNIFTY).
         # The strategy_runner reads spot candles from Redis
@@ -84,11 +124,28 @@ class MarketManager:
             except Exception as exc:
                 logger.warning("Spot OHLC seed error for %s: %s", s_name, exc)
 
+        # 5c. Nearest-expiry index futures: the spot index carries no volume, and
+        # the ORB rule reads volume off the future. Published as fut_token:<NAME>.
+        fut_tokens = await self._nearest_futures()
+        for f_token, f_symbol, f_name in fut_tokens:
+            tick_writer.register_symbol(f_token, f_symbol)
+            try:
+                await self._seed_one_token_exchange(f_token, f_symbol, "NFO")
+            except Exception as exc:
+                logger.warning("Futures OHLC seed error for %s: %s", f_symbol, exc)
+            await redis_cache.set(f"fut_token:{f_name}", f_token, ttl=86400)
+
+        # 5d. Option watchlist history in the BACKGROUND: ~170 tokens at AngelOne's
+        # rate limit take minutes, only the option charts read it, and the spot /
+        # futures history above is what the strategies need. Startup no longer
+        # waits for it (it blocked the API for ~7 minutes on 23 Oct).
+        self._option_seed_task = asyncio.create_task(self._seed_option_history(watchlist))
+
         # 6. Register tick handler
         market_feed.add_async_handler(self._on_tick)
 
         # 7. Subscribe to watchlist
-        nfo_tokens = [t for t, _ in watchlist]
+        nfo_tokens = [t for t, _ in watchlist] + [t for t, _, _ in fut_tokens]
         # Core NSE underlyings — VIX is subscribed separately below
         nse_tokens = [settings.NIFTY_TOKEN, settings.BANKNIFTY_TOKEN]
         market_feed.subscribe("NFO", nfo_tokens)
@@ -112,10 +169,23 @@ class MarketManager:
 
         logger.info("=== MarketManager startup complete ===")
 
+    async def _seed_option_history(self, watchlist) -> None:
+        try:
+            await self._seed_historical_ohlc(watchlist)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:                 # never takes the app down
+            logger.warning("Background option history seed failed: %s", exc)
+
     async def shutdown(self):
+        task = getattr(self, "_option_seed_task", None)
+        if task is not None and not task.done():
+            task.cancel()
         await market_feed.stop()
         await tick_writer.stop()
-        await angel_client.logout()
+        # No logout here: the session stays cached in Redis so the next start can
+        # reuse it (resume_or_login) instead of logging in again. It expires on its
+        # own; POST /api/v1/auth/logout still ends it explicitly.
         logger.info("MarketManager shutdown complete.")
 
     # ── Tick handler ──────────────────────────────────────────────────────────
@@ -159,8 +229,9 @@ class MarketManager:
     async def _build_watchlist(self) -> list[tuple[str, str]]:
         """
         Returns list of (token, symbol) for:
-          - Nifty CE/PE, nearest expiry, ATM ± ATM_STRIKE_RADIUS strikes
-          - BankNifty CE/PE, nearest expiry, ATM ± ATM_STRIKE_RADIUS strikes
+          - Nifty CE/PE, the WATCH_EXPIRIES nearest expiries, ATM ± ATM_STRIKE_RADIUS strikes
+          - BankNifty CE/PE, the same
+        Built at startup only: restart the backend each trading morning.
         """
         result = []
         async with AsyncSessionLocal() as db:
@@ -170,7 +241,6 @@ class MarketManager:
                     logger.warning("No expiries found for %s", underlying)
                     continue
 
-                nearest_expiry = expiries[0]
 
                 # Get approximate ATM from spot LTP via REST
                 spot_ltp = await self._get_spot_ltp(underlying)
@@ -195,12 +265,13 @@ class MarketManager:
                         underlying, low, high,
                     )
 
-                instruments = await get_option_tokens(
-                    db, underlying, nearest_expiry, strike_range
-                )
-                for inst in instruments:
-                    result.append((inst.token, inst.symbol))
-                    tick_writer.register_symbol(inst.token, inst.symbol)
+                for expiry in expiries[:WATCH_EXPIRIES]:
+                    instruments = await get_option_tokens(db, underlying, expiry, strike_range)
+                    for inst in instruments:
+                        result.append((inst.token, inst.symbol))
+                        tick_writer.register_symbol(inst.token, inst.symbol)
+                    logger.info("[%s] watchlist: %d options for expiry %s",
+                                underlying, len(instruments), expiry)
 
         return result
 
@@ -234,7 +305,7 @@ class MarketManager:
         to_dt   = f"{today} 15:30"
 
         logger.info("Seeding historical OHLC for %d tokens...", len(watchlist))
-        sem = asyncio.Semaphore(10)   # max 10 concurrent requests to AngelOne
+        sem = asyncio.Semaphore(3)    # angel_client also spaces historical calls out
 
         async def _bounded(token, symbol):
             async with sem:
@@ -281,6 +352,7 @@ class MarketManager:
                     }
                     for row in candles
                 ]
+                candle_dicts = await self._rest_candles_to_feed_units(token, "NFO", candle_dicts)
         except Exception as exc:
             logger.debug("AngelOne seed error for token %s: %s — trying DB", token, exc)
 
@@ -344,8 +416,9 @@ class MarketManager:
              and AngelOne refuses the historical call — the DB already has candles
              from earlier in the same day.
         """
+        from datetime import timedelta as _seed_td
         today = date.today()
-        from_dt = f"{today} 09:15"
+        from_dt = f"{today - _seed_td(days=SEED_LOOKBACK_DAYS)} 09:15"
         to_dt   = f"{today} 15:30"
 
         candle_dicts: list[dict] = []
@@ -354,7 +427,8 @@ class MarketManager:
         try:
             candles = await angel_client.get_candle_data(
                 exchange=exchange,
-                symbol_token=token,
+                symbol_token=(INDEX_HISTORICAL_TOKENS.get(token, token)
+                              if exchange == "NSE" else token),
                 interval="ONE_MINUTE",
                 from_date=from_dt,
                 to_date=to_dt,
@@ -376,10 +450,12 @@ class MarketManager:
                     }
                     for row in candles
                 ]
+                candle_dicts = await self._rest_candles_to_feed_units(token, exchange, candle_dicts)
                 logger.info(
                     "Seeded %d candles for %s (%s/%s) from AngelOne REST",
                     len(candle_dicts), symbol, exchange, token,
                 )
+                await fill_ohlc_gaps(candle_dicts, exchange)
             else:
                 logger.info(
                     "No historical candles from AngelOne for %s — will try DB fallback",
@@ -403,7 +479,8 @@ class MarketManager:
                 session_open_utc = date.today()  # placeholder; built below
                 import datetime as _dt_mod
                 session_open_utc = _dt_mod.datetime.combine(
-                    today, _dt_mod.time(3, 45), tzinfo=_tz.utc  # 09:15 IST
+                    today - _seed_td(days=SEED_LOOKBACK_DAYS), _dt_mod.time(3, 45),
+                    tzinfo=_tz.utc  # 09:15 IST
                 )
 
                 async with AsyncSessionLocal() as db:
@@ -414,10 +491,10 @@ class MarketManager:
                             OHLC.interval == "ONE_MINUTE",
                             OHLC.timestamp >= session_open_utc,
                         )
-                        .order_by(OHLC.timestamp.asc())
-                        .limit(500)
+                        .order_by(OHLC.timestamp.desc())
+                        .limit(SEED_KEEP_CANDLES)
                     )
-                    rows = result.scalars().all()
+                    rows = list(reversed(result.scalars().all()))
 
                 if rows:
                     candle_dicts = [
@@ -452,7 +529,75 @@ class MarketManager:
                 logger.warning("DB fallback seed error for %s: %s", symbol, exc2)
 
         if candle_dicts:
-            await redis_cache.set_candles(token, "ONE_MINUTE", candle_dicts)
+            await redis_cache.set_candles(token, "ONE_MINUTE", candle_dicts[-SEED_KEEP_CANDLES:])
+
+    async def _rest_candles_to_feed_units(self, token: str, exchange: str,
+                                          candles: list[dict]) -> list[dict]:
+        """Make REST history match the candles the live feed builds:
+          - AngelOne's historical F&O volume is in LOTS, the feed's in units
+            (quantity): on 23 Oct the same minutes differed ~65x, the NIFTY lot
+            size, so after a mid-session restart every live minute looked like a
+            volume surge to the ORB and regime volume tests. NFO volume is scaled
+            by the instrument's lot size.
+          - the still-forming current minute is dropped: the live builder emits
+            that minute when it closes, and keeping both left a duplicate."""
+        from datetime import datetime, timezone
+        from app.services.market_data.timestamps import try_normalize_candle_timestamp as _ts
+        now_min = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+        out = []
+        for c in candles:
+            t = _ts(c.get("timestamp"))
+            if t is not None and t.astimezone(timezone.utc) >= now_min:
+                continue
+            out.append(c)
+        if exchange == "NFO":
+            lot = await self._lot_size(token)
+            if lot and lot > 1:
+                for c in out:
+                    c["volume"] = int((c.get("volume") or 0) * lot)
+        return out
+
+    async def _lot_size(self, token: str) -> Optional[int]:
+        cache = self.__dict__.setdefault("_lot_cache", {})
+        if token in cache:
+            return cache[token]
+        try:
+            from sqlalchemy import select
+            from app.db.models.instrument import Instrument
+            async with AsyncSessionLocal() as db:
+                lot = (await db.execute(select(Instrument.lot_size).where(
+                    Instrument.token == token).limit(1))).scalar_one_or_none()
+        except Exception as exc:
+            logger.debug("lot size lookup failed for %s: %s", token, exc)
+            lot = None
+        cache[token] = lot
+        return lot
+
+    async def _nearest_futures(self) -> list[tuple[str, str, str]]:
+        """(token, symbol, underlying) of the nearest-expiry NIFTY / BANKNIFTY
+        index future in the synced instrument master; [] on any error."""
+        from sqlalchemy import select
+        from app.db.models.instrument import Instrument, InstrumentType
+        out: list[tuple[str, str, str]] = []
+        try:
+            async with AsyncSessionLocal() as db:
+                for name in ("NIFTY", "BANKNIFTY"):
+                    row = (await db.execute(
+                        select(Instrument).where(
+                            Instrument.name == name,
+                            Instrument.instrument_type == InstrumentType.FUTIDX,
+                            Instrument.expiry >= date.today(),
+                        ).order_by(Instrument.expiry).limit(1)
+                    )).scalar_one_or_none()
+                    if row is not None:
+                        out.append((row.token, row.symbol, name))
+                        logger.info("Futures for %s volume: %s (%s)", name, row.symbol, row.token)
+                    else:
+                        logger.warning("No %s index future in the instrument master — "
+                                       "ORB volume rule will not be checked", name)
+        except Exception as exc:
+            logger.warning("Futures lookup failed: %s", exc)
+        return out
 
     # ── Dynamic subscription management ──────────────────────────────────────
 

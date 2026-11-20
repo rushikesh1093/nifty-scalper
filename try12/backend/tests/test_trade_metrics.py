@@ -12,15 +12,15 @@ CAPITAL = 200_000.0
 
 #        day  net      r       source                 r_net  hold strategy
 FIXTURE = [
-    (1, 1000.0,  2.0,   "ENTRY",               1.8,   10, "ORB_VWAP"),
-    (1, -500.0,  -1.0,  "ENTRY",               -1.1,  20, "ORB_VWAP"),
+    (1, 1000.0,  2.0,   "ENTRY",               1.8,   10, "ORB_BREAKOUT"),
+    (1, -500.0,  -1.0,  "ENTRY",               -1.1,  20, "ORB_BREAKOUT"),
     (1, -520.0,  -1.0,  "ENTRY",               -1.12, 30, "RSI_VWAP"),
     (2, 0.5,     0.0,   "ENTRY",               -0.05, 5,  "RSI_VWAP"),    # flat by ₹, R_FLAT
-    (2, 1500.0,  2.5,   "ENTRY",               2.3,   15, "ORB_VWAP"),
+    (2, 1500.0,  2.5,   "ENTRY",               2.3,   15, "ORB_BREAKOUT"),
     (2, -300.0,  None,  "BACKFILL_UNVERIFIED", None,  None, "RSI_VWAP"),  # r_unavailable
-    (3, 200.0,   0.4,   "ENTRY",               0.3,   25, "ORB_VWAP"),
+    (3, 200.0,   0.4,   "ENTRY",               0.3,   25, "ORB_BREAKOUT"),
     (3, -40.0,   0.005, "ENTRY",               -0.05, 12, "RSI_VWAP"),    # breakeven: loss, R_FLAT
-    (3, -600.0,  -1.2,  "ENTRY",               -1.3,  8,  "ORB_VWAP"),    # gapped stop
+    (3, -600.0,  -1.2,  "ENTRY",               -1.3,  8,  "ORB_BREAKOUT"),    # gapped stop
     (4, 900.0,   1.8,   "ENTRY",               1.7,   40, "RSI_VWAP"),
 ]
 
@@ -106,8 +106,8 @@ def test_profit_factor_is_null_with_no_winners_or_no_losers():
 
 def test_group_by_strategy_and_day():
     g = tm.group_by(_rows(), "strategy", CAPITAL, P)
-    assert set(g) == {"ORB_VWAP", "RSI_VWAP"}
-    assert g["ORB_VWAP"].trades == 5 and g["RSI_VWAP"].trades == 5
+    assert set(g) == {"ORB_BREAKOUT", "RSI_VWAP"}
+    assert g["ORB_BREAKOUT"].trades == 5 and g["RSI_VWAP"].trades == 5
     days = tm.group_by(_rows(), "day", CAPITAL, P)
     assert list(days) == ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"]
     with pytest.raises(ValueError):

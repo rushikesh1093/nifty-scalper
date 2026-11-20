@@ -10,7 +10,8 @@ Key schema:
   option_chain:{underlying}:{expiry} → JSON (full option chain snapshot)
   positions                      → JSON list of open positions
   order_book                     → JSON list of today's orders
-  session:angel                  → JSON (JWT, refresh, feed tokens)
+  session:angel                  → JSON (JWT, refresh, feed tokens, logged_in_at);
+                                   written and read only by angel_client
 """
 import json
 import logging
@@ -26,11 +27,13 @@ logger = logging.getLogger(__name__)
 TTL_TICK         = 300      # LTP / tick data — raised from 60s to 300s so option
                             # selector doesn't see stale/None on low-liquidity strikes
                             # where ticks arrive every 2-5 minutes
-TTL_OHLC         = 28800    # OHLC candles — 8 hours (full trading day)
-TTL_OPTION_CHAIN = 30       # Option chain — very fresh
+TTL_OHLC         = 4 * 86400  # OHLC candles — 4 days, so yesterday's session (and a
+                            # weekend) survives overnight: the strategies' EMA / RSI /
+                            # Supertrend / ADX warm up on it. Lists are trimmed to 500
+                            # candles, so memory stays bounded.
+TTL_OPTION_CHAIN = 660      # Option chain: rebuilt every 300 s; outlives one missed rebuild
 TTL_POSITIONS    = 10       # Positions — near real-time
 TTL_ORDER_BOOK   = 10
-TTL_SESSION      = 7 * 3600  # Session tokens — 7 hours
 
 
 class RedisCache:
@@ -82,6 +85,14 @@ class RedisCache:
     async def get_tick(self, token: str) -> Optional[dict]:
         val = await self._r().get(f"tick:{token}")
         return json.loads(val) if val else None
+
+    async def get_multiple_ticks(self, tokens: list[str]) -> dict[str, Optional[dict]]:
+        """Many ticks in ONE round trip (MGET): one pooled connection, however many
+        tokens. A gather of get_tick per token can exhaust the 20-connection pool."""
+        if not tokens:
+            return {}
+        values = await self._r().mget(*[f"tick:{t}" for t in tokens])
+        return {t: (json.loads(v) if v else None) for t, v in zip(tokens, values)}
 
     # ── OHLC candles ─────────────────────────────────────────────────────────
 
@@ -138,16 +149,6 @@ class RedisCache:
     async def get_order_book(self) -> list[dict]:
         val = await self._r().get("order_book")
         return json.loads(val) if val else []
-
-    # ── Session tokens ────────────────────────────────────────────────────────
-
-    async def set_angel_session(self, jwt: str, refresh: str, feed: str):
-        data = {"jwt": jwt, "refresh": refresh, "feed": feed}
-        await self._r().setex("session:angel", TTL_SESSION, json.dumps(data))
-
-    async def get_angel_session(self) -> Optional[dict]:
-        val = await self._r().get("session:angel")
-        return json.loads(val) if val else None
 
     # ── Pub/Sub for real-time frontend push ───────────────────────────────────
 

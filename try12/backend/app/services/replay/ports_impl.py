@@ -133,6 +133,23 @@ class ReplayInstruments:
     def invalidate(self) -> None:          # POST /instruments/sync: nothing to drop in replay
         pass
 
+    async def nearest_expiry(self, db, underlying: str):
+        """From the instrument master, not the traded-today universe: on an expiry
+        day the expiring series often has no recorded ticks, and answering from
+        instruments_for() made replay miss EVERY expiry day (live never did), so
+        backtests traded days live refuses (audit D1, 23 Oct)."""
+        from sqlalchemy import select
+        from app.db.models.instrument import Instrument, InstrumentType
+        from app.runtime.context import trading_day
+        key = ("expiry", underlying.upper(), trading_day())
+        if key not in self._cache:
+            self._cache[key] = (await db.execute(select(Instrument.expiry).where(
+                Instrument.name == underlying.upper(),
+                Instrument.instrument_type == InstrumentType.OPTIDX,
+                Instrument.expiry >= key[2],
+            ).order_by(Instrument.expiry).limit(1))).scalar_one_or_none()
+        return self._cache[key]
+
 
 # ── market data ──────────────────────────────────────────────────────────────
 
@@ -190,6 +207,9 @@ class ReplayMarketData:
                        for key, pairs in day_data.chains.items()}
         self.vix = day_data.vix
         self.overrides.clear()
+        # what market_manager publishes live (strategy_runner._futures_candles)
+        for und, tok in getattr(day_data, "futures", {}).items():
+            self.kv[f"fut_token:{und}"] = tok
 
     # rendering ---------------------------------------------------------------
 
@@ -236,6 +256,19 @@ class ReplayMarketData:
         if token in self.overrides:
             return copy.deepcopy(self.overrides[token])
         now = self.clock.now_utc()
+        if token in self.spot_tokens:
+            # The spot index has candles, not ticks: the last CLOSED candle is the
+            # tick, stamped at its close (same price get_ltp returns), so spot
+            # exits see a price whose age is known.
+            s = self.candles.get(token)
+            hit = s.at_or_before(now) if s is not None else None
+            if hit is None:
+                return None
+            close_at, c = hit
+            return {"token": token, "ltp": float(c["close"]), "open": c.get("open"),
+                    "high": c.get("high"), "low": c.get("low"), "close": c.get("close"),
+                    "volume": c.get("volume"), "oi": None, "best_bid": None,
+                    "best_ask": None, "ts": utc(close_at).isoformat()}
         s = self.ticks.get(token)
         hit = s.at_or_before(now) if s is not None else None
         if hit is not None:

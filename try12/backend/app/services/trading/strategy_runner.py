@@ -1,9 +1,10 @@
 """
 Strategy Runner and Scheduler.
-Orchestrates all 12 strategies — feeds them candle data every minute,
-injects OI/IV context, wires SignalBus → PaperEngine.
+Orchestrates the strategies (app.strategies.names) — feeds them candle data
+every minute, runs the open positions' candle-close exits, wires
+SignalBus → PaperEngine.
 Also handles:
-  - Pre-market setup: PDH/PDL, CPR levels, prev close
+  - Pre-market setup: signal-aggregator reset
   - EOD cleanup: force-close all open positions at 15:15
 """
 import asyncio
@@ -12,9 +13,9 @@ import time as _time
 from datetime import datetime, date, time as dtime
 from typing import Optional
 
-from app.strategies.strategies import build_strategies, OISpikeStrategy, IVCrushStrategy, PDHPDLStrategy, CPRVWAPStrategy, GapVWAPFillStrategy
-from app.strategies.indicators import compute_all, cpr as calc_cpr
-from app.runtime.context import ctx, market, now_ist, sessions, trading_day
+from app.strategies.strategies import build_strategies
+from app.strategies.indicators import compute_all
+from app.runtime.context import ctx, market, now_ist, params, sessions, trading_day
 from app.services.trading.paper_engine import paper_engine
 from app.services.trading.mode_manager import mode_manager
 from app.core.config import settings
@@ -30,6 +31,8 @@ from app.services.market_data.timestamps import try_normalize_candle_timestamp
 logger = logging.getLogger(__name__)
 
 CANDLE_CHECK_INTERVAL = 60   # seconds — check for new candles every minute
+CANDLE_SETTLE_SECONDS = 2    # run each cycle this long after the minute boundary, once
+                             # the feed has closed and pushed the previous 1-min candle
 VIX_TOKEN             = settings.VIX_TOKEN  # India VIX token (centralised in config)
 
 # Market gates
@@ -41,40 +44,22 @@ VIX_MAX           = 25.0   # above → extreme fear/erratic, hard SLs get blown
                             #  on normal volatile days, 20 was blocking good sessions)
 ATR_MIN_NIFTY     = 1.5    # Nifty 1-min ATR below this = dead chop (was 2.5 — blocked ORB window)
 ATR_MIN_BANKNIFTY = 5.0    # BankNifty moves ~3× Nifty (was 8.0)
-MIN_TODAY_CANDLES = 25     # today-only 1m candles required before strategies run
+MIN_TODAY_CANDLES = 20     # default today-only 1m candles a strategy needs before it
+                            # runs: 09:15-09:34, so the ORB can act on the 09:30-09:35
+                            # bar. A strategy may declare its own (BaseStrategy.
+                            # MIN_TODAY_CANDLES, e.g. the 09:15 breakout: 10); the
+                            # cycle starts at the smallest among the enabled ones.
+                            # EMA / RSI / Supertrend / ADX warm up on the multi-day
+                            # history, not on today's candles alone.
+
+
+def _readiness(strat) -> int:
+    """Today-only candles *strat* needs (read at call time: tests patch the default)."""
+    return getattr(strat, "MIN_TODAY_CANDLES", None) or MIN_TODAY_CANDLES
 EXPIRY_MIN_SL_PCT = 0.15   # on expiry day skip ALL strategies with sl_pct < 15%
                             # Raised from 0.08 — a 10% SL on a cheap OTM option
                             # (e.g. ₹23 LTP → SL at ₹20.70) is blown by a single
                             # adverse spot tick on expiry day.
-OI_IV_WARN_INTERVAL_SECS = 600   # rate-limit the OI/IV injection WARNING per underlying
-
-
-def _atm_pair(universe: list, expiry: date, atm_strike: float) -> tuple:
-    """Pure pick of the ATM CE and PE for *expiry* from an instrument universe."""
-    from app.db.models.instrument import InstrumentType, OptionType
-    ce = pe = None
-    for i in universe:
-        if i.instrument_type != InstrumentType.OPTIDX or i.expiry != expiry or i.strike != atm_strike:
-            continue
-        if i.option_type == OptionType.CE and ce is None:
-            ce = i
-        elif i.option_type == OptionType.PE and pe is None:
-            pe = i
-    return ce, pe
-
-
-def _as_int(v) -> int:
-    try:
-        return int(v or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _as_float(v) -> float:
-    try:
-        return float(v or 0)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 class StrategyRunner:
@@ -85,13 +70,13 @@ class StrategyRunner:
         self._eod_task:    Optional[asyncio.Task] = None
         self._strategies:  dict[str, list] = {}   # underlying → [strategy list]
         self._eod_done_date: Optional[date] = None   # IST date EOD square-off last ran
-        self._oi_iv_warned: dict[str, float] = {}     # underlying -> monotonic ts of last WARNING
         # no-trade dedupe (design §12): keys seen today, and the last
         # STRATEGY_GATE code per (run_id, underlying, strategy); both reset daily
         self._seen: set[tuple] = set()
         self._seen_day: Optional[date] = None
         self._strategy_gate_last: dict[tuple, Optional[str]] = {}
         self._cache_warned_at: float = float("-inf")
+        self._readiness: dict = {}    # underlying → session_readiness.Readiness (last check)
 
     async def start(self):
         self._running = True
@@ -108,6 +93,7 @@ class StrategyRunner:
 
         # Pre-market setup
         await self._pre_market_setup()
+        await self.check_session_readiness()
 
         # Start loops
         self._run_task  = asyncio.create_task(self._candle_loop())
@@ -118,6 +104,13 @@ class StrategyRunner:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def find_strategy(self, underlying: str, name: Optional[str]):
+        """The live strategy instance for (underlying, name), or None."""
+        for strat in self._strategies.get(underlying, []):
+            if strat.name == name:
+                return strat
+        return None
 
     async def stop(self):
         self._running = False
@@ -148,90 +141,191 @@ class StrategyRunner:
 
     async def _pre_market_setup(self):
         """
-        Fetch previous day OHLC and set PDH/PDL, CPR, prev_close on strategies.
         Called on startup and at 9:00 daily. The daily trade count is DERIVED from
         persisted positions (risk_state, design §9.2), so nothing is reset here:
         a restart cannot clear it, and replay calls this once per replayed day
-        without writing trading_config.
+        without writing trading_config. Also resolves the previous session's
+        H/L/C for the strategies that need it (PIVOT_BOUNCE), retrying a day
+        whose earlier attempt found no levels.
         """
         # Reset the signal aggregator cooldown map so yesterday's last-acted
         # timestamps don't suppress the first valid signals of the new session.
-        # Without this, a signal fired at 14:55 yesterday would still be in
-        # cooldown at 9:16 today (90s same-direction cooldown is fine intraday
-        # but must not carry across calendar days).
         from app.strategies.base import signal_aggregator
         signal_aggregator.reset()
         logger.info("Signal aggregator cleared for new session.")
-        from app.db.models.market_study import MarketDailySnapshot
-        from sqlalchemy import select, desc
+        await self._restore_strategy_state()
+        for underlying in list(self._strategies):
+            await self._ensure_prev_session(underlying, retry_missing=True)
 
-        # The run's underlyings (live: both; a replay: the ones it replays), so a
-        # NIFTY-only replay does not record a BANKNIFTY NO_PREV_DAY_SNAPSHOT gate.
-        for underlying in ctx().cfg.underlyings:
+    async def _ensure_prev_session(self, underlying: str, retry_missing: bool = False) -> None:
+        """Give the strategies that declare NEEDS_PREV_SESSION today's previous-
+        session H/L/C (app.services.market_data.prev_session). Resolved once per
+        trading day, independent of the rolling candle cache; *retry_missing*
+        tries again when today's attempt found none. The broker's daily candle
+        comes through the optional MarketDataPort.get_daily_candles, which only
+        the live port has, so replay never calls the broker. Never raises."""
+        from app.services.market_data import prev_session as ps
+
+        day = trading_day()
+        needy = [s for s in self._strategies.get(underlying, [])
+                 if getattr(s, "NEEDS_PREV_SESSION", False)]
+        due = [s for s in needy if getattr(s, "_levels_day", None) != day
+               or (retry_missing and s.prev_session_problem() is not None)]
+        if not due:
+            return
+        token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
+        try:
+            cached = await market().get_candles(token, "ONE_MINUTE", 500)
             try:
                 async with sessions()() as db:
-                    result = await db.execute(
-                        select(MarketDailySnapshot)
-                        .where(
-                            MarketDailySnapshot.underlying == underlying,
-                            MarketDailySnapshot.date < self._ist_now().date(),
-                        )
-                        .order_by(desc(MarketDailySnapshot.date))
-                        .limit(1)
-                    )
-                    prev = result.scalar_one_or_none()
+                    stored = await ps.db_minute_candles(db, token, day)
+            except Exception as exc:
+                logger.warning("[%s] previous-session levels: ohlc read failed: %s",
+                               underlying, exc)
+                stored = []
+            fetch_daily = getattr(market(), "get_daily_candles", None)   # optional port method
+            daily = await fetch_daily(token, day) if fetch_daily is not None else None
+            result = ps.resolve(day, [*stored, *(cached or [])], daily)
+        except Exception as exc:
+            result = ps.PrevSessionResult(None, f"previous-session lookup failed: "
+                                                f"{type(exc).__name__}: {exc}")
+        for s in due:
+            s.set_prev_session(day, result.levels, result.reason)
+        names = ", ".join(s.name for s in due)
+        if result.note:
+            logger.warning("[%s] previous-session levels: %s", underlying, result.note)
+        lv = result.levels
+        if lv is not None:
+            logger.info("[%s] previous session %s for %s: H=%.2f L=%.2f C=%.2f (source=%s, %s)",
+                        underlying, lv.day, names, lv.high, lv.low, lv.close, lv.source,
+                        lv.detail)
+        else:
+            logger.warning("[%s] %s disabled today: %s", underlying, names, result.reason)
 
-                if prev is None:
-                    await self._record_day_gate(
-                        underlying, ReasonCode.NO_PREV_DAY_SNAPSHOT,
-                        f"No previous-day snapshot for {underlying}: PDH_PDL, CPR_VWAP and "
-                        f"GAP_VWAP_FILL cannot fire today",
-                    )
+    # ── Session readiness ─────────────────────────────────────────────────────
 
-                for strat in self._strategies.get(underlying, []):
-                    if isinstance(strat, PDHPDLStrategy):
-                        if prev:
-                            strat.set_levels(pdh=prev.high, pdl=prev.low)
-                            logger.info("[%s] PDH=%.1f PDL=%.1f", underlying, prev.high, prev.low)
-                        else:
-                            logger.warning(
-                                "[%s] No previous-day snapshot found — PDHPDLStrategy "
-                                "will not fire today. Run market_study collection for at least 1 day.",
-                                underlying,
-                            )
+    def _levels_state(self, underlying: str) -> tuple:
+        """(levels dict or None, problem or None, levels day or None) of the
+        strategy that needs the previous session; (None, None, None) without one."""
+        for s in self._strategies.get(underlying, []):
+            if getattr(s, "NEEDS_PREV_SESSION", False):
+                problem = s.prev_session_problem()
+                lv = getattr(s, "_prev", None) if problem is None else None
+                if lv is None:
+                    return None, problem, None
+                return ({"day": lv.day.isoformat(), "high": lv.high, "low": lv.low,
+                         "close": lv.close, "source": lv.source}, None, lv.day)
+        return None, None, None
 
-                    if isinstance(strat, CPRVWAPStrategy):
-                        if prev:
-                            cpr_lvl = calc_cpr(prev.high, prev.low, prev.close)
-                            strat.set_cpr(cpr_lvl.pivot, cpr_lvl.bc, cpr_lvl.tc)
-                            logger.info("[%s] CPR pivot=%.1f bc=%.1f tc=%.1f",
-                                        underlying, cpr_lvl.pivot, cpr_lvl.bc, cpr_lvl.tc)
-                        else:
-                            logger.warning(
-                                "[%s] No previous-day snapshot found — CPRVWAPStrategy "
-                                "will not fire today.",
-                                underlying,
-                            )
+    def prev_session_levels(self, underlying: str) -> Optional[dict]:
+        """Today's resolved previous-session {day, high, low, close, source} of
+        *underlying* (broker daily candle first), or None while unresolved."""
+        return self._levels_state(underlying)[0]
 
-                    if isinstance(strat, GapVWAPFillStrategy):
-                        if prev:
-                            strat.set_prev_close(prev.close)
-                        else:
-                            logger.warning(
-                                "[%s] No previous-day snapshot found — GapVWAPFillStrategy "
-                                "will not fire today.",
-                                underlying,
-                            )
+    async def check_session_readiness(self) -> dict:
+        """Check the candle history of every underlying that runs strategies
+        (app.services.market_data.session_readiness), log one summary line each
+        (WARNING per finding) and keep the result for the status endpoints.
+        Called by start() and the 09:00 pre-market step of the live loops.
+        Never raises; returns {underlying: Readiness}."""
+        from app.services.market_data import prev_session as ps
+        from app.services.market_data import session_readiness as rd
 
-            except Exception as e:
-                logger.error("Pre-market setup error for %s: %s", underlying, e)
+        try:
+            now, day = now_ist(), trading_day()
+        except Exception as exc:
+            logger.warning("Session readiness check skipped: %s", exc)
+            return {}
+        for underlying, strategies in self._strategies.items():
+            if not strategies:
+                continue                    # BANKNIFTY runs no strategies
+            token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
+            try:
+                cache = list(await market().get_candles(token, "ONE_MINUTE", 500) or [])
+                try:
+                    async with sessions()() as db:
+                        stored = await ps.db_minute_candles(db, token, day)
+                except Exception as exc:
+                    logger.warning("[%s] session readiness: ohlc read failed: %s", underlying, exc)
+                    stored = []
+                levels, problem, levels_day = self._levels_state(underlying)
+                rep = rd.build(underlying, now,
+                               rd.check_prev_session(day, [*stored, *cache], cache, levels_day),
+                               rd.check_today(now, cache), levels, problem)
+            except Exception as exc:
+                logger.warning("[%s] session readiness check failed: %s", underlying, exc)
+                continue
+            self._readiness[underlying] = rep
+            if rep.ok:
+                logger.info("%s", rep.summary())
+            else:
+                logger.warning("%s", rep.summary())
+                for w in rep.warnings:
+                    logger.warning("[%s] readiness %s: %s", underlying, w["code"], w["message"])
+        return dict(self._readiness)
+
+    def session_readiness(self, underlying: str, now: datetime,
+                          cache: Optional[list] = None):
+        """Today's last readiness check of *underlying* (None when there is none
+        for *now*'s day), with the today/buffer part redone from *cache* when given."""
+        from app.services.market_data import session_readiness as rd
+
+        rep = self._readiness.get(underlying)
+        if rep is None or rep.day != now.astimezone(rep.checked_at.tzinfo).date():
+            return None
+        if cache is None:
+            return rep
+        levels, problem, _ = self._levels_state(underlying)
+        return rd.refresh(rep, now, cache, levels, problem)
+
+    async def _restore_strategy_state(self) -> None:
+        """Rebuild each strategy's per-day state (open count, ORB trades and
+        their exits, Supertrend count and last exit) from today's persisted
+        positions, so a restart mid-session cannot reset the day's trade rules.
+        Never raises: a DB problem leaves the in-memory state as it is."""
+        from datetime import timedelta, timezone
+        from sqlalchemy import select
+        from app.db.models.paper_trade import PaperPosition
+        from app.services.market_data.timestamps import IST
+
+        day = trading_day()
+        start = datetime.combine(day, dtime(0, 0), IST).astimezone(timezone.utc)
+        try:
+            async with sessions()() as db:
+                rows = (await db.execute(select(PaperPosition).where(
+                    PaperPosition.run_id == ctx().run_id,
+                    PaperPosition.entry_time >= start,
+                    PaperPosition.entry_time < start + timedelta(days=1),
+                ).order_by(PaperPosition.entry_time))).scalars().all()
+        except Exception as exc:
+            logger.warning("Strategy state restore skipped (DB read failed): %s", exc)
+            return
+        for underlying, strategies in self._strategies.items():
+            for strat in strategies:
+                restore = getattr(strat, "restore_day", None)
+                if restore is None:
+                    continue
+                mine = [r for r in rows if r.underlying == underlying
+                        and r.strategy_name == strat.name]
+                restore(mine)
+                if mine:
+                    logger.info("[%s] %s restored %d trade(s) from today (%d open)",
+                                underlying, strat.name, len(mine),
+                                sum(1 for r in mine if r.is_open))
 
     # ── Main candle loop ──────────────────────────────────────────────────────
 
     async def _candle_loop(self):
         while self._running:
             try:
-                await asyncio.sleep(CANDLE_CHECK_INTERVAL)
+                # Wake just after each minute boundary rather than every 60 s of
+                # elapsed time: a fixed sleep drifts by the cycle's own run time,
+                # so entries lagged the bar close by up to a minute and a cycle
+                # now and then saw two new candles at once.
+                now = ctx().clock.now_utc()      # the ctx clock: no wall-clock read here
+                await asyncio.sleep(
+                    CANDLE_CHECK_INTERVAL - now.second - now.microsecond / 1e6
+                    + CANDLE_SETTLE_SECONDS)
                 for underlying in ["NIFTY", "BANKNIFTY"]:
                     await self.run_cycle(underlying)
                 await self._refresh_display_caches()
@@ -397,6 +491,7 @@ class StrategyRunner:
         # and open-time filters. Raw date-prefix matching misclassifies UTC rows
         # around the session boundary and can make a live session look empty.
         normalized_candles = []
+        history = []        # every complete, valid candle of any day (indicator warm-up)
         from collections import Counter
         rejected = Counter()
         rejected_examples = []
@@ -405,12 +500,6 @@ class StrategyRunner:
             if candle_dt is None:
                 rejected["invalid_timestamp"] += 1
                 rejected_examples.append(str(c.get("timestamp")))
-                continue
-            if candle_dt.date() != today:
-                rejected["wrong_session_date"] += 1
-                continue
-            if candle_dt.time().replace(tzinfo=None) < dtime(9, 15):
-                rejected["before_session_open"] += 1
                 continue
             if candle_dt >= self._ist_now().replace(second=0, microsecond=0):
                 rejected["incomplete_current_candle"] += 1
@@ -422,12 +511,21 @@ class StrategyRunner:
             except (KeyError, TypeError, ValueError):
                 rejected["invalid_ohlc"] += 1
                 continue
+            if dtime(9, 15) <= candle_dt.time().replace(tzinfo=None) < dtime(15, 30):
+                history.append((candle_dt, c))
+            if candle_dt.date() != today:
+                rejected["wrong_session_date"] += 1
+                continue
+            if candle_dt.time().replace(tzinfo=None) < dtime(9, 15):
+                rejected["before_session_open"] += 1
+                continue
             # Redis/feed order is not a contract. Keep indicators, ORB, VWAP,
             # and the latest-candle signal aligned even when the provider sends
             # UTC/offset timestamps out of order.
             normalized_candles.append((candle_dt, c))
 
         candles = [c for _, c in sorted(normalized_candles, key=lambda item: item[0])]
+        history = [c for _, c in sorted(history, key=lambda item: item[0])]
 
         today_str = str(today)
         logger.info(
@@ -441,23 +539,37 @@ class StrategyRunner:
             return False
         candle_ts = str(candles[-1].get("timestamp", ""))
 
-        if len(candles) < MIN_TODAY_CANDLES:
+        enabled = [s for s in self._strategies.get(underlying, []) if flags.get(s.name, True)]
+        need = min((_readiness(s) for s in enabled), default=MIN_TODAY_CANDLES)
+        if len(candles) < need:
             # Not enough today-only candles yet — market just opened or no data.
             # Do NOT fall back to multi-day candles: that would corrupt ORB high/low
             # (computed from today's first 15 candles) and the intraday VWAP reset.
             logger.debug(
                 "[%s] Only %d today-candles available (need %d) — skipping this cycle",
-                underlying, len(candles), MIN_TODAY_CANDLES,
+                underlying, len(candles), need,
             )
             self._queue_cycle_gate(
                 tally, underlying, candle_ts, ReasonCode.INSUFFICIENT_CANDLES,
-                f"Only {len(candles)} today-candles (need {MIN_TODAY_CANDLES})",
-                candles=len(candles), required=MIN_TODAY_CANDLES,
+                f"Only {len(candles)} today-candles (need {need})",
+                candles=len(candles), required=need,
             )
             return True
 
         # Compute indicators once, share with all strategies
         indicators = compute_all(candles)
+        if indicators.get("atr") is None and len(history) >= 15:
+            # Before 14 of today's candles ATR(14) is undefined, and the ATR floor
+            # below would read 0 and block the early 09:15-breakout closes. Use
+            # the last bars of the multi-day history (yesterday's tail + today).
+            import numpy as _np
+            from app.strategies.indicators import atr as _atr
+            tail = history[-40:]
+            a = _atr(_np.array([float(c["high"]) for c in tail]),
+                     _np.array([float(c["low"]) for c in tail]),
+                     _np.array([float(c["close"]) for c in tail]), 14)
+            if len(a) and _np.isfinite(a[-1]):
+                indicators["atr"] = float(a[-1])
 
         # ── Spot volume EMA — inject BEFORE any gates or strategy calls ───────
         # Rolling average of spot volume stored in Redis ("avg_vol:spot:{underlying}").
@@ -488,6 +600,15 @@ class StrategyRunner:
             # Volume=0 (NSE index feed limitation) — don't clobber the EMA.
             # Keep whatever was stored from a prior cycle if available.
             indicators["avg_volume"] = prev_avg if prev_avg > 0 else None
+
+        # ── Candle-close exits of open positions — BEFORE any gate ────────────
+        # The ATR/VIX/regime gates below stop new entries; they must never stop
+        # an open position's EMA-trail / VWAP / Supertrend-flip exit.
+        try:
+            await paper_engine.run_candle_exits(
+                underlying, self._strategies.get(underlying, []), candles, history, indicators)
+        except Exception as exc:
+            logger.error("[%s] candle-close exits failed: %s", underlying, exc, exc_info=True)
 
         # ── Gate 1: ATR filter — skip if market is too choppy / dead ─────────
         atr_min = ATR_MIN_NIFTY if underlying == "NIFTY" else ATR_MIN_BANKNIFTY
@@ -525,38 +646,31 @@ class StrategyRunner:
                 return True
 
         # ── Gate 3: Expiry day filter ─────────────────────────────────────────
-        # Same InstrumentPort universe as _inject_oi_iv, so "nearest expiry"
-        # can never disagree between the two (design §14.2).
+        # Nearest expiry from the instrument master (design §14.2), the same
+        # answer live and replay: a port without nearest_expiry falls back to
+        # its universe.
         today = trading_day()
+        port = ctx().instruments
         async with sessions()() as db:
-            universe = await ctx().instruments.instruments_for(db, underlying)
-        expiries = sorted({i.expiry for i in universe if i.expiry and i.expiry >= today})
-        is_expiry_day = bool(expiries and expiries[0] == today)
+            if hasattr(port, "nearest_expiry"):
+                nearest = await port.nearest_expiry(db, underlying)
+            else:
+                universe = await port.instruments_for(db, underlying)
+                exps = sorted({i.expiry for i in universe if i.expiry and i.expiry >= today})
+                nearest = exps[0] if exps else None
+        is_expiry_day = nearest == today
         if is_expiry_day:
             logger.info("[%s] Expiry day — strategies with sl_pct < %.2f will be skipped",
                         underlying, EXPIRY_MIN_SL_PCT)
-
-        # ── Inject OI / IV into relevant strategies ───────────────────────────
-        # Pass is_expiry_day so OISpikeStrategy can self-block (it also checks
-        # this flag internally, but setting it here ensures the state is always
-        # current before evaluate() is called this cycle).
-        oi_iv_gap = await self._inject_oi_iv(underlying, indicators, is_expiry_day=is_expiry_day)
-        if oi_iv_gap is not None:
-            # §14.2: counted every candle, one DATA_GAP row per underlying-day
-            tally.oi_iv_context_missing += 1
-            self._queue(tally, (underlying, str(today), "oi_iv_context"),
-                        stage=Stage.DEGRADATION, code=ReasonCode.DATA_GAP,
-                        reason=f"OI/IV context not populated for {underlying}: {oi_iv_gap}",
-                        underlying=underlying,
-                        context={"what": "oi_iv_context", "cause": oi_iv_gap})
 
         # ── Regime detection ─────────────────────────────────────────────────────
         # Detect current market regime, get updated strategy flags from orchestrator.
         # user-disable takes precedence: a user-disabled strategy stays disabled
         # regardless of what regime says.
         try:
+            regime_ind = await self._regime_indicators(underlying, candles, indicators)
             final_flags, regime_state = await self._detect_and_merge_regime(
-                underlying, candles, indicators, is_expiry_day, flags,
+                underlying, candles, regime_ind, is_expiry_day, flags, history=history,
             )
         except Exception as _regime_err:
             # Never fall back to raw user flags: a Redis or DB blip must not
@@ -569,6 +683,14 @@ class StrategyRunner:
                                    f"{type(_regime_err).__name__}: {_regime_err}")
             return True
 
+        # Regime v2 for the risk gate's low-volatility skip (gates nothing else)
+        try:
+            from app.services.trading.regime_v2 import classify_v2
+            strategy_orchestrator.set_regime_v2(underlying, classify_v2(candles, history))
+        except Exception as exc:
+            logger.debug("[%s] regime v2 unavailable: %s", underlying, exc)
+            strategy_orchestrator.set_regime_v2(underlying, None)
+
         # ── Observability only — isolated; cannot influence final_flags ───────
         if regime_state is not None:
             await self._persist_regime_state(underlying, regime_state)
@@ -578,7 +700,18 @@ class StrategyRunner:
         # ── Run strategies ────────────────────────────────────────────────────
         # The merged flags are the only gate (the detector-owned cooldown is
         # expressed through the REGIME_TRANSITION rule enabling nothing).
+        await self._ensure_prev_session(underlying)       # no-op once resolved today
         for strat in self._strategies.get(underlying, []):
+            if len(candles) < _readiness(strat):
+                continue            # not ready yet today: neither evaluated nor a rejection
+            if getattr(strat, "NEEDS_PREV_SESSION", False) and flags.get(strat.name, True):
+                problem = strat.prev_session_problem()
+                if problem is not None:
+                    # one STRATEGY_GATE row a day (state change), not one per minute
+                    self._queue_strategy_gate(tally, underlying, strat.name,
+                                              ReasonCode.PREV_SESSION_UNAVAILABLE,
+                                              f"{strat.name}: {problem}")
+                    continue
             if not final_flags.get(strat.name, False):
                 if not flags.get(strat.name, True):
                     self._queue_strategy_gate(tally, underlying, strat.name,
@@ -614,6 +747,9 @@ class StrategyRunner:
             self._queue_strategy_gate(tally, underlying, strat.name, None)   # evaluated
             tally.strategies_evaluated += 1
             try:
+                strat.history = history
+                if hasattr(strat, "futures_candles"):
+                    strat.futures_candles = await self._futures_candles(underlying)
                 await strat.on_candle(candles, indicators)
             except Exception as e:
                 logger.error("[%s] Strategy error: %s", strat.name, e, exc_info=True)
@@ -641,6 +777,7 @@ class StrategyRunner:
         indicators: dict,
         is_expiry_day: bool,
         flags: dict,
+        history: Optional[list[dict]] = None,
     ) -> tuple[dict, object]:
         """
         Detect the regime, then merge regime flags with user flags.
@@ -654,6 +791,7 @@ class StrategyRunner:
             underlying=underlying,
             is_expiry_day=is_expiry_day,
             db_session=None,
+            history=history,
         )
 
         regime_flags = await strategy_orchestrator.on_regime_detected(regime_state)
@@ -668,6 +806,9 @@ class StrategyRunner:
         a DEGRADATION row when that regime is the detector's error fallback.
         Returns True when the candle is structurally ineligible."""
         regime = regime_state.regime
+        from app.services.trading.strategy_orchestrator import ENFORCED_REGIMES
+        if not params().regime_gating and regime not in ENFORCED_REGIMES:
+            return False                 # shadow mode: only a detector error / expiry policy blocks
         rule = get_regime_rule(regime, regime_state.indicators.atr_percentile)
         if rule.enabled_strategies:
             return False
@@ -690,90 +831,45 @@ class StrategyRunner:
                                    f"Regime {regime} enables no strategy", regime=regime)
         return True
 
-    def _warn_oi_iv(self, underlying: str, exc: Exception) -> None:
-        """OI/IV I/O failures are visible (R19.4), at most once per 10 min per underlying."""
-        now_m = _time.monotonic()
-        last = self._oi_iv_warned.get(underlying)
-        if last is None or now_m - last >= OI_IV_WARN_INTERVAL_SECS:
-            self._oi_iv_warned[underlying] = now_m
-            logger.warning("[%s] OI/IV context unavailable: %s", underlying, exc)
+    REGIME_VOLUME_BARS = 20
 
-    async def _inject_oi_iv(self, underlying: str, indicators: dict,
-                            is_expiry_day: bool = False) -> Optional[str]:
-        """Update OI/IV context in OISpikeStrategy and IVCrushStrategy.
+    async def _regime_indicators(self, underlying: str, candles: list[dict],
+                                 indicators: dict) -> dict:
+        """*indicators* with ``volume`` / ``avg_volume`` taken from the index
+        future: the spot index carries no volume, and compute_all never sets
+        avg_volume, so the regime's volume-surge test always read "unavailable"
+        and passed. volume = the future's 1-min volume for the latest spot
+        candle's minute; avg_volume = the mean of the REGIME_VOLUME_BARS
+        minutes before it, today only. No futures data → unchanged."""
+        fut = await self._futures_candles(underlying)
+        if not fut or not candles:
+            return indicators
+        from app.services.market_data.timestamps import try_normalize_candle_timestamp as _ts
+        last = _ts(candles[-1].get("timestamp"))
+        if last is None:
+            return indicators
+        rows = sorted(((t, float(c.get("volume") or 0)) for c in fut
+                       if (t := _ts(c.get("timestamp"))) is not None
+                       and t.date() == last.date() and t <= last), key=lambda r: r[0])
+        if not rows or rows[-1][0] != last:
+            return indicators
+        prior = [v for _, v in rows[:-1]][-self.REGIME_VOLUME_BARS:]
+        if len(prior) < 5 or rows[-1][1] <= 0:
+            return indicators
+        return dict(indicators, volume=rows[-1][1], avg_volume=sum(prior) / len(prior))
 
-        The universe comes from ctx().instruments (design §14.2): the nearest
-        expiry on or after the ctx trading day, then a pure ATM CE/PE pick.
-        Only the Redis/DB I/O is guarded, and a failure logs at WARNING.
-
-        Returns None when OI or IV was populated, else the cause, so the
-        caller can count oi_iv_context_missing and record the DATA_GAP.
-        """
+    async def _futures_candles(self, underlying: str) -> list[dict]:
+        """1-min candles of the nearest index future (per-minute volume), via the
+        token market_manager subscribed and published as ``fut_token:<UNDERLYING>``.
+        [] when there is none (replay, feed down) — the caller then cannot check volume."""
         try:
-            spot_token = settings.NIFTY_TOKEN if underlying == "NIFTY" else settings.BANKNIFTY_TOKEN
-            spot_ltp = await market().get_ltp(spot_token) or 0
-            if not spot_ltp:
-                return "no spot LTP"
-
-            step = 50 if underlying == "NIFTY" else 100
-            atm  = round(spot_ltp / step) * step
-
-            async with sessions()() as db:
-                universe = await ctx().instruments.instruments_for(db, underlying)
-            today = trading_day()
-            future = [i.expiry for i in universe if i.expiry and i.expiry >= today]
-            if not future:
-                return "no active expiry in the instrument universe"
-            expiry = min(future)
-            ce_inst, pe_inst = _atm_pair(universe, expiry, atm)
-
-            ce_tick = await market().get_tick(ce_inst.token) if ce_inst else {}
-            pe_tick = await market().get_tick(pe_inst.token) if pe_inst else {}
-            # IV is NOT in the WebSocket binary feed — AngelOne only sends it via the
-            # option chain REST snapshot.  Look it up from the option chain cache
-            # (populated by study_collector).  Fall back to the tick "iv" field in
-            # case a future feed version does carry it.
-            chain = await market().get_option_chain(underlying, str(expiry))
-        except Exception as e:      # Redis / DB I/O only
-            self._warn_oi_iv(underlying, e)
-            return f"I/O error: {type(e).__name__}: {e}"
-
-        ce_oi   = _as_int((ce_tick or {}).get("oi", 0))
-        pe_oi   = _as_int((pe_tick or {}).get("oi", 0))
-
-        def _norm_iv(raw: float) -> float:
-            """Normalise IV to percentage form (e.g. 0.15 → 15.0, 15.0 → 15.0)."""
-            return raw * 100 if 0 < raw < 1.0 else raw
-
-        chain_iv: dict[str, float] = {}
-        if isinstance(chain, dict):
-            for s in chain.get("strikes", []) or []:
-                token_s = s.get("token")
-                raw_iv  = _as_float(s.get("iv"))
-                if token_s and raw_iv:
-                    chain_iv[token_s] = raw_iv * 100 if raw_iv < 1.0 else raw_iv
-
-        def _get_iv(inst, tick) -> float:
-            """Prefer option-chain IV; fall back to tick IV; normalise to %."""
-            if inst and inst.token in chain_iv:
-                return chain_iv[inst.token]
-            return _norm_iv(_as_float((tick or {}).get("iv", 0)))
-
-        atm_ce_iv = _get_iv(ce_inst, ce_tick)
-        atm_pe_iv = _get_iv(pe_inst, pe_tick)
-        atm_iv  = (atm_ce_iv + atm_pe_iv) / 2 if atm_ce_iv and atm_pe_iv else atm_ce_iv or atm_pe_iv
-
-        for strat in self._strategies.get(underlying, []):
-            if isinstance(strat, OISpikeStrategy):
-                strat.update_oi(ce_oi, pe_oi)
-                strat.is_expiry_day = is_expiry_day   # propagate expiry flag
-            if isinstance(strat, IVCrushStrategy) and atm_iv:
-                strat.update_iv(atm_iv)
-                logger.debug("[%s] IVCrush ATM IV=%.2f%% (ce=%.2f pe=%.2f)",
-                             underlying, atm_iv, atm_ce_iv, atm_pe_iv)
-        if not (ce_oi or pe_oi or atm_iv):
-            return "no OI or IV for the ATM pair"
-        return None
+            token = await market().get(f"fut_token:{underlying}")
+            if not token:
+                return []
+            return await market().get_candles(str(token), "ONE_MINUTE", 500)
+        except Exception as exc:
+            logger.debug("[%s] futures candles unavailable: %s", underlying, exc)
+            return []
 
     # ── EOD monitor ───────────────────────────────────────────────────────────
 
@@ -797,9 +893,16 @@ class StrategyRunner:
                     await self._eod_square_off()
                     self._eod_done_date = ist.date()
 
+                # 15:35 IST: shadow outcomes of today's refused signals
+                if (ist.weekday() < 5 and (ist_h, ist_m) >= (15, 35)
+                        and getattr(self, "_shadow_done_date", None) != ist.date()):
+                    self._shadow_done_date = ist.date()
+                    await self._shadow_outcomes(ist.date())
+
                 # 9:00 IST pre-market setup
                 if ist_h == 9 and ist_m == 0:
                     await self._pre_market_setup()
+                    await self.check_session_readiness()
                     await asyncio.sleep(120)
 
                 await asyncio.sleep(30)
@@ -808,6 +911,17 @@ class StrategyRunner:
             except Exception as e:
                 logger.error("EOD monitor error: %s", e, exc_info=True)
                 await asyncio.sleep(30)
+
+    async def _shadow_outcomes(self, day) -> None:
+        """What today's refused NIFTY signals would have made (shadow_outcomes).
+        Observability only: it never opens, closes or sizes anything."""
+        try:
+            from app.services.trading import shadow_outcomes
+            candles = await market().get_candles(settings.NIFTY_TOKEN, "ONE_MINUTE", 500)
+            async with sessions()() as db:
+                await shadow_outcomes.evaluate_day(db, ctx().run_id, day, candles or [])
+        except Exception as exc:
+            logger.error("Shadow outcomes failed for %s: %s", day, exc, exc_info=True)
 
     async def _eod_square_off(self):
         """

@@ -17,7 +17,7 @@ from ohlc through the production compute_all (R13.1).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from sqlalchemy import desc, distinct, select
@@ -46,6 +46,13 @@ class DayData:
     chains: dict[tuple[str, str], list] = field(default_factory=dict)  # (und, expiry) -> [(ts, strikes)]
     vix: Optional[float] = None
     instruments: dict[str, list] = field(default_factory=dict)       # underlying -> Instrument rows
+    futures: dict[str, str] = field(default_factory=dict)            # underlying -> future token
+
+
+# Like the live startup seed (market_manager.SEED_LOOKBACK_DAYS): spot and futures
+# candles carry the previous sessions too, so indicators warm up on history in
+# replay as they do live. Strategies still filter "today" themselves.
+HISTORY_LOOKBACK_DAYS = 6
 
 
 async def replay_instruments(db, underlying: str, day: date) -> list[Instrument]:
@@ -59,9 +66,14 @@ async def replay_instruments(db, underlying: str, day: date) -> list[Instrument]
     ).order_by(Instrument.expiry, Instrument.strike, Instrument.token))).scalars().all())
 
 
-async def spot_candles(db, underlying: str, day: date) -> list[dict]:
+async def spot_candles(db, underlying: str, day: date, lookback_days: int = 0,
+                       token: Optional[str] = None) -> list[dict]:
+    """1-min candles of *underlying*'s spot (or *token*) for *day*, plus the
+    *lookback_days* calendar days before it."""
     start, end = trading_day_bounds_utc(day)
-    tok = spot_token(underlying)
+    if lookback_days:
+        start = trading_day_bounds_utc(day - timedelta(days=lookback_days))[0]
+    tok = token or spot_token(underlying)
     rows = (await db.execute(select(OHLC).where(
         OHLC.token == tok, OHLC.interval == "ONE_MINUTE",
         OHLC.timestamp >= start, OHLC.timestamp < end,
@@ -84,7 +96,15 @@ async def load_day(db, day: date, underlyings) -> DayData:
     start, end = trading_day_bounds_utc(day)
     tokens: set[str] = set()
     for u in underlyings:
-        data.candles[spot_token(u)] = await spot_candles(db, u, day)
+        data.candles[spot_token(u)] = await spot_candles(db, u, day, HISTORY_LOOKBACK_DAYS)
+        fut = (await db.execute(select(Instrument).where(
+            Instrument.name == u.upper(), Instrument.instrument_type == InstrumentType.FUTIDX,
+            Instrument.expiry >= day).order_by(Instrument.expiry).limit(1))).scalar_one_or_none()
+        if fut is not None:
+            rows = await spot_candles(db, u, day, HISTORY_LOOKBACK_DAYS, token=fut.token)
+            if rows:
+                data.candles[fut.token] = rows
+                data.futures[u.upper()] = fut.token
         insts = await replay_instruments(db, u, day)
         for i in insts:
             db.expunge(i)

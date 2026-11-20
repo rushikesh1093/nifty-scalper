@@ -71,7 +71,49 @@ def test_migration_chain_0010_to_0013():
         assert callable(mod.upgrade) and callable(mod.downgrade)
         prev = rev
     heads = sorted(p.name for p in VERSIONS.glob("*.py"))
-    assert heads[-1] == "0013_config_params_and_renames.py"
+    assert heads[-1] == "0017_signal_shadow_outcomes.py"
+
+
+def test_migration_0014_adds_the_exit_plan_column():
+    mod = _load("0014_position_exit_plan.py")
+    assert (mod.revision, mod.down_revision) == ("0014", "0013")
+    assert callable(mod.upgrade) and callable(mod.downgrade)
+    from app.db.models.paper_trade import PaperPosition
+    assert PaperPosition.__table__.c.exit_plan.nullable is True
+
+
+def test_migration_0015_creates_paper_spreads():
+    mod = _load("0015_paper_spreads.py")
+    assert (mod.revision, mod.down_revision) == ("0015", "0014")
+    assert callable(mod.upgrade) and callable(mod.downgrade)
+    from app.db.models.paper_spread import PaperSpread
+    cols = set(PaperSpread.__table__.c.keys())
+    assert {"strategy_name", "trading_day", "legs", "credit_pts", "max_loss", "net_pnl"} <= cols
+
+
+def test_migration_0016_adds_the_trade_log_columns():
+    mod = _load("0016_trade_log_fields.py")
+    assert (mod.revision, mod.down_revision) == ("0016", "0015")
+    from app.db.models.paper_trade import PaperPosition
+    for name in ("spot_entry", "spot_exit", "delta_at_entry", "iv_entry", "iv_exit"):
+        assert PaperPosition.__table__.c[name].nullable is True
+
+
+def test_migration_0017_adds_the_signal_shadow_columns():
+    mod = _load("0017_signal_shadow_outcomes.py")
+    assert (mod.revision, mod.down_revision) == ("0017", "0016")
+    assert callable(mod.upgrade) and callable(mod.downgrade)
+    from app.db.models.paper_trade import StrategySignal
+    for name in ("exit_plan", "shadow_r_net", "shadow_exit", "shadow_hold_min"):
+        assert StrategySignal.__table__.c[name].nullable is True
+
+
+def test_exit_plan_round_trips(sqlite_db):
+    plan = {"strategy": "ORB_BREAKOUT", "side": "BUY", "spot_entry": 22075.0,
+            "spot_stop": 22030.0, "spot_target": 22120.0, "t1_done": False}
+    pid = run(add_position(sqlite_db, exit_plan=plan))
+    assert run(get_position(sqlite_db, pid)).exit_plan == plan
+    assert run(get_position(sqlite_db, run(add_position(sqlite_db)))).exit_plan is None
 
 
 # ── §11 column contract on the ORM ───────────────────────────────────────────

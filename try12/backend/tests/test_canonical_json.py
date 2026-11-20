@@ -52,7 +52,7 @@ def test_trading_params_render():
 _SNIPPET = (
     "from app.runtime.serialize import canonical_json;"
     "print(canonical_json({'dirs': frozenset({'BUY','SELL'}),"
-    " 'names': frozenset({'ORB_VWAP','RSI_VWAP','IV_CRUSH','CPR_VWAP','OI_SPIKE'})}))"
+    " 'names': frozenset({'ORB_BREAKOUT','RSI_VWAP','IV_CRUSH','CPR_VWAP','OI_SPIKE'})}))"
 )
 
 

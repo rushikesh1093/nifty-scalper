@@ -59,6 +59,8 @@ export interface UnderlyingProbe {
   last_candle_at:        string | null;
   regime:                string | null;
   regime_allows_trading: boolean | null;
+  /** false = the regime runs in shadow: detected, but it gates nothing (absent on older backends). */
+  regime_gating?:        boolean | null;
   prev_day_snapshot:     string | null;
 }
 

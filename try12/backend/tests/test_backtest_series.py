@@ -56,9 +56,19 @@ def _trade(i, r, net, *, day=DAY, reason=None, r_net="auto", valid=True, cost=50
 def test_run_params_rebuilds_the_real_frozen_record():
     record = _artefact(BASELINE)["sections"]["1"]["params"]
     p, warnings = read.run_params(record)
-    assert warnings == []
+    # recorded before the strategy rewrite: only its holds for removed strategies go
+    assert warnings in ([], ["legacy_strategy_keys_dropped"])
     assert p.dte_bands["NIFTY"] == ((2, 7), (8, 14))
     assert read.run_capital(record) == 200_000.0
+
+
+def test_run_params_drops_only_holds_for_removed_strategies():
+    record = {"params": {"min_rr": 2.5,
+                         "max_hold_minutes": {"DEFAULT": 40, "RSI_VWAP": 25, "ORB_BREAKOUT": 30}}}
+    p, warnings = read.run_params(record)
+    assert warnings == ["legacy_strategy_keys_dropped"]
+    assert p.min_rr == 2.5                                   # the run's real params, not defaults
+    assert p.max_hold_minutes == {"DEFAULT": 40, "ORB_BREAKOUT": 30}
 
 
 def test_run_params_with_an_invented_key_falls_back_loudly():

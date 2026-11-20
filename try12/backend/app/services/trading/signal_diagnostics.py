@@ -3,17 +3,12 @@ Pure helpers for GET /trading/signals/diagnostics — no I/O, no clock reads.
 
 The route gathers a state snapshot (dict); this module derives the session-window
 predicate and the blocker list from it, so the taxonomy is unit-testable without
-a DB, Redis or a running feed. Codes mirror backend/scripts/diagnose_blockers.py.
+a DB, Redis or a running feed.
 """
 from __future__ import annotations
 
 from datetime import datetime, time
 from typing import Optional
-
-from app.strategies.names import StrategyName
-
-# Strategies that need the previous-day snapshot (PDH/PDL, CPR, gap).
-_PREV_DAY_STRATEGIES = (StrategyName.PDH_PDL, StrategyName.CPR_VWAP, StrategyName.GAP_VWAP_FILL)
 
 SESSION_WINDOW_NOTE = "clock-based; exchange holidays are not detected"
 EXCHANGE_CLOSE_IST = time(15, 30)
@@ -68,7 +63,8 @@ def derive_blockers(state: dict) -> list[dict]:
       strategies: {total, enabled},
       underlyings: [{underlying, candles_today, candles_required, atr, atr_min, regime,
                      regime_allows_trading, in_cooldown, prev_day_snapshot,
-                     lot_cost, atm_premium, lot_size, lot_cost_unavailable}],
+                     lot_cost, atm_premium, lot_size, lot_cost_unavailable,
+                     readiness_warnings: [{code, message}]}],
       probe_errors: [{code, detail}]
     Returns [] when nothing blocks signal generation or trade conversion.
     """
@@ -122,18 +118,15 @@ def derive_blockers(state: dict) -> list[dict]:
                                    f"{name} ATR {u['atr']:.2f} is below {u['atr_min']:g}.",
                                    underlying=name, detail="the runner treats the market as too choppy"))
 
-        if state.get("db_available") is not False and u.get("prev_day_snapshot") is None \
-                and "prev_day_snapshot" in u:
-            blockers.append(_b("NO_PREV_DAY_SNAPSHOT", "warning", f"No previous-day snapshot for {name}.",
-                               underlying=name,
-                               detail=f"{', '.join(s.value for s in _PREV_DAY_STRATEGIES[:-1])} and "
-                                      f"{_PREV_DAY_STRATEGIES[-1].value} cannot fire"))
-
         if u.get("regime_allows_trading") is False:
             blockers.append(_b("REGIME_BLOCKS_ALL", "blocking",
                                f"Regime {u.get('regime')} permits no strategies.", underlying=name,
                                detail=f"regime_rules.py gives {u.get('regime')} an empty enabled_strategies set. "
                                       "No signal can convert to a trade while this regime holds."))
+
+        for w in u.get("readiness_warnings") or []:
+            blockers.append(_b(w.get("code", "READINESS"), "warning", w.get("message", ""),
+                               underlying=name, detail="session readiness check"))
 
         if u.get("in_cooldown") is True:
             blockers.append(_b("REGIME_TRANSITION_COOLDOWN", "warning",

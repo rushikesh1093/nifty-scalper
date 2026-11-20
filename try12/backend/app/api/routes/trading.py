@@ -369,6 +369,20 @@ async def daily_stats():
     return await mode_manager.get_daily_stats()
 
 
+# ── Expiry-day iron fly (separate paper book) ─────────────────────────────────
+
+@router.get("/iron-fly")
+async def iron_fly_book(wing: int = Query(200, description="200 (the live rules) or 300")):
+    """An expiry-day iron fly paper book: today's spread with live mark-to-market,
+    recent history and a summary (app.services.trading.iron_fly). ``wing=300`` is
+    the 300-point-wing book run alongside for forward evidence."""
+    from app.services.trading.iron_fly import IRON_FLY_BOOKS
+    book = IRON_FLY_BOOKS.get(wing)
+    if book is None:
+        raise HTTPException(status_code=400, detail=f"wing must be one of {sorted(IRON_FLY_BOOKS)}")
+    return await book.snapshot()
+
+
 # ── Signals ───────────────────────────────────────────────────────────────────
 
 @router.get("/signals")
@@ -453,6 +467,7 @@ async def get_signal_diagnostics():
     """
     # Function-local imports: gates/constants are read from the runner itself so
     # the reported thresholds can never drift from the ones the loop applies.
+    from app.runtime.context import params as _params
     from app.services.trading import strategy_runner as _sr
     from app.services.trading.signal_diagnostics import (
         SESSION_WINDOW_NOTE, derive_blockers, format_session_window, session_window_open, vix_gate,
@@ -592,8 +607,10 @@ async def get_signal_diagnostics():
             "candles_required": _sr.MIN_TODAY_CANDLES,
             "atr": None, "atr_min": _sr.ATR_MIN_NIFTY if u == "NIFTY" else _sr.ATR_MIN_BANKNIFTY,
             "last_candle_at": None, "regime": None, "regime_allows_trading": None,
+            "regime_gating": None,
         }
         extra: dict = {}
+        all_c = None
         try:
             if not redis_ok:
                 raise _SkipProbe
@@ -618,22 +635,30 @@ async def get_signal_diagnostics():
         except Exception as exc:
             _probe_failed(f"CANDLES_PROBE_{u}", exc)
         try:
+            # the runner's startup / 09:00 readiness check, its today part redone now
+            rd = _sr.strategy_runner.session_readiness(u, now_ist, all_c)
+            if rd is not None:
+                info["readiness"] = rd.as_dict()
+                extra["readiness_warnings"] = rd.warnings
+        except Exception as exc:
+            _probe_failed(f"READINESS_PROBE_{u}", exc)
+        try:
             if redis_ok:
                 raw = await redis_cache._r().get(f"regime:{u}:current")
                 if raw:
                     info["regime"] = json.loads(raw).get("regime")
-                    info["regime_allows_trading"] = bool(get_regime_rule(info["regime"]).enabled_strategies)
+                    from app.services.trading.strategy_orchestrator import regime_permits_trading
+                    info["regime_allows_trading"] = regime_permits_trading(info["regime"])
+            info["regime_gating"] = _params().regime_gating
             extra["in_cooldown"] = bool(strategy_orchestrator.is_in_cooldown(u))
         except Exception as exc:
             _probe_failed(f"REGIME_PROBE_{u}", exc)
         if db_available:
             try:
                 async with AsyncSessionLocal() as db:
-                    snap_date = (await db.execute(
-                        select(MarketDailySnapshot.date)
-                        .where(MarketDailySnapshot.underlying == u, MarketDailySnapshot.date < now_ist.date())
-                        .order_by(desc(MarketDailySnapshot.date)).limit(1)
-                    )).scalar()
+                    from app.services.market_data.prev_session import prev_session_snapshot
+                    prev_snap = await prev_session_snapshot(db, u, now_ist.date())
+                    snap_date = prev_snap.date if prev_snap else None
                     extra["prev_day_snapshot"] = snap_date.isoformat() if snap_date else None
                     info["prev_day_snapshot"] = extra["prev_day_snapshot"]
 

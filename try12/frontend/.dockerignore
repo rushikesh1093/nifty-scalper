@@ -1,0 +1,7 @@
+# Build inside the image from package.json: never copy a host (Windows) install
+# or build output over the Linux one.
+node_modules
+.next
+npm-debug.log*
+.env*.local
+.git

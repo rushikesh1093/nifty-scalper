@@ -27,7 +27,7 @@ from tests.helpers import (
 )
 
 
-def _seed_perf(Session, strategy="VWAP_PULLBACK", **cols):
+def _seed_perf(Session, strategy="VWAP_EMA_PULLBACK", **cols):
     async def _go():
         async with Session() as db:
             db.add(StrategyPerf(strategy_name=strategy, run_id="PAPER", **cols))
@@ -35,12 +35,24 @@ def _seed_perf(Session, strategy="VWAP_PULLBACK", **cols):
     run(_go())
 
 
-def _decide(Session, strategy="VWAP_PULLBACK") -> FractionDecision:
+def _decide(Session, strategy="VWAP_EMA_PULLBACK") -> FractionDecision:
     async def _go():
         async with Session() as db:
             return await fraction_decision(db, strategy)
     return run(_go())
 
+
+
+@pytest.fixture(autouse=True)
+def _kelly_window_of_30(monkeypatch):
+    """These tests are about the Kelly arithmetic and guards, written for a
+    30-trade window; live now waits for 100 decided trades
+    (test_quant_fixes.test_kelly_waits_for_100_decided_trades)."""
+    import dataclasses
+    from app.services.trading import risk_gate
+    real = risk_gate.params
+    monkeypatch.setattr(risk_gate, "params",
+                        lambda: dataclasses.replace(real(), kelly_min_trades=30))
 
 # ── the corrected b, against the legacy mean-R formula (R7.9) ────────────────
 
@@ -147,7 +159,7 @@ def test_no_edge_skips_the_trade_end_to_end(runtime_ctx, sqlite_db, monkeypatch)
 
 # ── which trades feed the Kelly sample ───────────────────────────────────────
 
-def _outcome(net, r, source="ENTRY", risk=30.0, pid=1, strategy="VWAP_PULLBACK"):
+def _outcome(net, r, source="ENTRY", risk=30.0, pid=1, strategy="VWAP_EMA_PULLBACK"):
     p = TradingParams()
     pos = SimpleNamespace(
         id=pid, strategy_name=strategy, underlying="NIFTY", entry_regime=None,
@@ -169,7 +181,7 @@ def test_flats_backfill_and_breakeven_exits_are_excluded_from_decided_r(runtime_
     async def _apply():
         async with sqlite_db() as db:
             for o in outcomes:
-                await mode_manager.update_strategy_perf(db, "VWAP_PULLBACK", o)
+                await mode_manager.update_strategy_perf(db, "VWAP_EMA_PULLBACK", o)
             await db.commit()
             from sqlalchemy import select
             return (await db.execute(select(StrategyPerf))).scalar_one()
@@ -183,23 +195,25 @@ def test_flats_backfill_and_breakeven_exits_are_excluded_from_decided_r(runtime_
     assert (perf.winning_trades, perf.losing_trades, perf.flat_trades) == (2, 1, 1)
 
 
-def test_one_hundred_trades_across_twelve_strategies_stay_on_the_fixed_fraction(runtime_ctx,
+def test_a_first_validation_window_across_the_strategies_stays_on_the_fixed_fraction(runtime_ctx,
                                                                                 sqlite_db):
-    """~8 trades per strategy is far below kelly_min_trades=30: Kelly is inert for the
-    whole first validation window, and the counts say so."""
+    """87 trades across the three strategies is 29 each, one short of
+    kelly_min_trades=30: Kelly is inert for the whole first validation window,
+    and the counts say so."""
     counts = {"FIXED_FRACTION": 0, "KELLY": 0}
 
-    async def _run_100():
+    async def _run_window():
         async with sqlite_db() as db:
-            for i in range(100):
-                name = ALL_STRATEGY_NAMES[i % 12]
+            n = len(ALL_STRATEGY_NAMES)
+            for i in range(29 * n):
+                name = ALL_STRATEGY_NAMES[i % n]
                 counts[(await fraction_decision(db, name)).method] += 1
                 await mode_manager.update_strategy_perf(
                     db, name, _outcome(+300.0 if i % 3 else -300.0, 1.0 if i % 3 else -1.0,
                                        pid=i + 1, strategy=name))
                 await db.commit()
-    run(_run_100())
-    assert counts == {"FIXED_FRACTION": 100, "KELLY": 0}
+    run(_run_window())
+    assert counts == {"FIXED_FRACTION": 29 * len(ALL_STRATEGY_NAMES), "KELLY": 0}
 
 
 # ── sizing arithmetic ────────────────────────────────────────────────────────

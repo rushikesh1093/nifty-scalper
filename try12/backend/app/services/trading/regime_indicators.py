@@ -206,6 +206,8 @@ def build_regime_indicators(
     candles: list[dict],
     indicators: dict,
     config,  # RegimeConfig — typed loosely to avoid circular import
+    history: Optional[list[dict]] = None,
+    atr_pct_lookback: int = 20,
 ) -> RegimeIndicators:
     """
     Assemble a ``RegimeIndicators`` instance from candle data and pre-computed
@@ -216,9 +218,15 @@ def build_regime_indicators(
     cross count.
 
     Args:
-        candles:    List of OHLCV dicts in chronological order (newest last).
+        candles:    Today's OHLCV dicts in chronological order (newest last).
         indicators: Dict produced by ``app.strategies.indicators.compute_all``.
         config:     ``RegimeConfig`` instance (provides thresholds if needed).
+        history:    Optional multi-day candles ending with today's. ADX and the
+                    ATR percentile are computed on it, so the regime is
+                    classifiable from the open instead of after ~34 candles;
+                    the VWAP cross count stays on today's session.
+        atr_pct_lookback: ATR values the percentile ranks against
+                    (TradingParams.regime_atr_pct_lookback; 20 = the original).
 
     Returns:
         Populated ``RegimeIndicators`` dataclass.
@@ -232,10 +240,11 @@ def build_regime_indicators(
             orb_high=None, orb_low=None, pdh=None, pdl=None,
         )
 
-    # Extract arrays from candles
-    highs = np.array([cd["high"] for cd in candles], dtype=np.float64)
-    lows = np.array([cd["low"] for cd in candles], dtype=np.float64)
-    closes = np.array([cd["close"] for cd in candles], dtype=np.float64)
+    # ADX / ATR percentile on the longest series available (warm-up)
+    trend_src = history if history and len(history) >= len(candles) else candles
+    highs = np.array([cd["high"] for cd in trend_src], dtype=np.float64)
+    lows = np.array([cd["low"] for cd in trend_src], dtype=np.float64)
+    closes = np.array([cd["close"] for cd in trend_src], dtype=np.float64)
 
     # Re-use pre-computed values from compute_all() where available
     atr_val: float = indicators.get("atr") or 0.0
@@ -250,7 +259,7 @@ def build_regime_indicators(
 
     # Compute regime-specific indicators
     adx_val = compute_adx(highs, lows, closes)
-    atr_pct = compute_atr_percentile(atr_val, candles)
+    atr_pct = compute_atr_percentile(atr_val, trend_src, period=atr_pct_lookback)
     vwap_crosses = compute_vwap_cross_count(candles, vwap_val)
 
     return RegimeIndicators(

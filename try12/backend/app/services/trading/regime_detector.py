@@ -33,6 +33,7 @@ from app.services.trading.regime_persistence import (
     regime_persistence as _persistence_singleton,
 )
 from app.services.trading.regime_rules import classify_regime
+from app.services.trading.regime_stabilizer import regime_stabilizer
 from app.services.trading.regime_config import RegimeConfig, reload_config_if_stale
 from app.runtime.context import ctx, now_utc
 
@@ -74,10 +75,6 @@ class RegimeDetector:
 
         # Tracks the last time we emitted a "regime unchanged" heartbeat log
         self._last_log_time: dict[str, datetime] = {}
-        # Require two consecutive observations before treating a new stable
-        # regime as a real flip. This filters one-bar indicator glitches.
-        self._candidate_regime: dict[str, str] = {}
-        self._candidate_streak: dict[str, int] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -88,6 +85,7 @@ class RegimeDetector:
         underlying: str,
         is_expiry_day: bool = False,
         db_session=None,
+        history: Optional[list[dict]] = None,
     ) -> RegimeState:
         """
         Classify the current market regime from candle data.
@@ -109,6 +107,7 @@ class RegimeDetector:
             underlying:    Instrument name, e.g. "NIFTY" or "BANKNIFTY".
             is_expiry_day: True when today is the weekly options expiry.
             db_session:    Optional async SQLAlchemy session for DB persistence.
+            history:       Optional multi-day candles (ADX / ATR-percentile warm-up).
 
         Returns:
             RegimeState — never raises.
@@ -118,10 +117,22 @@ class RegimeDetector:
             # (live: the TTL cache + loader; replay: the run's frozen config).
             config: RegimeConfig = ctx().regime_config.for_underlying(underlying)
 
+            # Expiry day is the no-trade EXPIRY_DAY regime unless trading on
+            # expiry is enabled; then the day is classified on its indicators.
+            from app.runtime.context import params as _params
+            classify_as_expiry = bool(is_expiry_day) and not _params().trade_on_expiry_day
+            # The run's cooldown knob (TradingParams: frozen per replay, overlaid
+            # live, exposed by the backtest launcher). 0 = no cooldown: a flip is
+            # adopted on the bar it is seen.
+            cooldown_n = _params().transition_cooldown_candles
+
             # Step 2: Build regime-specific indicators
             regime_indicators: RegimeIndicators = build_regime_indicators(
-                candles, indicators, config
+                candles, indicators, config, history=history,
+                atr_pct_lookback=_params().regime_atr_pct_lookback,
             )
+            # Passed only when on, so the default call is the original one.
+            classify_kw = {"range_bound": True} if _params().regime_range_bound else {}
 
             # Step 3: Previous states. After a restart the in-memory history is
             # empty, so rehydrate once from Redis; load_regime_history drops
@@ -129,11 +140,23 @@ class RegimeDetector:
             if underlying not in self._regime_history:
                 self._regime_history[underlying] = (
                     await self._persistence.load_regime_history(underlying)
-                )[-_history_len(config.TRANSITION_COOLDOWN_CANDLES):]
+                )[-_history_len(cooldown_n):]
             history: list[RegimeState] = list(self._regime_history[underlying])
             previous_regime: Optional[str] = (
                 history[-1].regime if history else None
             )
+
+            # The label as the classifier gives it, through the (switchable,
+            # default-off) stabiliser: cadence, hysteresis, ATR smoothing,
+            # breakout latch, confirmation.
+            def _stable_label():
+                from app.runtime.context import now_ist, trading_day
+                return regime_stabilizer.step(
+                    underlying=underlying, day=trading_day(), now_ist=now_ist(),
+                    indicators=regime_indicators, config=config, p=_params(),
+                    classify=lambda ind, cfg: classify_regime(
+                        ind, underlying, classify_as_expiry, previous_regime, cfg,
+                        **classify_kw))
 
             # Step 4: Determine if we are in (or should enter) a cooldown
             current_cooldown = (
@@ -154,31 +177,20 @@ class RegimeDetector:
                     )
                 else:
                     # Cooldown expired → classify normally
-                    regime = classify_regime(
-                        regime_indicators, underlying, is_expiry_day,
-                        previous_regime, config
-                    )
+                    regime, regime_indicators = _stable_label()
                     transition_cooldown_remaining = 0
             else:
                 # Classify candidate regime first
-                candidate_regime = classify_regime(
-                    regime_indicators, underlying, is_expiry_day,
-                    previous_regime, config
-                )
+                candidate_regime, regime_indicators = _stable_label()
 
-                # Confirm a candidate across two observations before allowing a
-                # transition. A single-bar indicator spike must not repeatedly
-                # lock the runner in REGIME_TRANSITION.
-                if self._candidate_regime.get(underlying) == candidate_regime:
-                    self._candidate_streak[underlying] = self._candidate_streak.get(underlying, 0) + 1
-                else:
-                    self._candidate_regime[underlying] = candidate_regime
-                    self._candidate_streak[underlying] = 1
-                transition_detected = (
-                    self._candidate_streak[underlying] >= 2
-                    and self.check_regime_transition(
-                        candidate_regime, history, config.REGIME_TRANSITION_WINDOW
-                    )
+                # A flip from the last stable regime starts the cooldown on the
+                # bar it is seen (Req 9.1). 763d894 required two observations
+                # first, but the first one was adopted as the regime, so the
+                # second saw no change and the cooldown never fired (audit D3).
+                # A one-bar glitch costs one cooldown and cannot re-arm it:
+                # check_regime_transition ignores REGIME_TRANSITION entries.
+                transition_detected = cooldown_n > 0 and self.check_regime_transition(
+                    candidate_regime, history, config.REGIME_TRANSITION_WINDOW
                 )
 
                 if transition_detected and candidate_regime not in (
@@ -186,12 +198,12 @@ class RegimeDetector:
                 ):
                     # Enter transition cooldown (Req 9.1, 9.5)
                     regime = "REGIME_TRANSITION"
-                    transition_cooldown_remaining = config.TRANSITION_COOLDOWN_CANDLES
+                    transition_cooldown_remaining = cooldown_n
                     logger.info(
                         "[RegimeDetector] underlying=%s REGIME_TRANSITION detected "
                         "(was %s → candidate %s); cooldown=%d candles",
                         underlying, previous_regime, candidate_regime,
-                        config.TRANSITION_COOLDOWN_CANDLES,
+                        cooldown_n,
                     )
                 else:
                     regime = candidate_regime
@@ -211,7 +223,7 @@ class RegimeDetector:
             # Step 6: Update in-memory history. It must outlast a full cooldown
             # so at least two stable entries survive it (§5, R2 finding 9).
             history.append(state)
-            history = history[-_history_len(config.TRANSITION_COOLDOWN_CANDLES):]
+            history = history[-_history_len(cooldown_n):]
             self._regime_history[underlying] = history
 
             # Step 7: Logging (Req 15.1, 15.6)

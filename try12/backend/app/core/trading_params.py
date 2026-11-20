@@ -34,11 +34,15 @@ FORBIDDEN_KEYS: dict[str, str] = {
 
 TRADE_AMOUNT_TOLERANCE = 500.0     # ₹ — display cache vs fixed_fraction × capital
 MAX_HOLD_MINUTES_MAX = 374         # one session is 375 one-minute candles
-MAX_FIXED_FRACTION_PCT = 40.0      # % of capital one trade may be sized on (the only bound)
+REGIME_ATR_PCT_LOOKBACK_MAX = 486  # 500 cached candles - 14 for the ATR(14) warm-up
+MAX_FIXED_FRACTION_PCT = 100.0     # % of capital one trade may be sized on (the only bound):
+                                   # up to all of it. Exposure, daily-loss and lot caps still apply.
 
 
 def _default_max_hold() -> dict[str, int]:
-    return {"VWAP_REVERSAL": 25, "RSI_VWAP": 25, "VWAP_PULLBACK": 25, "DEFAULT": 45}
+    # Generic premium-ladder positions only; the three strategies carry their
+    # own time stops in the exit plan (ORB 45 min, Supertrend 10 min).
+    return {"DEFAULT": 45}
 
 
 def _default_dte_bands() -> dict[str, tuple[tuple[int, int], ...]]:
@@ -62,6 +66,31 @@ class TradingParams:
     # ── capital and caps (trading_config) ────────────────────────────────────
     capital: float = 200_000.0
     fixed_fraction_pct: float = 10.0
+    # Most one trade may LOSE if its premium stop is hit, as % of capital:
+    # lots <= floor(capital x pct / (initial premium risk x lot size)).
+    max_risk_per_trade_pct: float = 12.5
+    # No NEW entries inside these IST windows ("HH:MM", "HH:MM"); exits still run.
+    entry_blackout_windows: tuple = (("11:30", "12:15"),)
+    # Strikes allowed, counted from the ATM strike: 0 = ATM, 1 = one strike OTM.
+    # Anything further OTM, or in the money, is rejected by the selector.
+    max_otm_strikes: int = 1
+    # Exit-plan positions: the premium stop is placed where the plan's SPOT stop
+    # should land — plan_stop_buffer × |delta| × spot distance below the fill —
+    # never looser than the strategy's sl_pct and never closer than
+    # plan_min_stop_pct of premium. Lots are sized from that risk.
+    plan_stop_buffer: float = 1.3
+    plan_min_stop_pct: float = 0.05
+    # Strategies that trade the same move: at most one position a day per group.
+    exclusive_strategy_groups: tuple = (("ORB_BREAKOUT", "FIRST_CANDLE_BREAKOUT"),)
+    # At most this many OPEN positions in one direction (CE or PE) on an
+    # underlying: two strategies agreeing on a move are one bet, not two
+    # (audit D6: 2 x the per-trade risk on one move exceeded the daily limit).
+    max_open_per_direction: int = 1
+    # Expiry day: False = the EXPIRY_DAY no-trade regime all day (the old rule).
+    # True = classify the day like any other and trade when that regime allows;
+    # the selector still never buys the expiring series (DTE 0-1: it takes the
+    # next weekly), and strategies with sl_pct < 15% stay skipped that day.
+    trade_on_expiry_day: bool = True
     trade_amount: Optional[float] = None          # demoted display cache (§9.5)
     open_exposure_cap_pct: float = 40.0
     max_open_positions: int = 3
@@ -78,12 +107,80 @@ class TradingParams:
     # ── Kelly (trading_config) ───────────────────────────────────────────────
     kelly_multiplier: float = 0.25
     kelly_fraction_cap_pct: float = 15.0
-    kelly_min_trades: int = 30
+    # Kelly needs a real sample before it may resize anything: below this many
+    # decided trades a strategy stays on the fixed fraction.
+    kelly_min_trades: int = 100
 
     # ── caches / regime ──────────────────────────────────────────────────────
+    # False (since 31 Oct 2026): the regime runs in SHADOW: it is detected,
+    # logged and persisted every candle, but its map no longer enables or
+    # disables strategies, restricts directions or scales size; the user's
+    # strategy flags decide. A detector failure (DETECTOR_ERROR / no state)
+    # still blocks, as broken data must. Reason: on three years of NIFTY the
+    # map did not separate better from worse trades for any strategy (it
+    # blocked the better 09:15-breakout trades in every year) and its
+    # volatility axis did not predict the next 30 minutes' range
+    # (docs/REGIME_REDESIGN.md). True restores the regime_rules map.
+    regime_gating: bool = False
+    # Evidence gates in the risk gate (docs/EVIDENCE_GATES.md), since 31 Oct 2026.
+    # Strategies refused outright: SUPERTREND_EMA lost after costs in every
+    # variant, every exit engine and every year of 2023-26 (-0.147 R a trade
+    # over 2,450 trades, CI -0.176..-0.118). () = none.
+    evidence_blocked_strategies: tuple = ("SUPERTREND_EMA",)
+    # True: also refuse a strategy whose own closed paper trades in this run
+    # (since its RULE_SINCE date) are DISABLED_FOR_RESEARCH by the research gates
+    # (negative on >= 100 trades, or a CI wholly below 0). Checked once a day.
+    evidence_auto_block: bool = True
+    # Strategies whose entries are skipped while regime v2 reads LOW volatility.
+    # Only EMA_RSI_PULLBACK_15M improved in every year (-0.31 -> -0.29,
+    # -0.05 -> +0.07, -0.08 -> -0.08 R); the others got worse in some year.
+    low_vol_skip_strategies: tuple = ("EMA_RSI_PULLBACK_15M",)
+    # Puts only (call signals refused, recorded as DIRECTION_POLICY). Bought calls
+    # lost in 14 of 15 strategy-years 2023-26 (IV falls as NIFTY rallies); puts
+    # did better in most, and every year for PIVOT_BOUNCE. ORB calls: -0.17 /
+    # -0.20 / -0.21 R. A forward hypothesis (found in the same data): judge it
+    # on paper evidence. CPR_VWAP: puts +0.10 / +0.08 / +0.25 R by year, calls
+    # negative every year (NEW_STRATEGY_RESULTS.md round 2). () = both directions.
+    pe_only_strategies: tuple = ("ORB_BREAKOUT", "PIVOT_BOUNCE", "FIRST_CANDLE_BREAKOUT",
+                                  "CPR_VWAP")
+    # Option-buying trades a day, on top of the operator's max_trades_per_day
+    # (the lower applies). Fewer, larger trades: the fixed ~2.6-pt round-trip
+    # cost is paid per trade. 0 = no extra cap.
+    max_option_buys_per_day: int = 2
     cooldown_mirror_ttl_s: int = 120
     params_cache_ttl_s: int = 30
-    transition_cooldown_candles: int = 3
+    # Candles blocked as REGIME_TRANSITION after a regime flip; 0 = off.
+    # Off by default (23 Oct): the per-minute regime label flips ~52 times a
+    # day, so a 3-candle cooldown blocked 47% of the session and cut the
+    # 31-day backtest from 47 to 27 trades with no measurable edge removed.
+    transition_cooldown_candles: int = 0
+    # Regime-label stabiliser (app/services/trading/regime_stabilizer.py); all
+    # off by default, which leaves the label exactly as the classifier gives it.
+    # Tested 23 Oct (tune 7 Sep-2 Oct, held out 5-22 Oct): the pick (5-min,
+    # hysteresis, ATR EMA 6, 15-min breakout hold, confirm 3) cut label flips
+    # 125 -> 7.5/day, but held-out net fell Rs18,280 -> 9,377 (+11.2R -> +7.1R):
+    # a steadier label lets more Supertrend trades through and they lose. Off.
+    regime_eval_minutes: int = 1             # 5 = classify on 5-minute closes
+    # ADX 18/22 and VWAP band hysteresis: a trend holds down to ADX 18, a range
+    # (RANGE_NORMAL_VOL or RANGE_BOUND) up to ADX 22, so the dead zone keeps
+    # the previous label instead of flipping to UNCLASSIFIED.
+    regime_hysteresis: bool = False
+    regime_vwap_exit_pct: float = 0.35       # compression holds out to this % of VWAP
+    regime_atr_smooth: int = 0               # EMA span (evaluations) of the ATR %ile
+    regime_breakout_hold_minutes: int = 0    # keep a breakout label this long...
+    regime_breakout_fail_pts: float = 10.0   # ...unless price is back this far inside
+    regime_confirm_evals: int = 1            # evaluations a new label must persist
+    # ATR values the ATR percentile ranks against (regime_indicators). 375 = one
+    # session. The runner reads the last 500 one-minute candles and ATR(14)
+    # needs 14 of them, so 486 is the most. 486 since 31 Oct 2026: against the
+    # last 20 minutes (the old 20) the percentile had no relation to the next
+    # 30 minutes' range (Spearman -0.02 / -0.01 / +0.01 by year, 2023-26); against
+    # 486 it does every year (+0.35 / +0.37 / +0.24; HIGH ~68 pts vs LOW ~44 pts).
+    regime_atr_pct_lookback: int = 486
+    # True: a minute the classifier leaves UNCLASSIFIED with ADX below
+    # ADX_RANGE_THRESHOLD and fewer VWAP crosses than the chop threshold is
+    # RANGE_BOUND (the range strategies), whatever the ATR percentile.
+    regime_range_bound: bool = False
 
     # ── entry gate ───────────────────────────────────────────────────────────
     min_rr: float = 2.0
@@ -116,6 +213,9 @@ class TradingParams:
     quote_max_spread_pct: float = 5.0
     allow_ltp_only_fill: bool = False
     brokerage_per_lot_per_leg: float = 20.0
+    # Discount brokers (AngelOne) charge a flat amount per executed ORDER, not per
+    # lot: with this on, brokerage_per_lot_per_leg is that flat per-order amount.
+    brokerage_flat_per_order: bool = True
     stt_sell_pct: float = 0.15
     exchange_txn_pct: float = 0.03553
     sebi_per_crore: float = 10.0
@@ -186,6 +286,10 @@ class TradingParams:
         if not (0 < self.max_daily_loss_pct <= 100):
             v.append(f"max_daily_loss_pct={self.max_daily_loss_pct} must be in (0, 100]")
 
+        if self.max_open_per_direction < 1:
+            v.append(f"max_open_per_direction={self.max_open_per_direction} must be >= 1")
+        if not (0 < self.max_risk_per_trade_pct <= 100):
+            v.append(f"max_risk_per_trade_pct={self.max_risk_per_trade_pct} must be in (0, 100]")
         if not (0 < self.fixed_fraction_pct <= MAX_FIXED_FRACTION_PCT):
             v.append(f"fixed_fraction_pct={self.fixed_fraction_pct} must be in "
                      f"(0, {MAX_FIXED_FRACTION_PCT:g}]")
@@ -211,16 +315,31 @@ class TradingParams:
             )
 
         c = self.transition_cooldown_candles
-        if not (1 <= c <= TRANSITION_COOLDOWN_CANDLES_MAX):
+        if not (0 <= c <= TRANSITION_COOLDOWN_CANDLES_MAX):
             v.append(
                 f"transition_cooldown_candles={c} must be in "
-                f"[1, {TRANSITION_COOLDOWN_CANDLES_MAX}]"
+                f"[0, {TRANSITION_COOLDOWN_CANDLES_MAX}] (0 = off)"
             )
-        elif not (c < _history_len(c) - 1):
+        elif c and not (c < _history_len(c) - 1):
             v.append(
                 f"transition_cooldown_candles={c} must be < history length "
                 f"{_history_len(c)} - 1"
             )
+
+        if not (1 <= self.regime_eval_minutes <= 15 and 60 % self.regime_eval_minutes == 0):
+            v.append(f"regime_eval_minutes={self.regime_eval_minutes} must divide 60 "
+                     f"and be in [1, 15]")
+        if self.regime_vwap_exit_pct <= 0:
+            v.append(f"regime_vwap_exit_pct={self.regime_vwap_exit_pct} must be > 0")
+        for key in ("regime_atr_smooth", "regime_breakout_hold_minutes",
+                    "regime_breakout_fail_pts"):
+            if getattr(self, key) < 0:
+                v.append(f"{key}={getattr(self, key)} must be >= 0")
+        if self.regime_confirm_evals < 1:
+            v.append(f"regime_confirm_evals={self.regime_confirm_evals} must be >= 1")
+        if not (5 <= self.regime_atr_pct_lookback <= REGIME_ATR_PCT_LOOKBACK_MAX):
+            v.append(f"regime_atr_pct_lookback={self.regime_atr_pct_lookback} must be in "
+                     f"[5, {REGIME_ATR_PCT_LOOKBACK_MAX}]")
 
         allowed = set(ALL_STRATEGY_NAMES) | {"DEFAULT"}
         mh = self.max_hold_minutes
@@ -229,6 +348,12 @@ class TradingParams:
         unknown = sorted(set(mh) - allowed)
         if unknown:
             v.append(f"max_hold_minutes has unknown strategy keys {unknown}")
+        if not (0 <= self.max_option_buys_per_day <= 50):
+            v.append(f"max_option_buys_per_day={self.max_option_buys_per_day} must be in [0, 50]")
+        for key in ("evidence_blocked_strategies", "low_vol_skip_strategies", "pe_only_strategies"):
+            bad = sorted(set(getattr(self, key)) - set(ALL_STRATEGY_NAMES))
+            if bad:
+                v.append(f"{key} has unknown strategies {bad}")
         for k, val in mh.items():
             if not (1 <= val <= MAX_HOLD_MINUTES_MAX):
                 v.append(f"max_hold_minutes[{k!r}]={val} must be in [1, {MAX_HOLD_MINUTES_MAX}]")

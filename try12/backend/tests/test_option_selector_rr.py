@@ -1,3 +1,4 @@
+import dataclasses
 """Bug 10 (design §10): a real, un-stretched 1:2 R:R gate; no -1 sentinel passes; one
 quote read feeds the filter and the fill; an affordability ceiling; per-underlying
 DTE bands; and one source for the R:R floor."""
@@ -182,7 +183,10 @@ def _chain(ctx, *, days=7, strikes=(22600, 22650, 22700)):
     return [option_row(k, ctx.clock.trading_day() + timedelta(days=days)) for k in strikes]
 
 
-KW = dict(sl_pct=0.15, target_pct=0.30, params=P, base_amount=20_000.0, regime_multiplier=1.0)
+# The chain below spans ATM-to-2-OTM; these tests are about the other filters, so
+# the strike limit (default ATM or 1 OTM) is widened to 2 here.
+KW = dict(sl_pct=0.15, target_pct=0.30, params=dataclasses.replace(P, max_otm_strikes=2),
+          base_amount=20_000.0, regime_multiplier=1.0)
 
 
 def _tick(redis, token, ltp, **kw):

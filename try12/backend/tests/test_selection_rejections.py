@@ -22,7 +22,8 @@ from app.strategies.base import Direction
 from tests.helpers import option_row, run, seed_config, with_instruments
 
 SPOT = 22600.0
-KW = dict(sl_pct=0.15, target_pct=0.30, params=TradingParams(), base_amount=20_000.0,
+KW = dict(sl_pct=0.15, target_pct=0.30, params=TradingParams(max_otm_strikes=20),  # wide ladder
+          base_amount=20_000.0,
           regime_multiplier=1.0)
 GOOD = dict(ltp=100.0, bid=99.5, ask=100.5, oi=200_000, volume=5_000)
 BAD = {                                   # strike -> the one field that fails
@@ -143,17 +144,17 @@ def _seed_rows(Session, rc):
                     code="DAILY_LOSS_HALT", underlying="NIFTY", reason="x",
                     context={"rejections": {"SPREAD_TOO_WIDE": 50}}))
                 # the SKIPPED twin of the NO_OPTION_AVAILABLE row: same tally, not re-counted
-                db.add(StrategySignal(strategy_name="ORB_VWAP", underlying="NIFTY",
+                db.add(StrategySignal(strategy_name="ORB_BREAKOUT", underlying="NIFTY",
                                       direction="BUY", spot_price=SPOT, signal_time=at,
                                       run_id=run_id,
                                       selection_rejections={"SPREAD_TOO_WIDE": 2,
                                                             "LIQUIDITY_TOO_LOW": 1}))
                 # a signal whose option WAS selected: the other strikes' rejections
-                db.add(StrategySignal(strategy_name="ORB_VWAP", underlying="NIFTY",
+                db.add(StrategySignal(strategy_name="ORB_BREAKOUT", underlying="NIFTY",
                                       direction="BUY", spot_price=SPOT, signal_time=at,
                                       run_id=run_id, suggested_token="NIFTY-CE-22600",
                                       selection_rejections={"VOLUME_INSUFFICIENT": 4}))
-                db.add(StrategySignal(strategy_name="ORB_VWAP", underlying="BANKNIFTY",
+                db.add(StrategySignal(strategy_name="ORB_BREAKOUT", underlying="BANKNIFTY",
                                       direction="BUY", spot_price=48000.0, signal_time=at,
                                       run_id=run_id, suggested_token="BN-1",
                                       selection_rejections={"QUOTE_STALE": 7}))

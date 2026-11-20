@@ -20,6 +20,9 @@ os.environ.update({
     "ANGEL_CLIENT_ID": "",
     "ANGEL_PASSWORD": "",
     "ANGEL_TOTP_SECRET": "",
+    "LOG_DIR": "",                  # no log files from the test run
+    "ALERT_TELEGRAM_BOT_TOKEN": "",
+    "ALERT_TELEGRAM_CHAT_ID": "",
 })
 
 import pytest  # noqa: E402
@@ -190,3 +193,54 @@ def fake_redis(monkeypatch):
                  "get_option_chain", "health"):
         monkeypatch.setattr(redis_cache, name, getattr(fake, name))
     return fake
+
+
+def pytest_report_header(config):
+    """Windows' 260-character path limit breaks the migration/config tests in a
+    deep checkout (they fail with FileNotFoundError). Say so up front."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    if os.name == "nt" and len(str(root)) > 110:
+        return (f"WARNING: backend path is {len(str(root))} chars; Windows' 260-char limit "
+                "breaks the migration tests here. Run from a short path "
+                "(e.g. C:/Users/<you>/Downloads/try12fin).")
+
+
+@pytest.fixture
+def v1_regime(monkeypatch):
+    """The regime as it was before 31 Oct 2026: the regime_rules map gates
+    strategies, directions and size (regime_gating=True) and the ATR percentile
+    ranks against 20 values. For the tests that specify that map; an explicit
+    regime_atr_pct_lookback in a test's own params is left alone."""
+    import dataclasses
+    import app.runtime.context as rc
+    import app.services.trading.strategy_orchestrator as so
+    import app.services.trading.strategy_runner as sr
+    from app.core.trading_params import TradingParams
+
+    real = rc.params
+    default_lookback = TradingParams().regime_atr_pct_lookback
+
+    def v1_params():
+        p = real()
+        lb = 20 if p.regime_atr_pct_lookback == default_lookback else p.regime_atr_pct_lookback
+        return dataclasses.replace(p, regime_gating=True, regime_atr_pct_lookback=lb)
+    for mod in (rc, so, sr):
+        monkeypatch.setattr(mod, "params", v1_params)
+
+
+@pytest.fixture
+def no_evidence_gates(monkeypatch):
+    """The risk gate without the evidence gates (research block, paper auto-block,
+    low-volatility skip, puts-only, the daily option-buy cap): for tests of other gates that happen to use a strategy
+    the evidence blocks. The gates themselves are tested in test_evidence_gates."""
+    import dataclasses
+    import app.services.trading.risk_gate as rg
+
+    real = rg.params
+
+    def no_gates():
+        return dataclasses.replace(real(), evidence_blocked_strategies=(),
+                                   evidence_auto_block=False, low_vol_skip_strategies=(),
+                                   pe_only_strategies=(), max_option_buys_per_day=0)
+    monkeypatch.setattr(rg, "params", no_gates)

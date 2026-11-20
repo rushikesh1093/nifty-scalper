@@ -1,0 +1,206 @@
+"""
+Per-position exit plans (spot-based exits). Pure, no I/O.
+
+A strategy attaches an exit plan to its signal; paper_engine stores it on the
+position (``paper_positions.exit_plan``) and evaluates it every monitor pass,
+in place of the generic premium ladder / partial / timeout. The premium stop
+(``sl_pct`` of the fill) stays live alongside it — "whichever hits first".
+
+Levels are on the UNDERLYING spot. ``side`` is the spot direction of the
+trade: "BUY" for a CE (profits when spot rises), "SELL" for a PE.
+
+Fields
+------
+spot_entry          spot at the signal (entry is the next bar's open ≈ this close)
+spot_stop           exit when spot trades at/through it (moves to entry on T1 / BE)
+spot_target         full exit when spot reaches it (ORB)
+spot_t1             book half and move the stop to entry (pullback)
+breakeven_trigger   move the stop to entry, nothing booked (ORB at 50% of target)
+premium_target_pts  full exit when the option gains this many rupees (Supertrend)
+time_stop_minutes   full exit after this hold time, whatever the price
+t1_done / breakeven_done   one-shot flags, written back by paper_engine
+trail_atr / trail_extreme  ATR chandelier trail: the stop follows the best
+                    price since entry minus 2 × trail_atr (chandelier_update)
+
+Candle-close exits (EMA 9 trail, VWAP hard exit, Supertrend flip) need bars,
+so they live on the strategy (``BaseStrategy.candle_exit``) and are run by the
+strategy runner on every candle close.
+"""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, fields
+from typing import Optional
+
+# Exit reasons (paper_positions.exit_reason is String(20); "_STALE" may be appended)
+SPOT_SL         = "SPOT_SL"
+TARGET          = "TARGET"
+TIME_EXIT       = "TIME_EXIT"
+VWAP_EXIT       = "VWAP_EXIT"
+EMA_TRAIL       = "EMA9_TRAIL"
+ST_FLIP         = "ST_FLIP"
+OPPOSITE_SIGNAL = "OPPOSITE_SIGNAL"
+SESSION_EXIT    = "SESSION_EXIT"         # the strategy's own square-off time
+
+# The fill-table reason for a spot-plan TARGET (recorded as TARGET): a market
+# exit at the bid, unlike the premium TARGET limit (fills.exit_fill).
+SPOT_TARGET_FILL = "SPOT_TARGET"
+
+# One-shot (non-closing) actions
+T1_PARTIAL      = "T1_PARTIAL"
+BREAKEVEN       = "BREAKEVEN"
+
+# Reasons that count as "the trade was stopped out" (ORB reverse-trade rule)
+STOP_REASONS = frozenset({"SL", "SL_STALE", SPOT_SL, SPOT_SL + "_STALE"})
+
+
+@dataclass
+class ExitPlan:
+    strategy:            str
+    side:                str                    # "BUY" (CE) / "SELL" (PE)
+    spot_entry:          float
+    spot_stop:           float
+    spot_target:         Optional[float] = None
+    spot_t1:             Optional[float] = None
+    breakeven_trigger:   Optional[float] = None
+    premium_target_pts:  Optional[float] = None
+    time_stop_minutes:   Optional[float] = None
+    t1_done:             bool = False
+    breakeven_done:      bool = False
+    # ISO start of the last bar the strategy's bar exits looked at (set to the
+    # trigger bar at entry). Every completed bar after it is checked once, so a
+    # runner cycle that skips a minute cannot skip a bar exit.
+    last_bar_start:      Optional[str] = None
+    # The strategy's own square-off, IST "HH:MM" (earlier than the session's).
+    exit_at:             Optional[str] = None
+    # ATR chandelier trail (FIRST_CANDLE_BREAKOUT): the 5-min ATR(14) at the
+    # signal and the best spot price since entry (chandelier_update). None = off.
+    trail_atr:           Optional[float] = None
+    trail_extreme:       Optional[float] = None
+    # ATR chandelier trail (FIRST_CANDLE_BREAKOUT): the 5-min ATR(14) at the
+    # signal and the best spot price seen since entry. None = no chandelier.
+    trail_atr:           Optional[float] = None
+    trail_extreme:       Optional[float] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> Optional["ExitPlan"]:
+        if not d:
+            return None
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+    @property
+    def sign(self) -> int:
+        return 1 if self.side == "BUY" else -1
+
+    def validate(self) -> list[str]:
+        """Violations; empty means usable. The stop must be on the losing side
+        of entry and every target on the winning side."""
+        out: list[str] = []
+        s = self.sign
+        if self.side not in ("BUY", "SELL"):
+            out.append(f"side={self.side!r} must be BUY or SELL")
+        if not (s * (self.spot_entry - self.spot_stop) > 0):
+            out.append(f"spot_stop={self.spot_stop} is not beyond entry={self.spot_entry} "
+                       f"against a {self.side}")
+        for name in ("spot_target", "spot_t1", "breakeven_trigger"):
+            lvl = getattr(self, name)
+            if lvl is not None and not (s * (lvl - self.spot_entry) > 0):
+                out.append(f"{name}={lvl} is not beyond entry={self.spot_entry} "
+                           f"in favour of a {self.side}")
+        if self.premium_target_pts is not None and self.premium_target_pts <= 0:
+            out.append(f"premium_target_pts={self.premium_target_pts} must be > 0")
+        if self.time_stop_minutes is not None and self.time_stop_minutes <= 0:
+            out.append(f"time_stop_minutes={self.time_stop_minutes} must be > 0")
+        return out
+
+
+def reached(side: str, price: float, level: Optional[float]) -> bool:
+    """Price is at/through *level* in the trade's favour."""
+    if level is None:
+        return False
+    return price >= level if side == "BUY" else price <= level
+
+
+def breached(side: str, price: float, level: Optional[float]) -> bool:
+    """Price is at/through *level* against the trade."""
+    if level is None:
+        return False
+    return price <= level if side == "BUY" else price >= level
+
+
+def tick_action(plan: ExitPlan, spot: Optional[float],
+                hold_minutes: Optional[float], now_t=None) -> Optional[str]:
+    """The first spot/time action due on this tick, in priority order:
+    SPOT_SL → TARGET (spot) → T1_PARTIAL → BREAKEVEN → TIME_EXIT → SESSION_EXIT.
+    A missing spot price skips the spot checks (the premium stop still runs).
+    *now_t* is the IST wall time (naive) for the plan's exit_at."""
+    if spot is not None and spot > 0:
+        if breached(plan.side, spot, plan.spot_stop):
+            return SPOT_SL
+        if reached(plan.side, spot, plan.spot_target):
+            return TARGET
+        if not plan.t1_done and reached(plan.side, spot, plan.spot_t1):
+            return T1_PARTIAL
+        if not plan.breakeven_done and reached(plan.side, spot, plan.breakeven_trigger):
+            return BREAKEVEN
+    if (plan.time_stop_minutes is not None and hold_minutes is not None
+            and hold_minutes >= plan.time_stop_minutes):
+        return TIME_EXIT
+    if plan.exit_at and now_t is not None:
+        hh, mm = (int(x) for x in plan.exit_at.split(":")[:2])
+        if (now_t.hour, now_t.minute) >= (hh, mm):
+            return SESSION_EXIT
+    return None
+
+
+def move_stop_to_entry(plan: ExitPlan) -> ExitPlan:
+    """Stop to the spot entry, never loosening it."""
+    if breached(plan.side, plan.spot_entry, plan.spot_stop):
+        return plan          # stop is already past entry in our favour
+    plan.spot_stop = plan.spot_entry
+    return plan
+
+
+CHANDELIER_ATR_MULT = 2.0
+
+
+def chandelier_update(plan: ExitPlan, high: float, low: float) -> bool:
+    """One completed candle for an ATR-chandelier plan: the best price since
+    entry moves with the candle, and the stop trails CHANDELIER_ATR_MULT ×
+    trail_atr behind it, only ever tightening. True if the stop moved."""
+    if not plan.trail_atr:
+        return False
+    best = high if plan.side == "BUY" else low
+    if plan.trail_extreme is None or reached(plan.side, best, plan.trail_extreme):
+        plan.trail_extreme = best
+    level = round(plan.trail_extreme - plan.sign * CHANDELIER_ATR_MULT * plan.trail_atr, 2)
+    return tighten_stop(plan, level)
+
+
+CHANDELIER_ATR_MULT = 2.0
+
+
+def chandelier_update(plan: ExitPlan, high: float, low: float) -> bool:
+    """One completed candle for an ATR-chandelier plan: the best price since
+    entry follows the candle, and the stop trails CHANDELIER_ATR_MULT ×
+    trail_atr behind it, only ever tightening. True if the stop moved."""
+    if not plan.trail_atr:
+        return False
+    best = high if plan.side == "BUY" else low
+    if plan.trail_extreme is None or reached(plan.side, best, plan.trail_extreme):
+        plan.trail_extreme = best
+    level = round(plan.trail_extreme - plan.sign * CHANDELIER_ATR_MULT * plan.trail_atr, 2)
+    return tighten_stop(plan, level)
+
+
+def tighten_stop(plan: ExitPlan, level: Optional[float]) -> bool:
+    """Trail the spot stop to *level* only if that tightens it. True if moved."""
+    if level is None:
+        return False
+    tighter = level > plan.spot_stop if plan.side == "BUY" else level < plan.spot_stop
+    if tighter:
+        plan.spot_stop = level
+    return tighter

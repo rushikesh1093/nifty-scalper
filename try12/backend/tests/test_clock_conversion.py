@@ -86,9 +86,9 @@ def test_tick_age_has_no_now_parameter():
 
 def test_signal_time_and_aggregator_use_ctx_clock(runtime_ctx):
     from app.strategies.base import Direction, SignalAggregator
-    from app.strategies.strategies import ORBVWAPStrategy
+    from app.strategies.strategies import ORBBreakoutStrategy
 
-    sig = ORBVWAPStrategy("NIFTY")._make_signal(Direction.BUY, 22600.0, {"vwap": 22590.0})
+    sig = ORBBreakoutStrategy("NIFTY")._make_signal(Direction.BUY, 22600.0, {"vwap": 22590.0})
     assert sig.signal_time == runtime_ctx.clock.now_utc()
 
     agg = SignalAggregator()

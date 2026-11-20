@@ -29,9 +29,15 @@ class CandleBuilder:
     """
     In-memory rolling 1-minute OHLC candle builder per token.
     Emits a completed candle dict when the minute rolls over.
+
+    Volume: the feed's ``volume`` is the day's CUMULATIVE traded volume, so a
+    candle's volume is the cumulative at its last tick minus the cumulative at
+    the previous candle's last tick — per-minute volume, the same meaning as
+    the broker's historical candles that seed Redis. The first candle after a
+    start counts from its own first tick.
     """
     def __init__(self):
-        # token → {open, high, low, close, volume, oi, bucket_start}
+        # token → {open, high, low, close, volume, oi, bucket_start, _base, _cum}
         self._candles: dict[str, dict] = {}
 
     def update(self, tick: TickData) -> Optional[dict]:
@@ -49,26 +55,45 @@ class CandleBuilder:
             c = self._candles[token]
             if now > c["bucket_start"]:
                 # Minute rolled — emit completed candle
-                completed = dict(c)
-                # Start fresh candle
-                self._candles[token] = self._new_candle(tick, now)
+                completed = self._finish(c)
+                # Start fresh candle; its volume counts from this candle's last cumulative
+                self._candles[token] = self._new_candle(tick, now, base=c["_cum"])
             else:
                 # Update running candle
                 c["high"]   = max(c["high"],  tick.ltp)
                 c["low"]    = min(c["low"],   tick.ltp)
                 c["close"]  = tick.ltp
-                c["volume"] = tick.volume or c["volume"]
+                if tick.volume:
+                    c["_cum"] = tick.volume
                 c["oi"]     = tick.oi or c["oi"]
         else:
             self._candles[token] = self._new_candle(tick, now)
 
         return completed
 
-    def _new_candle(self, tick: TickData, bucket: datetime) -> dict:
+    @staticmethod
+    def _finish(c: dict) -> dict:
+        """The emitted candle: per-minute volume, no builder-internal keys."""
+        out = {k: v for k, v in c.items() if not k.startswith("_")}
+        base, cum = c["_base"], c["_cum"]
+        if cum < base:          # cumulative restarted (new session): count from zero
+            base = 0
+        out["volume"] = max(0, cum - base)
+        return out
+
+    def _new_candle(self, tick: TickData, bucket: datetime,
+                    base: Optional[int] = None) -> dict:
         # Store bucket_start in IST so strategy time-window checks work correctly.
         # bucket is already UTC with tzinfo; convert to IST (UTC+5:30).
         ist_bucket = bucket.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        cum = tick.volume or 0
+        if base is None:        # first candle for this token: count from its first tick
+            base = cum
+        elif cum and cum < base:
+            base = 0            # cumulative restarted (new session)
         return {
+            "_base":        base,
+            "_cum":         max(cum, base) if cum else base,
             "token":        tick.token,
             "exchange":     tick.exchange,
             "interval":     "ONE_MINUTE",

@@ -74,10 +74,12 @@ def test_insufficient_candles(cov_db):
     assert d.cause == CoverageCause.INSUFFICIENT_CANDLES.value and d.spot_candles == 200
 
 
-def test_no_prev_day_snapshot(cov_db):
+def test_a_missing_prev_day_snapshot_no_longer_skips_the_day(cov_db):
     Session, url = cov_db
     fill_db(url, [DAY1], scripted_quote({}), prev_day_snapshot=False)
-    assert _classify(Session).cause == CoverageCause.NO_PREV_DAY_SNAPSHOT.value
+    d = _classify(Session)
+    assert d.cause != "NO_PREV_DAY_SNAPSHOT"                       # no strategy needs it
+    assert d.prev_snapshot is None                                  # still reported
 
 
 def test_no_option_data_when_ticks_cover_too_few_minutes(cov_db):

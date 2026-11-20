@@ -114,6 +114,12 @@ class RedisMarketData:
     async def publish_signal(self, strategy: str, signal: dict) -> None:
         await self._cache.publish_signal(strategy, signal)
 
+    async def get_daily_candles(self, token: str, day: date) -> Optional[list]:
+        """Optional port method (live only; the replay port has none): the
+        broker's ONE_DAY candles of the index before *day*, or None."""
+        from app.services.market_data.prev_session import broker_daily_rows
+        return await broker_daily_rows(token, day)
+
 
 # ── TTL-cached DB reads (params, user flags) ─────────────────────────────────
 
@@ -273,6 +279,14 @@ class LiveInstruments:
 
     def invalidate(self) -> None:
         self._cache.clear()
+
+    async def nearest_expiry(self, db, underlying: str):
+        """Live's universe already is the master (active, expiry >= today)."""
+        from app.runtime.context import trading_day
+        today = trading_day()
+        exps = sorted({i.expiry for i in await self.instruments_for(db, underlying)
+                       if i.expiry and i.expiry >= today})
+        return exps[0] if exps else None
 
 
 # ── Regime config ────────────────────────────────────────────────────────────

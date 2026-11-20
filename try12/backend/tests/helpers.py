@@ -60,11 +60,13 @@ def reset_singletons() -> None:
     paper_engine._square_off_cache = None
     regime_detector._regime_history.clear()
     regime_detector._last_log_time.clear()
+    from app.services.trading.regime_stabilizer import regime_stabilizer
+    regime_stabilizer.reset()
     strategy_orchestrator._regime_cooldown.clear()
     strategy_orchestrator._flag_state.clear()
     strategy_orchestrator._current_regime.clear()
     getattr(strategy_orchestrator, "_daily_halts", {}).clear()
-    strategy_runner._oi_iv_warned.clear()
+    getattr(strategy_orchestrator, "_regime_v2", {}).clear()
     strategy_runner._seen.clear()
     strategy_runner._seen_day = None
     strategy_runner._strategy_gate_last.clear()
@@ -72,6 +74,7 @@ def reset_singletons() -> None:
     try:
         from app.services.trading import risk_gate
         risk_gate._sqlite_locks.clear()
+        getattr(risk_gate, "_evidence_cache", {}).clear()
     except ImportError:            # fail-before runs against the pre-FEAT-005 tree
         pass
     from app.services.trading import option_selector as _os_mod
@@ -122,7 +125,7 @@ def with_instruments(rc, rows):
     return dataclasses.replace(rc, instruments=FakeInstruments(rows))
 
 
-async def add_closed(Session, *, net: float, at: datetime, strategy: str = "VWAP_PULLBACK",
+async def add_closed(Session, *, net: float, at: datetime, strategy: str = "VWAP_EMA_PULLBACK",
                      run_id: str = "PAPER", **overrides) -> int:
     """A closed position whose exit (and entry, 5 minutes earlier) is at *at*."""
     fields = dict(is_open=False, net_pnl=float(net), gross_pnl=float(net), exit_time=at,
@@ -149,7 +152,7 @@ async def seed_config(Session, **overrides) -> None:
 def position_fields(**overrides) -> dict:
     """Column values for one open 1-lot position (entry 100, SL 85, target 130)."""
     fields = dict(
-        strategy_name="VWAP_PULLBACK",
+        strategy_name="VWAP_EMA_PULLBACK",
         token="OPT1",
         symbol="NIFTY06OCT2622600CE",
         underlying="NIFTY",
@@ -203,7 +206,7 @@ async def get_config_row(Session) -> TradingConfig:
         )).scalar_one()
 
 
-def make_signal(strategy="VWAP_PULLBACK", underlying="NIFTY", direction=Direction.BUY,
+def make_signal(strategy="VWAP_EMA_PULLBACK", underlying="NIFTY", direction=Direction.BUY,
                 sl_pct=0.15, target_pct=0.30, min_rr=2.0, atr=0.0) -> SignalEvent:
     return SignalEvent(
         strategy_name=strategy,
@@ -402,6 +405,9 @@ class FakeRedis:
 
     async def get_multiple_ltp(self, tokens):
         return {t: await self.get_ltp(t) for t in tokens}
+
+    async def get_multiple_ticks(self, tokens):
+        return {t: await self.get_tick(t) for t in tokens}
 
     async def get_tick(self, token):
         v = self.kv.get(f"tick:{token}")

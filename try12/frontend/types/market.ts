@@ -93,6 +93,22 @@ export interface RegimeStatus {
   source:             "redis" | "absent";
 }
 
+/** GET /regime/v2 — shadow reading (gates nothing): volatility bucket and opening-range side. */
+export interface RegimeV2 {
+  underlying:    string;
+  as_of:         string;
+  regime_gating: boolean;
+  v2: {
+    label:          string;
+    vol:            "LOW" | "NORMAL" | "HIGH" | "UNKNOWN";
+    atr_percentile: number | null;
+    or_side:        "ABOVE" | "INSIDE" | "BELOW" | "FORMING" | "UNKNOWN";
+    or_high:        number | null;
+    or_low:         number | null;
+    data_ok:        boolean;
+  };
+}
+
 /** GET /regime/history?collapse=true (default) — ascending collapsed spans. */
 export interface RegimeSpan {
   regime:          string;
@@ -115,4 +131,40 @@ export interface RegimePerformanceRow {
   win_rate:      number;
   total_pnl:     number;
   avg_pnl:       number | null;
+}
+
+/** GET /market/data-health — integrity and freshness of what the strategies trust. */
+export type HealthStatus = "OK" | "WARN" | "FAIL" | "CLOSED";
+
+export interface CandleHealth {
+  status: HealthStatus;
+  candles: number;
+  duplicates: number;
+  invalid_ohlc: string[];
+  unreadable: number;
+  outliers: { at: string; move: number }[];
+  typical_move: number;
+  newest: string | null;
+  newest_age_s: number | null;
+}
+
+export interface QuoteHealth {
+  status: HealthStatus;
+  tokens: number;
+  no_tick: number;
+  stale: number;
+  crossed: number;
+  one_sided: number;
+  wide_spread: number;
+  latency_ms_p50: number | null;
+  latency_ms_p95: number | null;
+}
+
+export interface DataHealth {
+  as_of: string;
+  in_session: boolean;
+  feed_connected: boolean;
+  status: HealthStatus;
+  candles: Record<string, CandleHealth>;
+  quotes: QuoteHealth;
 }

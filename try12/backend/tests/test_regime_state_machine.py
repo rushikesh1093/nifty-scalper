@@ -15,6 +15,16 @@ U = "UNCLASSIFIED"      # the classifier's catch-all (was UNKNOWN before the §6
 B = "BULL_TREND_NORMAL_VOL"
 
 
+@pytest.fixture(autouse=True)
+def _cooldown_on():
+    """These tests specify the cooldown when it is ON (3 candles, the value it
+    had before it was turned off by default on 23 Oct)."""
+    from app.runtime.context import ctx, using
+    from tests.helpers import with_params
+    with using(with_params(ctx(), transition_cooldown_candles=3)):
+        yield
+
+
 def _ind():
     return RegimeIndicators(
         adx=25, atr=5, atr_percentile=50, vwap=100, price=101, vwap_cross_count=0,
@@ -63,6 +73,7 @@ def _entries_into_transition(regimes):
     return sum(1 for i, r in enumerate(regimes) if r == T and (i == 0 or regimes[i - 1] != T))
 
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_unknown_then_bull_settles(monkeypatch):
     """Readiness-report repro: UNCLASSIFIED x3 then BULL x21 (old code looped T x3 / B x1)."""
     regimes, active = _replay(monkeypatch, [U] * 3 + [B] * 21)
@@ -101,3 +112,30 @@ def _st(regime):
 ])
 def test_check_regime_transition(history, candidate, expected):
     assert RegimeDetector.check_regime_transition(candidate, history, 2) is expected
+
+
+# ── cooldown OFF (transition_cooldown_candles = 0, the default since 23 Oct) ──
+
+@pytest.mark.parametrize("script, expected", [
+    ([U] * 3 + [B] * 5, [U] * 3 + [B] * 5),
+    (["RANGE_NORMAL_VOL"] * 2 + [B] * 2 + ["RANGE_NORMAL_VOL"] * 2,
+     ["RANGE_NORMAL_VOL"] * 2 + [B] * 2 + ["RANGE_NORMAL_VOL"] * 2),
+])
+def test_with_the_cooldown_off_a_flip_is_adopted_on_its_bar(monkeypatch, script, expected):
+    from app.runtime.context import ctx, using
+    from tests.helpers import with_params
+    with using(with_params(ctx(), transition_cooldown_candles=0)):
+        regimes, _ = _replay(monkeypatch, script)
+    assert regimes == expected and T not in regimes
+
+
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
+def test_the_cooldown_is_off_by_default(monkeypatch):
+    from app.core.trading_params import TradingParams
+    from app.runtime.context import ctx, using
+    from tests.helpers import with_params
+    off = TradingParams().transition_cooldown_candles
+    assert off == 0
+    with using(with_params(ctx(), transition_cooldown_candles=off)):
+        regimes, active = _replay(monkeypatch, [U] * 3 + [B] * 21)
+    assert regimes == [U] * 3 + [B] * 21 and active == 21

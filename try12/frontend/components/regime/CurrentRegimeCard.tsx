@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { formatIst } from "@/lib/time";
 import { useNow } from "@/hooks/useNow";
 import { useDiagnostics } from "@/hooks/useDiagnostics";
-import { useCurrentRegime, useRegimeHistory, type Underlying } from "@/hooks/useRegime";
+import { useCurrentRegime, useRegimeHistory, useRegimeV2, type Underlying } from "@/hooks/useRegime";
 import { Panel } from "@/components/ui/Panel";
 import { DataSurface } from "@/components/ui/DataSurface";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -19,6 +19,7 @@ export function CurrentRegimeCard({ underlying }: { underlying: Underlying }) {
   const query = useCurrentRegime(underlying);
   const history = useRegimeHistory(underlying);
   const diag = useDiagnostics();
+  const v2 = useRegimeV2(underlying);
   const now = useNow(1_000);
 
   return (
@@ -26,11 +27,16 @@ export function CurrentRegimeCard({ underlying }: { underlying: Underlying }) {
       <DataSurface query={query} skeleton={<Skeleton label="Loading current regime" />}>
         {(r, meta) => {
           if (r.source === "absent") {
+            // The current key expires 10 min after the last cycle (e.g. after the entry
+            // cutoff), so say what was last classified rather than "nothing yet".
+            const past = Array.isArray(history.data) ? history.data : [];
+            const last = past.length ? past.reduce((a, b) => (Date.parse(b.from) > Date.parse(a.from) ? b : a)) : null;
             return (
               <div data-testid="current-regime" data-state="absent">
                 <EmptyState
-                  title="No regime detected yet (cache empty)"
-                  hint="The strategy runner writes a regime once it has evaluated candles in the 09:15–15:25 IST window."
+                  title={last ? `Not classifying now · last ${regimeLabel(last.regime)} since ${formatIst(last.from)}`
+                              : "No regime detected yet"}
+                  hint="The strategy runner classifies the regime while it evaluates candles, 09:15 until the entry cutoff (15:05 IST)."
                 />
               </div>
             );
@@ -40,6 +46,7 @@ export function CurrentRegimeCard({ underlying }: { underlying: Underlying }) {
           const newest = spans.length ? spans.reduce((a, b) => (Date.parse(b.from) > Date.parse(a.from) ? b : a)) : null;
           const probe = diag.data?.underlyings.find((u) => u.underlying === underlying);
           const allows = probe?.regime_allows_trading;
+          const shadow = probe?.regime_gating === false;
           return (
             <div data-testid="current-regime" data-state="ok" data-regime={r.regime} className="space-y-3">
               <div aria-live="polite">
@@ -68,7 +75,15 @@ export function CurrentRegimeCard({ underlying }: { underlying: Underlying }) {
                 </div>
               </dl>
               <div data-testid="regime-permits" className="text-table">
-                {allows === true && <Badge intent="positive" dot>Permits trading</Badge>}
+                {allows === true && shadow && (
+                  <div className="space-y-1">
+                    <Badge intent="neutral" dot>Shadow mode</Badge>
+                    <p className="text-micro text-text-3">
+                      The regime is recorded but does not gate trades; your strategy flags decide.
+                    </p>
+                  </div>
+                )}
+                {allows === true && !shadow && <Badge intent="positive" dot>Permits trading</Badge>}
                 {allows === false && <Badge intent="negative" dot>Blocks trading — strategies are regime-disabled</Badge>}
                 {allows == null && (
                   <span className="text-text-3">
@@ -76,11 +91,42 @@ export function CurrentRegimeCard({ underlying }: { underlying: Underlying }) {
                   </span>
                 )}
               </div>
+              <RegimeV2Line reading={v2.data?.v2} failed={v2.isError} />
               <p className="text-micro text-text-3">ADX/ATR from the newest timeline span{newest ? ` (${formatIst(newest.to, { seconds: false })})` : " — timeline not loaded"}.</p>
             </div>
           );
         }}
       </DataSurface>
     </Panel>
+  );
+}
+
+const VOL_TONE: Record<string, string> = { LOW: "text-yellow", NORMAL: "text-text-1", HIGH: "text-red" };
+const OR_TEXT: Record<string, string> = {
+  ABOVE: "above the opening range", BELOW: "below the opening range",
+  INSIDE: "inside the opening range", FORMING: "opening range still forming",
+};
+
+/** Regime v2: the parts of the regime that predicted the next 30 minutes on 3 years of data. */
+function RegimeV2Line({ reading, failed }: {
+  reading: import("@/types/market").RegimeV2["v2"] | undefined; failed: boolean;
+}) {
+  return (
+    <div className="rounded-md border border-border bg-surface-2 px-2.5 py-2" data-testid="regime-v2">
+      <div className="text-micro uppercase text-text-3">Regime v2 · shadow</div>
+      {failed ? (
+        <div className="text-table text-text-3">Unavailable</div>
+      ) : !reading ? (
+        <div className="text-table text-text-3">Loading…</div>
+      ) : !reading.data_ok ? (
+        <div className="text-table text-text-3">Insufficient data</div>
+      ) : (
+        <div className="text-table text-text-2">
+          Volatility <span className={cn("font-semibold", VOL_TONE[reading.vol] ?? "text-text-1")}>{reading.vol}</span>
+          {reading.atr_percentile != null && <span className="font-mono text-text-3"> ({reading.atr_percentile.toFixed(0)} pct)</span>}
+          {" · "}{OR_TEXT[reading.or_side] ?? reading.or_side}
+        </div>
+      )}
+    </div>
   );
 }

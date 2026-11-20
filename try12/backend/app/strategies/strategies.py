@@ -1,757 +1,948 @@
 """
-All 12 scalping strategies.
-Each inherits BaseStrategy and emits BUY (buy CE) or SELL (buy PE) signals.
+The three NIFTY option-buying strategies (app.strategies.names).
+
+Each emits BUY (buy ATM CE) or SELL (buy ATM PE) signals and attaches a spot
+exit plan (app.services.trading.exit_plan) that paper_engine enforces next to
+the premium hard stop (``sl_pct``):
+
+  VWAP_EMA_PULLBACK  3-min. Trend (close vs VWAP, EMA 9 vs 21) → pullback to
+                     within 5 pts of EMA 9/21 without a close through EMA 21 →
+                     green/red trigger back across EMA 9 with RSI 50-70 / 30-50.
+                     Stop: pullback low/high or 20 % premium. T1 = 1.5 R: book
+                     half, stop to entry. Rest trails on EMA 9 (3-min close).
+                     Hard exit on a 3-min close back across VWAP.
+  ORB_BREAKOUT       5-min. OR = 09:15-09:30, width 40-120 pts. Close beyond
+                     the OR (futures volume > 1.2× earlier bars). Stop: a
+                     quarter of the OR width back inside the range, or 25 %
+                     premium. Target: breakout level ± OR width; stop to entry
+                     at 50 % of the way; 90-min time exit (real-path sweep:
+                     the OR-mid stop and 45-min exit lost most). One trade per direction, no entries after
+                     11:00, one reverse trade only after a stop-out.
+  SUPERTREND_EMA     1-min. Supertrend(10, 2) flip + EMA 5/13 cross within ±2
+                     bars, ADX(14) > 20. Stop: Supertrend line (trailed) or
+                     15 % premium. Target +8 pts premium (+20 needs ~38 NIFTY
+                     pts in 10 min: reached ~15 % of the time on real data).
+                     Exit on an adverse flip; 10-min time stop; 3-bar cooldown after an exit;
+                     max 6 trades a day.
+  CPR_VWAP           5-min, 09:30-13:00, only when yesterday's CPR is narrow
+                     (|TC - BC| < 0.20 % of P). First close beyond the CPR on
+                     the same side of session VWAP. Stop: the other side of
+                     the CPR. Exit: 5-min Supertrend(10, 3) trail, close
+                     across it, 15:15. One trade a day; puts only
+                     (pe_only_strategies). A paper forward test: +0.16R after
+                     costs for puts 2023-26, not proven (NEW_STRATEGY_RESULTS.md).
+
+Point thresholds are NIFTY points, so these strategies are built for NIFTY
+only (build_strategies returns none for other underlyings).
+
+Entry is "next candle's open": the signal is evaluated as soon as the bar
+closes and filled at market straight away, which is that open.
 """
 import logging
+from datetime import datetime, time as dtime, timedelta
 from typing import Optional
-from datetime import time as dtime
+
 import numpy as np
 
+from app.runtime.context import now_utc, params, trading_day
+from app.services.trading import exit_plan as xp
+from app.services.trading.exit_plan import ExitPlan
 from app.strategies.base import BaseStrategy, Direction, SignalEvent
-from app.strategies.indicators import ema, rsi, bollinger, supertrend, atr
+from app.strategies.indicators import atr, ema, resample, rsi, supertrend, vwap
 from app.strategies.names import ALL_STRATEGY_NAMES, StrategyName
-from app.runtime.context import now_ist, trading_day
 from app.services.market_data.timestamps import try_normalize_candle_timestamp
 
 logger = logging.getLogger(__name__)
 
-
-def _c(candles, key, idx=-1):
-    try:
-        return float(candles[idx][key])
-    except Exception:
-        return None
-
-def _is_between(t: dtime, s: dtime, e: dtime) -> bool:
-    return s <= t <= e
-
-def _is_today_ist(candle) -> bool:
-    dt = try_normalize_candle_timestamp(candle.get("timestamp"))
-    return dt is not None and dt.date() == trading_day()
+SUPPORTED_UNDERLYINGS = ("NIFTY",)
 
 
-def _market_time(candles) -> dtime:
-    dt = try_normalize_candle_timestamp(candles[-1].get("timestamp", ""))
-    return (dt.time().replace(tzinfo=None) if dt else
-            now_ist().time().replace(tzinfo=None))
-
-def _avg_volume(candles, n=10) -> float:
-    vols = [float(c.get("volume", 0)) for c in candles[-n-1:-1]]
-    return float(np.mean(vols)) if vols else 1.0
+def _t(dt: datetime) -> dtime:
+    return dt.time().replace(tzinfo=None)
 
 
-def _vol_surge(vol: float, avg: float, multiplier: float = 1.5) -> bool:
-    """
-    Return True if vol represents a genuine surge above average.
-    On NSE index spot tokens the WebSocket feed always delivers volume=0,
-    so avg will also be ~0.  In that case we skip the volume gate entirely
-    (return True) rather than blocking every signal.  The real liquidity
-    filter lives in option_selector's hard filters (OI + volume on the
-    option contract itself) so skipping the spot-volume gate is safe.
-    """
-    if avg <= 0:
-        return True   # no volume data (NSE index feed limitation) — don't block
-    return vol > multiplier * avg
-
-def _arrays(candles):
-    h = np.array([float(c.get("high",  0)) for c in candles])
-    l = np.array([float(c.get("low",   0)) for c in candles])
-    c = np.array([float(c.get("close", 0)) for c in candles])
-    o = np.array([float(c.get("open",  0)) for c in candles])
-    v = np.array([float(c.get("volume",1)) for c in candles])
-    return h, l, c, o, v
+def _in_windows(t: dtime, windows) -> bool:
+    return any(s <= t <= e for s, e in windows)
 
 
-def _atr_ok(indicators: dict, underlying: str) -> bool:
-    """
-    Return True if the 1-min ATR is high enough to make directional
-    option trades worthwhile.
-
-    Thresholds (points on the underlying):
-      NIFTY     : ATR ≥ 3.0   (below = dead chop, options go nowhere)
-      BANKNIFTY : ATR ≥ 10.0  (BN moves ~3× Nifty per point)
-
-    These are tighter than the global ATR gate in strategy_runner
-    (1.5 / 5.0) because here we want a MINIMUM bar for option entries,
-    not just "the market is moving at all".
-    """
-    atr = indicators.get("atr") or 0.0
-    if underlying == "BANKNIFTY":
-        return atr >= 5.0
-    return atr >= 1.5
+def _ts(candle: dict) -> Optional[datetime]:
+    return try_normalize_candle_timestamp(candle.get("timestamp"))
 
 
-# ─── 1. ORB + VWAP + Volume ──────────────────────────────────────────────────
+def _new_bars(plan, bars: list[dict]) -> list[int]:
+    """Indexes of the completed bars the plan's bar exits have not seen yet,
+    oldest first, and mark them seen. Walking every one (not only the newest)
+    means a runner cycle that skips a minute cannot skip a bar exit. A plan
+    without a mark (written before the field existed) sees the newest bar."""
+    if not bars:
+        return []
+    if plan.last_bar_start is None:
+        idx = [len(bars) - 1]
+    else:
+        seen = datetime.fromisoformat(plan.last_bar_start)
+        idx = [i for i, b in enumerate(bars) if b["start"] > seen]
+    if idx:
+        plan.last_bar_start = bars[idx[-1]]["start"].isoformat()
+    return idx
 
-class ORBVWAPStrategy(BaseStrategy):
-    """9:15-9:30 opening range breakout + VWAP confirm + volume surge."""
-    name = StrategyName.ORB_VWAP.value; sl_pct = 0.15; target_pct = 0.30
+
+def _session_vwap_at(candles: list[dict]) -> dict:
+    """Today's session VWAP after each 1-min candle, keyed by the candle's close
+    time (aware IST), so a bar's VWAP is the value at the bar's end."""
+    today = trading_day()
+    rows = [(dt, c) for c in candles if (dt := _ts(c)) is not None and dt.date() == today]
+    if not rows:
+        return {}
+    h = np.array([float(c["high"]) for _, c in rows])
+    l = np.array([float(c["low"]) for _, c in rows])
+    cl = np.array([float(c["close"]) for _, c in rows])
+    v = np.array([float(c.get("volume") or 0) for _, c in rows])
+    series = vwap(h, l, cl, v)
+    return {dt.replace(second=0, microsecond=0) + timedelta(minutes=1): float(x)
+            for (dt, _), x in zip(rows, series)}
+
+
+class _PlanStrategy(BaseStrategy):
+    """Shared plumbing: bar building, once-per-bar evaluation, plan signals."""
+    _cooldown_minutes = 0          # per-strategy trade rules replace the generic cooldown
+    BAR_MINUTES = 1
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._last_bar_start: Optional[datetime] = None
+        self._day = None
+
+    def _bars(self, candles: list[dict]) -> list[dict]:
+        return resample(self.history or candles, self.BAR_MINUTES)
+
+    def _new_bar(self, bars: list[dict]) -> bool:
+        """True once per completed bar, and only for today's bars."""
+        if not bars:
+            return False
+        start = bars[-1]["start"]
+        if start == self._last_bar_start or start.date() != trading_day():
+            return False
+        self._last_bar_start = start
+        return True
+
+    def _roll_day(self) -> bool:
+        day = trading_day()
+        if self._day != day:
+            self._day = day
+            return True
+        return False
+
+    def restore_day(self, positions: list) -> None:
+        """Rebuild today's per-strategy state from this strategy's persisted
+        positions (oldest first) after a restart: the open count here, the
+        trade rules in subclasses. Marks the day as already rolled."""
+        self._day = trading_day()
+        self.open_positions = sum(1 for p in positions if p.is_open)
+
+    def _plan_signal(self, direction: Direction, spot: float, indicators: dict,
+                     notes: str, plan: ExitPlan,
+                     bar_start: Optional[datetime] = None) -> Optional[SignalEvent]:
+        # Bar exits start after the trigger bar (the bar of this strategy's timeframe)
+        start = bar_start or self._last_bar_start
+        if start is not None and plan.last_bar_start is None:
+            plan.last_bar_start = start.isoformat()
+        problems = plan.validate()
+        if problems:
+            logger.debug("[%s] plan rejected: %s", self.name, "; ".join(problems))
+            return None
+        sig = self._make_signal(direction, spot, indicators, notes, exit_plan=plan.to_dict())
+        # The premium R:R filter checks target_pct / sl_pct. The real target is
+        # the spot plan, so the premium target is recorded at exactly the floor.
+        sig.target_pct = round(self.sl_pct * params().min_rr, 6)
+        return sig
+
+
+# ─── 1. VWAP + EMA Pullback (3-min trend scalp) ──────────────────────────────
+
+class VWAPEMAPullbackStrategy(_PlanStrategy):
+    name = StrategyName.VWAP_EMA_PULLBACK.value
+    sl_pct = 0.20
+    target_pct = 0.40
+    BAR_MINUTES = 3
+    NEAR_EMA_PTS = 5.0
+    PULLBACK_BARS = 4              # trigger bar + the 3 before it
+    RSI_LONG = (50.0, 70.0)
+    RSI_SHORT = (30.0, 50.0)
+    T1_R = 1.5
+    WINDOWS = ((dtime(9, 30), dtime(11, 30)), (dtime(13, 30), dtime(14, 45)))
+
+    @staticmethod
+    def _emas(bars):
+        closes = np.array([b["close"] for b in bars])
+        return ema(closes, 9), ema(closes, 21), rsi(closes, 14)
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if len(candles) < 20: return None
-        if not _is_between(_market_time(candles), dtime(9,30), dtime(11,30)): return None
-        if not _atr_ok(indicators, self.underlying): return None
-
-        close = _c(candles,"close"); vol = _c(candles,"volume")
+        bars = self._bars(candles)
+        if len(bars) < 22 or not self._new_bar(bars):
+            return None
+        if self.open_positions:
+            return None
+        last = bars[-1]
+        if not _in_windows(_t(last["end"]), self.WINDOWS):
+            return None
         vwap_v = indicators.get("vwap")
-        orb_h = indicators.get("orb_high"); orb_l = indicators.get("orb_low")
-        if None in (close, vol, vwap_v, orb_h, orb_l): return None
-
-        vol_surge = _vol_surge(vol, indicators.get("avg_volume") or _avg_volume(candles), 1.5)
-        if close > orb_h and close > vwap_v and vol_surge:
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"ORB UP close={close:.1f} orb_h={orb_h:.1f} vwap={vwap_v:.1f}")
-        if close < orb_l and close < vwap_v and vol_surge:
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"ORB DOWN close={close:.1f} orb_l={orb_l:.1f} vwap={vwap_v:.1f}")
-        return None
-
-
-# ─── 2. VWAP Pullback ────────────────────────────────────────────────────────
-
-class VWAPPullbackStrategy(BaseStrategy):
-    """Trend established, pullback to VWAP, rejection candle entry.
-
-    The trend-count window (last 6 candles) now only counts candles that belong
-    to today's IST session (timestamp starts with today's date string).  Without
-    this guard, at market open the window contains yesterday's candles which have
-    no bearing on today's intraday VWAP direction — causing false trend counts
-    that make the strategy fire immediately at 9:45 on stale data.
-    """
-    name = StrategyName.VWAP_PULLBACK.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 15
-
-    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if len(candles) < 10: return None
-        if not _is_between(_market_time(candles), dtime(9,45), dtime(14,0)): return None
-        if not _atr_ok(indicators, self.underlying): return None
-
-        close = _c(candles,"close"); open_ = _c(candles,"open")
-        low = _c(candles,"low");     high  = _c(candles,"high")
-        vwap_v = indicators.get("vwap")
-        if None in (close, open_, low, high, vwap_v): return None
-
-        # Only count candles from today's IST session in the trend window.
-        # Candles are filtered to today at the strategy_runner level, but the
-        # guard here is a safety net in case the fallback path supplies
-        # multi-day data (e.g. during pre-market startup).
-        today_window = [c for c in candles[-7:-1] if _is_today_ist(c)]
-        # Need at least 4 today-candles in the window to establish a trend
-        if len(today_window) < 4:
+        if vwap_v is None:
             return None
 
-        above = sum(1 for c in today_window if (_c([c], "close") or 0) > vwap_v)
-        below = sum(1 for c in today_window if (_c([c], "close") or 0) < vwap_v)
+        e9, e21, r = self._emas(bars)
+        t = len(bars) - 1
+        win = range(t - self.PULLBACK_BARS + 1, t + 1)
+        if any(np.isnan(e9[i]) or np.isnan(e21[i]) for i in win) or np.isnan(r[t]):
+            return None
+        c, o, rsi_t = last["close"], last["open"], float(r[t])
 
-        if above >= 4 and low <= vwap_v*1.001 and close > vwap_v and close > open_:
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"VWAP pullback bounce vwap={vwap_v:.1f}")
-        if below >= 4 and high >= vwap_v*0.999 and close < vwap_v and close < open_:
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"VWAP pullback rejection vwap={vwap_v:.1f}")
+        # ── long: buy CE ─────────────────────────────────────────────────────
+        if c > vwap_v and e9[t] > e21[t]:
+            touches = [i for i in win if bars[i]["low"] <= e9[i] + self.NEAR_EMA_PTS]
+            held = all(bars[i]["close"] >= e21[i] and e9[i] > e21[i] for i in win)
+            recent_touch = bool(touches) and touches[-1] >= t - 1
+            if (recent_touch and held and c > o and c > e9[t]
+                    and self.RSI_LONG[0] <= rsi_t <= self.RSI_LONG[1]):
+                stop = min(bars[i]["low"] for i in range(touches[0], t + 1))
+                risk = c - stop
+                plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c, spot_stop=stop,
+                                spot_t1=round(c + self.T1_R * risk, 2))
+                return self._plan_signal(
+                    Direction.BUY, c, indicators,
+                    f"3m pullback long: close={c:.1f} ema9={e9[t]:.1f} ema21={e21[t]:.1f} "
+                    f"vwap={vwap_v:.1f} rsi={rsi_t:.1f} stop={stop:.1f}", plan)
+
+        # ── short: buy PE (mirror) ───────────────────────────────────────────
+        if c < vwap_v and e9[t] < e21[t]:
+            touches = [i for i in win if bars[i]["high"] >= e9[i] - self.NEAR_EMA_PTS]
+            held = all(bars[i]["close"] <= e21[i] and e9[i] < e21[i] for i in win)
+            recent_touch = bool(touches) and touches[-1] >= t - 1
+            if (recent_touch and held and c < o and c < e9[t]
+                    and self.RSI_SHORT[0] <= rsi_t <= self.RSI_SHORT[1]):
+                stop = max(bars[i]["high"] for i in range(touches[0], t + 1))
+                risk = stop - c
+                plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c, spot_stop=stop,
+                                spot_t1=round(c - self.T1_R * risk, 2))
+                return self._plan_signal(
+                    Direction.SELL, c, indicators,
+                    f"3m pullback short: close={c:.1f} ema9={e9[t]:.1f} ema21={e21[t]:.1f} "
+                    f"vwap={vwap_v:.1f} rsi={rsi_t:.1f} stop={stop:.1f}", plan)
+        return None
+
+    def candle_exit(self, plan, candles, indicators) -> Optional[str]:
+        bars = self._bars(candles)
+        if len(bars) < 22:
+            return None
+        new = _new_bars(plan, bars)
+        if not new:
+            return None
+        vwap_at = _session_vwap_at(candles)
+        e9, _, _ = self._emas(bars)
+        for i in new:
+            c = bars[i]["close"]
+            vwap_v = vwap_at.get(bars[i]["end"])
+            if vwap_v is None and i == len(bars) - 1:
+                vwap_v = indicators.get("vwap")
+            if vwap_v is not None and xp.breached(plan.side, c, vwap_v):
+                return xp.VWAP_EXIT                  # hard exit: closed back across VWAP
+            if plan.t1_done and not np.isnan(e9[i]) and xp.breached(plan.side, c, float(e9[i])):
+                return xp.EMA_TRAIL                  # runner closed on the wrong side of EMA 9
         return None
 
 
-# ─── 3. EMA 9/21 + VWAP ──────────────────────────────────────────────────────
+# ─── 2. Opening Range Breakout (5-min) ───────────────────────────────────────
 
-class EMAVWAPStrategy(BaseStrategy):
-    """EMA9 crosses EMA21 + price on correct side of VWAP + EMA50 filter.
-
-    ATR gate prevents firing during dead chop where EMA crosses are pure noise.
-    Volume surge confirms real participation on the crossover candle — filters
-    out fake crosses caused by low-volume drift between EMAs.
-    """
-    name = StrategyName.EMA_VWAP.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 20   # EMA cross is a trend signal — needs time to play out
-
-    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if len(candles) < 25: return None
-        if not _is_between(_market_time(candles), dtime(9,30), dtime(14,30)): return None
-        # ATR gate: EMA crosses in dead chop are noise — only trade when market moves
-        if not _atr_ok(indicators, self.underlying): return None
-
-        close  = _c(candles, "close")
-        vol    = _c(candles, "volume")
-        vwap_v = indicators.get("vwap")
-        ema50  = indicators.get("ema50")
-        if None in (close, vwap_v): return None
-
-        # Volume surge on crossover candle — confirms real participation, not drift
-        vol_surge = _vol_surge(vol, indicators.get("avg_volume") or _avg_volume(candles), 1.3)
-
-        _, _, c_arr, _, _ = _arrays(candles)
-        e9_now  = indicators.get("ema9")
-        e21_now = indicators.get("ema21")
-        if e9_now is None or e21_now is None: return None
-
-        e9_full  = ema(c_arr, 9)
-        e21_full = ema(c_arr, 21)
-        if np.isnan(e9_full[-2]) or np.isnan(e21_full[-2]): return None
-
-        cross_up   = e9_full[-2] <= e21_full[-2] and e9_now > e21_now
-        cross_down = e9_full[-2] >= e21_full[-2] and e9_now < e21_now
-
-        if cross_up and close > vwap_v and vol_surge and (ema50 is None or close > ema50):
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"EMA9 cross UP above VWAP={vwap_v:.1f} vol_surge=True")
-        if cross_down and close < vwap_v and vol_surge and (ema50 is None or close < ema50):
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"EMA9 cross DOWN below VWAP={vwap_v:.1f} vol_surge=True")
-        return None
-
-
-# ─── 4. Supertrend + VWAP ────────────────────────────────────────────────────
-
-class SupertrendVWAPStrategy(BaseStrategy):
-    """Supertrend direction flip confirmed by VWAP + EMA alignment.
-
-    ATR gate added: supertrend flips in low-volatility chop are unreliable
-    because the ATR-based bands compress and any tiny tick can trigger a flip.
-    """
-    name = StrategyName.SUPERTREND_VWAP.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 25   # Supertrend flip is rare and high-conviction — long cooldown
-
-    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if len(candles) < 15: return None
-        if not _is_between(_market_time(candles), dtime(9,30), dtime(14,0)): return None
-        # ATR gate: compressed ATR = narrow bands = unreliable flips
-        if not _atr_ok(indicators, self.underlying): return None
-
-        close = _c(candles,"close")
-        vwap_v = indicators.get("vwap")
-        ema9 = indicators.get("ema9"); ema21 = indicators.get("ema21")
-        if None in (close, vwap_v): return None
-
-        h, l, c_arr, _, _ = _arrays(candles)
-        st = supertrend(h, l, c_arr, 10, 3.0)
-        # Guard: need at least 2 valid (non-NaN) supertrend values for flip detection
-        if np.isnan(st.supertrend[-1]) or np.isnan(st.supertrend[-2]): return None
-
-        flip_up   = st.direction[-2] == -1 and st.direction[-1] == 1
-        flip_down = st.direction[-2] == 1  and st.direction[-1] == -1
-
-        if flip_up and close > vwap_v and ema9 and ema21 and ema9 > ema21:
-            return self._make_signal(Direction.BUY, close, indicators,
-                "Supertrend flip UP + VWAP + EMA bull")
-        if flip_down and close < vwap_v and ema9 and ema21 and ema9 < ema21:
-            return self._make_signal(Direction.SELL, close, indicators,
-                "Supertrend flip DOWN + VWAP + EMA bear")
-        return None
-
-
-# ─── 5. Previous Day High/Low ─────────────────────────────────────────────────
-
-class PDHPDLStrategy(BaseStrategy):
-    """Clean breakout above PDH or below PDL with volume confirmation."""
-    name = StrategyName.PDH_PDL.value; sl_pct = 0.15; target_pct = 0.30
+class ORBBreakoutStrategy(_PlanStrategy):
+    name = StrategyName.ORB_BREAKOUT.value
+    sl_pct = 0.25
+    target_pct = 0.50
+    BAR_MINUTES = 5
+    OR_START, OR_END = dtime(9, 15), dtime(9, 30)
+    MIN_WIDTH, MAX_WIDTH = 40.0, 120.0
+    VOL_MULT, VOL_BARS = 1.2, 5
+    MIN_VOL_BARS = 3       # a 09:35 breakout has only 4 earlier bars that day
+    LAST_ENTRY = dtime(11, 0)
+    TIME_STOP_MINUTES = 90
+    BREAKEVEN_FRAC = 0.5
+    STOP_INSIDE_FRAC = 0.25        # stop this fraction of the OR width back inside the range
 
     def __init__(self, underlying: str = "NIFTY"):
         super().__init__(underlying)
-        self.pdh: Optional[float] = None
-        self.pdl: Optional[float] = None
+        self._trades: list[list] = []          # [direction, exit_reason | None] per trade today
+        # Nearest-expiry index-future 1-min candles (per-minute volume), set by
+        # the runner each cycle. Empty → the volume rule cannot be checked.
+        self.futures_candles: list[dict] = []
+        self._vol_warned_day = None
 
-    def set_levels(self, pdh: float, pdl: float):
-        self.pdh = pdh; self.pdl = pdl
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._trades = [[Direction.SELL if (p.option_type or "").upper() == "PE" else Direction.BUY,
+                         None if p.is_open else p.exit_reason] for p in positions]
 
-    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if len(candles) < 5 or not self.pdh or not self.pdl: return None
-        if not _is_between(_market_time(candles), dtime(9,30), dtime(13,0)): return None
-        if not _atr_ok(indicators, self.underlying): return None
+    def _volume_ok(self, bar: dict) -> bool:
+        """Futures volume of *bar* > VOL_MULT × the average of the (up to)
+        VOL_BARS bars before it that day, needing at least MIN_VOL_BARS. No
+        futures volume (replay, feed gap) → not checked, logged once a day;
+        the index spot itself carries no volume."""
+        fut = resample(self.futures_candles, self.BAR_MINUTES) if self.futures_candles else []
+        by_start = {b["start"]: b for b in fut}
+        cur = by_start.get(bar["start"])
+        prior = [b for b in fut if b["start"] < bar["start"]
+                 and b["start"].date() == bar["start"].date()][-self.VOL_BARS:]
+        if cur is None or len(prior) < self.MIN_VOL_BARS or not cur["volume"]:
+            if self._vol_warned_day != trading_day():
+                self._vol_warned_day = trading_day()
+                logger.warning("[%s] no futures volume for %s bars — volume rule not checked",
+                               self.name, self.underlying)
+            return True
+        avg = float(np.mean([b["volume"] for b in prior]))
+        return avg > 0 and cur["volume"] > self.VOL_MULT * avg
 
-        c1 = _c(candles,"close",-1); c2 = _c(candles,"close",-2)
-        v1 = _c(candles,"volume",-1)
-        if None in (c1, c2, v1): return None
-        vol_ok = _vol_surge(v1, indicators.get("avg_volume") or _avg_volume(candles), 1.2)
+    def opening_range(self, candles) -> Optional[tuple[float, float]]:
+        """(high, low) of today's 09:15-09:29 one-minute candles, or None until
+        the range is complete (first and last minute both present)."""
+        today = trading_day()
+        rng = [(dt, c) for c in candles if (dt := _ts(c)) is not None and dt.date() == today
+               and self.OR_START <= _t(dt) < self.OR_END]
+        if not rng:
+            return None
+        mins = {_t(dt) for dt, _ in rng}
+        if dtime(9, 15) not in mins or dtime(9, 29) not in mins:
+            return None
+        return (max(float(c["high"]) for _, c in rng), min(float(c["low"]) for _, c in rng))
 
-        if c1 > self.pdh and c2 > self.pdh and vol_ok:
-            return self._make_signal(Direction.BUY, c1, indicators,
-                f"PDH break {c1:.1f} > {self.pdh:.1f}")
-        if c1 < self.pdl and c2 < self.pdl and vol_ok:
-            return self._make_signal(Direction.SELL, c1, indicators,
-                f"PDL break {c1:.1f} < {self.pdl:.1f}")
-        return None
+    def _allowed(self, direction: Direction) -> bool:
+        """One trade per direction; a reverse trade only after the first stopped out."""
+        if not self._trades:
+            return True
+        if len(self._trades) == 1:
+            first_dir, first_exit = self._trades[0]
+            return first_exit in xp.STOP_REASONS and direction != first_dir
+        return False
 
+    def on_position_opened(self, signal: SignalEvent) -> None:
+        self._trades.append([signal.direction, None])
 
-# ─── 6. VWAP Reversal ────────────────────────────────────────────────────────
-
-class VWAPReversalStrategy(BaseStrategy):
-    """Price over-extended from VWAP + reversal candle pattern."""
-    name = StrategyName.VWAP_REVERSAL.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 10
-
-    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if len(candles) < 5: return None
-        if not _is_between(_market_time(candles), dtime(10,0), dtime(14,30)): return None
-        if not _atr_ok(indicators, self.underlying): return None
-
-        close = _c(candles,"close"); open_ = _c(candles,"open")
-        high  = _c(candles,"high");  low   = _c(candles,"low")
-        vwap_v = indicators.get("vwap"); rsi_v = indicators.get("rsi")
-        if None in (close, open_, vwap_v): return None
-
-        pct = (close - vwap_v) / vwap_v * 100
-        body  = abs(close - open_)
-        range_= high - low
-        body_r = body / range_ if range_ > 0 else 0
-
-        # RSI must be present — reversal without RSI confirmation is pure noise
-        if rsi_v is None: return None
-
-        # Raised extension threshold 0.5% → 0.8%: at 0.5% the price has barely
-        # moved from VWAP and reversals fail more than half the time.  0.8% means
-        # the market is genuinely over-extended and a snap-back is likely.
-        if pct > 0.8 and close < open_ and body_r > 0.5 and rsi_v > 70:
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"VWAP reversal DOWN +{pct:.2f}% RSI={rsi_v:.1f}")
-        if pct < -0.8 and close > open_ and body_r > 0.5 and rsi_v < 30:
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"VWAP reversal UP {pct:.2f}% RSI={rsi_v:.1f}")
-        return None
-
-
-# ─── 7. Bollinger Breakout ───────────────────────────────────────────────────
-
-class BollingerBreakoutStrategy(BaseStrategy):
-    """BB squeeze + explosive breakout beyond bands confirmed by VWAP.
-
-    ATR gate added: a breakout candle outside the bands is meaningless if the
-    underlying isn't actually moving — options won't follow without spot movement.
-    """
-    name = StrategyName.BOLLINGER_BREAKOUT.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 20
+    def on_position_closed(self, direction: Direction, reason: str) -> None:
+        for tr in reversed(self._trades):
+            if tr[0] == direction and tr[1] is None:
+                tr[1] = reason
+                return
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if len(candles) < 25: return None
-        if not _is_between(_market_time(candles), dtime(9,45), dtime(14,0)): return None
-        # ATR gate: low ATR = bands are artificially compressed by chop, not genuine squeeze
-        if not _atr_ok(indicators, self.underlying): return None
-
-        close = _c(candles,"close")
-        bb_u = indicators.get("bb_upper"); bb_l = indicators.get("bb_lower")
-        bb_w = indicators.get("bb_width"); vwap_v = indicators.get("vwap")
-        if None in (close, bb_u, bb_l, bb_w, vwap_v): return None
-
-        _, _, c_arr, _, _ = _arrays(candles)
-        bb_all = bollinger(c_arr, 20, 2.0)
-        valid_w = bb_all.width[~np.isnan(bb_all.width)]
-        if len(valid_w) < 5: return None
-
-        # Squeeze detection uses the PREVIOUS bar's width, not the current bar.
-        # A genuine breakout candle is wide by definition — if we checked the
-        # current bar we'd never pass squeeze=True at the exact moment of breakout.
-        # Instead we check that the bar *before* this one was inside the squeeze,
-        # confirming that coiling happened and THIS candle is the escape.
-        prev_bb_w = float(valid_w[-2]) if len(valid_w) >= 2 else float(valid_w[-1])
-        # avg_w excludes the current and previous bars (use -22:-2 window)
-        avg_w = (
-            float(np.mean(valid_w[-22:-2])) if len(valid_w) >= 22
-            else float(np.mean(valid_w[:-2])) if len(valid_w) > 2
-            else 0.0
-        )
-        # Squeeze: previous bar's width was tight AND current bar breaks out
-        squeeze = avg_w > 0 and prev_bb_w < avg_w * 0.80
-
-        if squeeze and close > bb_u and close > vwap_v:
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"BB squeeze breakout UP width={bb_w:.4f}")
-        if squeeze and close < bb_l and close < vwap_v:
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"BB squeeze breakout DOWN width={bb_w:.4f}")
-        return None
-
-
-# ─── 8. RSI + VWAP ───────────────────────────────────────────────────────────
-
-class RSIVWAPStrategy(BaseStrategy):
-    """RSI oversold/overbought near VWAP level with candle confirmation.
-
-    ATR gate added: RSI extremes during low-volatility consolidation produce
-    false reversal signals — the underlying isn't actually reversing, it's just
-    grinding sideways and options bleed theta without hitting targets.
-
-    Removed: stale 'RSI < 30 and still falling' momentum SELL.  Rationale:
-      - By the time RSI reaches 30 AND is still declining for 3 bars AND price
-        is below VWAP AND we're trying to enter a PE, the move is already 30–40
-        candles old and the risk/reward to a bounce is unfavourable.
-      - This condition also conflicts with the reversal SELL at RSI > 72 — it
-        creates a mirror-image entry at the wrong extreme (deep oversold → we
-        should be looking for BUY, not adding more SELL).
-      - Removed to prevent chasing exhausted moves.
-    """
-    name = StrategyName.RSI_VWAP.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 8
-
-    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if len(candles) < 15: return None
-        if not _is_between(_market_time(candles), dtime(10,0), dtime(14,30)): return None
-        # ATR gate: RSI extremes in low-volatility chop are not real reversals
-        if not _atr_ok(indicators, self.underlying): return None
-
-        close  = _c(candles, "close"); open_ = _c(candles, "open")
-        rsi_v  = indicators.get("rsi"); vwap_v = indicators.get("vwap")
-        if None in (close, open_, rsi_v, vwap_v): return None
-
-        near_vwap = abs(close - vwap_v) / vwap_v * 100 < 0.3
-
-        # ── Reversal signals (RSI at extreme, near VWAP) ─────────────────────
-        # Thresholds are deliberately non-overlapping with the momentum block:
-        #   Reversal BUY  : RSI < 35  (oversold)
-        #   Reversal SELL : RSI > 72  (overbought)  ← raised clear of momentum's > 70
-        # This means a bar with RSI 70–72 can only trigger a momentum signal,
-        # never a reversal — no ambiguity at the boundary.
-        if rsi_v < 35 and near_vwap and close > open_:
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"RSI={rsi_v:.1f} oversold + VWAP bounce")
-        if rsi_v > 72 and near_vwap and close < open_:
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"RSI={rsi_v:.1f} overbought + VWAP reject")
-
-        # ── Momentum signals (RSI trending, away from VWAP) ──────────────────
-        # Uses the pre-computed rsi array from indicators for the [-1] value and
-        # rebuilds only the full array (needed for [-2] and [-3] trend check).
-        # compute_all stores only the latest scalar so prior bars need the array.
-        _, _, c_arr, _, _ = _arrays(candles)
-        r_arr   = rsi(c_arr, 14)
-        valid_r = r_arr[~np.isnan(r_arr)]
-        if len(valid_r) < 3:
+        if self._roll_day():
+            self._trades = []
+        bars = resample(candles, self.BAR_MINUTES)       # today only: no warm-up needed
+        if len(bars) < 4 or not self._new_bar(bars):
+            return None
+        last = bars[-1]
+        if _t(last["start"]) < self.OR_END or _t(last["end"]) > self.LAST_ENTRY:
+            return None
+        if self.open_positions:
+            return None
+        rng = self.opening_range(candles)
+        if rng is None:
+            return None
+        or_high, or_low = rng
+        width = or_high - or_low
+        if not (self.MIN_WIDTH <= width <= self.MAX_WIDTH):
             return None
 
-        rsi_cur   = rsi_v              # from indicators — authoritative latest
-        rsi_prev  = float(valid_r[-2])
-        rsi_prev2 = float(valid_r[-3])
-
-        # Momentum BUY: RSI rising out of oversold territory (was < 40, now 40–60),
-        # price above VWAP, bullish candle.  This catches early-trend entries where
-        # momentum is building, NOT the overbought zone (70+) where reversals live.
-        # Condition: RSI was below 40 two bars ago and has recovered through 45+
-        if (40 <= rsi_cur <= 60
-                and rsi_prev2 < 40
-                and rsi_cur > rsi_prev
-                and close > vwap_v and close > open_):
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"RSI momentum recovery={rsi_cur:.1f} rising from oversold above VWAP")
-
-        # Momentum SELL: RSI falling from overbought territory (was > 65, now 40–60),
-        # price below VWAP, bearish candle.
-        if (40 <= rsi_cur <= 60
-                and rsi_prev2 > 65
-                and rsi_cur < rsi_prev
-                and close < vwap_v and close < open_):
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"RSI momentum reversal={rsi_cur:.1f} falling from overbought below VWAP")
-
+        c, prev_c = last["close"], bars[-2]["close"]
+        up = c > or_high and prev_c <= or_high and self._allowed(Direction.BUY)
+        down = c < or_low and prev_c >= or_low and self._allowed(Direction.SELL)
+        if not (up or down) or not self._volume_ok(last):
+            return None
+        if up:
+            target = or_high + width
+            stop = round(or_high - self.STOP_INSIDE_FRAC * width, 2)
+            plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c, spot_stop=stop,
+                            spot_target=round(target, 2),
+                            breakeven_trigger=round(c + self.BREAKEVEN_FRAC * (target - c), 2),
+                            time_stop_minutes=self.TIME_STOP_MINUTES)
+            return self._plan_signal(
+                Direction.BUY, c, indicators,
+                f"ORB up: close={c:.1f} > OR high={or_high:.1f} width={width:.1f} "
+                f"target={target:.1f} stop={stop:.1f}", plan)
+        if down:
+            target = or_low - width
+            stop = round(or_low + self.STOP_INSIDE_FRAC * width, 2)
+            plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c, spot_stop=stop,
+                            spot_target=round(target, 2),
+                            breakeven_trigger=round(c - self.BREAKEVEN_FRAC * (c - target), 2),
+                            time_stop_minutes=self.TIME_STOP_MINUTES)
+            return self._plan_signal(
+                Direction.SELL, c, indicators,
+                f"ORB down: close={c:.1f} < OR low={or_low:.1f} width={width:.1f} "
+                f"target={target:.1f} stop={stop:.1f}", plan)
         return None
 
 
-# ─── 9. OI Spike + Price ─────────────────────────────────────────────────────
+# ─── 3. Supertrend + EMA crossover (1-min momentum flip) ─────────────────────
 
-class OISpikeStrategy(BaseStrategy):
-    """
-    Sudden OI buildup in CE/PE signals smart money positioning.
-    CE OI spike + price rising  → CE writing by big players → cap at resistance → SELL
-    PE OI spike + price falling → PE writing → support forming → BUY
-    CE OI spike + price falling → CE unwinding → bearish → SELL
-    PE OI spike + price rising  → PE unwinding → bullish → BUY
-
-    Hardened rules (prevent expiry-day noise losses):
-      - Blocked on expiry day entirely (OI rolls create massive fake spikes)
-      - OI threshold raised 15% → 25% (genuine smart-money accumulation)
-      - Supertrend must agree with trade direction
-      - 3-candle trend confirmation required (close[−3] < close[−2] < close[−1] for BUY)
-      - Price must be > 0.15% from VWAP (not just touching it)
-      - sl_pct raised to 0.15 (was 0.10) so a 2-tick adverse move doesn't hit SL
-      - Only active 9:30–12:30 (not 13:30; expiry afternoon OI is pure noise)
-    """
-    name = StrategyName.OI_SPIKE.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 15
+class SupertrendEMAStrategy(_PlanStrategy):
+    name = StrategyName.SUPERTREND_EMA.value
+    sl_pct = 0.15
+    target_pct = 0.30
+    BAR_MINUTES = 1
+    ST_PERIOD, ST_MULT = 10, 2.0
+    ADX_MIN = 20.0
+    CROSS_WINDOW = 2
+    PREMIUM_TARGET_PTS = 8.0
+    TIME_STOP_MINUTES = 10
+    COOLDOWN_BARS = 3
+    MAX_TRADES = 6
 
     def __init__(self, underlying: str = "NIFTY"):
         super().__init__(underlying)
-        self.ce_oi_prev:    float = 0
-        self.pe_oi_prev:    float = 0
-        self.ce_oi:         float = 0
-        self.pe_oi:         float = 0
-        self._update_count: int   = 0   # guard: need ≥2 real snapshots before firing
-        self.is_expiry_day: bool  = False   # set by strategy_runner before evaluate
+        self._trades_today = 0
+        self._last_exit_at: Optional[datetime] = None
 
-    def update_oi(self, ce_oi: float, pe_oi: float):
-        self.ce_oi_prev = self.ce_oi; self.pe_oi_prev = self.pe_oi
-        self.ce_oi = ce_oi;           self.pe_oi = pe_oi
-        self._update_count += 1
+    def on_position_opened(self, signal: SignalEvent) -> None:
+        self._trades_today += 1
 
-    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        # Block entirely on expiry day — OI rolls, unwinding, and re-hedging
-        # create massive fake spike signals all afternoon.
-        if self.is_expiry_day: return None
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._trades_today = len(positions)
+        exits = [p.exit_time for p in positions if p.exit_time is not None]
+        self._last_exit_at = max(exits) if exits else None
+        if self._last_exit_at is not None and self._last_exit_at.tzinfo is None:
+            from datetime import timezone
+            self._last_exit_at = self._last_exit_at.replace(tzinfo=timezone.utc)
 
-        # Need at least 2 real OI snapshots and enough candles for trend check
-        if len(candles) < 8 or self._update_count < 2: return None
-        if not _is_between(_market_time(candles), dtime(9,30), dtime(12,30)): return None
+    def on_position_closed(self, direction: Direction, reason: str) -> None:
+        self._last_exit_at = now_utc()
 
-        close = _c(candles,"close"); open_ = _c(candles,"open")
-        vwap_v = indicators.get("vwap")
-        st_dir = indicators.get("supertrend_dir")   # 1=UP, −1=DOWN
-        if None in (close, open_, vwap_v): return None
+    def _series(self, bars):
+        h = np.array([b["high"] for b in bars])
+        l = np.array([b["low"] for b in bars])
+        c = np.array([b["close"] for b in bars])
+        st = supertrend(h, l, c, self.ST_PERIOD, self.ST_MULT)
+        return h, l, c, st
 
-        ce_chg = (self.ce_oi - self.ce_oi_prev) / max(self.ce_oi_prev, 1) * 100
-        pe_chg = (self.pe_oi - self.pe_oi_prev) / max(self.pe_oi_prev, 1) * 100
-
-        # Absolute OI guard: percentage change on a tiny base is meaningless.
-        # A 25% spike on 10,000 OI is noise; on 5,00,000 OI it's real accumulation.
-        # Minimum: CE and PE must each have ≥ 1,00,000 OI (1 lakh) for the
-        # percentage change to represent genuine smart-money sizing.
-        MIN_ABS_OI = 100_000
-        if self.ce_oi < MIN_ABS_OI and self.pe_oi < MIN_ABS_OI:
-            return None   # both sides too thin — percentage spikes are noise
-
-        # Price must be meaningfully away from VWAP (not just touching)
-        vwap_gap_pct = (close - vwap_v) / vwap_v * 100
-
-        # 3-candle trend confirmation — last 3 closes must trend in the direction
-        c1 = _c(candles,"close",-1); c2 = _c(candles,"close",-2); c3 = _c(candles,"close",-3)
-        trend_up   = c3 and c2 and c1 and (c3 < c2 < c1)
-        trend_down = c3 and c2 and c1 and (c3 > c2 > c1)
-
-        # PE massive buildup + price > VWAP + supertrend UP + 3-bar uptrend = BUY CE
-        if (pe_chg > 25 and vwap_gap_pct > 0.15
-                and (st_dir is None or st_dir == 1)
-                and trend_up and close > open_):
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"PE OI spike +{pe_chg:.1f}% support confirmed ST+3bar")
-
-        # CE massive buildup + price < VWAP + supertrend DOWN + 3-bar downtrend = SELL
-        if (ce_chg > 25 and vwap_gap_pct < -0.15
-                and (st_dir is None or st_dir == -1)
-                and trend_down and close < open_):
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"CE OI spike +{ce_chg:.1f}% resistance confirmed ST+3bar")
-
-        # CE unwinding + price falling + ST DOWN + 3-bar downtrend = SELL
-        if (ce_chg < -15 and vwap_gap_pct < -0.10
-                and (st_dir is None or st_dir == -1)
-                and trend_down and close < open_):
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"CE OI unwind {ce_chg:.1f}% bearish confirmed")
-
-        # PE unwinding + price rising + ST UP + 3-bar uptrend = BUY
-        if (pe_chg < -15 and vwap_gap_pct > 0.10
-                and (st_dir is None or st_dir == 1)
-                and trend_up and close > open_):
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"PE OI unwind {pe_chg:.1f}% bullish confirmed")
-
-        return None
-
-
-# ─── 10. IV Crush Play ────────────────────────────────────────────────────────
-
-class IVCrushStrategy(BaseStrategy):
-    """
-    ATM straddle IV above 20% and expanding → directional momentum trade (buy CE/PE).
-    ATM IV below 15% and contracting + BB squeeze → breakout play.
-    Uses IV data injected from option chain snapshots.
-
-    BB squeeze branch hardened:
-      - ATR gate added: low ATR + BB squeeze can mean dead grind, not coiling.
-        Without a minimum ATR the breakout candle may be a single tick anomaly.
-      - Candle body confirmation (body > 40% of range, close confirms direction):
-        prevents firing on doji / spinning-top candles inside the squeeze that
-        look like breakouts on LTP alone but have no real directional commitment.
-    """
-    name = StrategyName.IV_CRUSH.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 15
-
-    def __init__(self, underlying: str = "NIFTY"):
-        super().__init__(underlying)
-        self.atm_iv:      float = 0
-        self.prev_atm_iv: float = 0
-
-    def update_iv(self, atm_iv: float):
-        self.prev_atm_iv = self.atm_iv; self.atm_iv = atm_iv
+    @staticmethod
+    def _last_event(idx: range, pred) -> Optional[int]:
+        hits = [i for i in idx if pred(i)]
+        return hits[-1] if hits else None
 
     async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if not self.atm_iv or not self.prev_atm_iv: return None
-        if not _is_between(_market_time(candles), dtime(9,30), dtime(13,0)): return None
-
-        close = _c(candles,"close"); open_ = _c(candles,"open")
-        high  = _c(candles,"high");  low   = _c(candles,"low")
-        vwap_v = indicators.get("vwap")
-        if None in (close, open_, high, low, vwap_v): return None
-
-        iv_rising  = self.atm_iv > self.prev_atm_iv * 1.05
-        iv_falling = self.atm_iv < self.prev_atm_iv * 0.95
-
-        # High IV expanding + trending: momentum trade.
-        # Threshold 20%: Nifty ATM IV typically sits 12–20% on normal days.
-        # 20%+ = genuinely elevated/event-driven volatility; options expand
-        # with the move and directional buys make sense.
-        if self.atm_iv > 20 and iv_rising and close > vwap_v:
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"IV expanding={self.atm_iv:.1f}% price above VWAP — momentum CE")
-        if self.atm_iv > 20 and iv_rising and close < vwap_v:
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"IV expanding={self.atm_iv:.1f}% price below VWAP — momentum PE")
-
-        # Low IV contracting + BB squeeze: breakout imminent.
-        # ATR gate: confirms the underlying is actually capable of moving, not just
-        # having a narrow band from dead grind.
-        # Body confirmation: breakout candle must show directional commitment —
-        # body must be > 40% of the candle range and close must confirm direction.
-        if self.atm_iv < 15 and iv_falling and _atr_ok(indicators, self.underlying):
-            bb_w = indicators.get("bb_width")
-            if bb_w and bb_w < 0.005:
-                candle_range = high - low
-                body         = abs(close - open_)
-                body_ratio   = body / candle_range if candle_range > 0 else 0
-                if body_ratio < 0.40:
-                    return None   # doji / indecision — not a real breakout candle
-                direction = Direction.BUY if close > vwap_v else Direction.SELL
-                # Confirm candle closes in the direction of the trade
-                if direction == Direction.BUY and close < open_:
-                    return None   # bearish candle in bullish breakout — skip
-                if direction == Direction.SELL and close > open_:
-                    return None   # bullish candle in bearish breakout — skip
-                return self._make_signal(
-                    direction, close, indicators,
-                    f"IV crush={self.atm_iv:.1f}% + BB squeeze body={body_ratio:.2f} — breakout"
-                )
-        return None
-
-
-# ─── 11. CPR + VWAP ───────��──────────────────────────────────────────────────
-
-class CPRVWAPStrategy(BaseStrategy):
-    """
-    Central Pivot Range (CPR) confluence with VWAP.
-    - Price above TC + VWAP above CPR midpoint → bullish
-    - Price below BC + VWAP below CPR midpoint → bearish
-    - Narrow CPR (width < 0.1% of pivot) = trending day expected
-    """
-    name = StrategyName.CPR_VWAP.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 30   # CPR is a daily level — once confirmed, don't re-enter all day
-
-    def __init__(self, underlying: str = "NIFTY"):
-        super().__init__(underlying)
-        self.pivot:     float = 0
-        self.bc:        float = 0
-        self.tc:        float = 0
-        self.cpr_width: float = 0
-
-    def set_cpr(self, pivot: float, bc: float, tc: float):
-        self.pivot = pivot; self.bc = bc; self.tc = tc
-        self.cpr_width = tc - bc
-
-    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if not self.pivot: return None
-        if not _is_between(_market_time(candles), dtime(9,30), dtime(13,30)): return None
-        if not _atr_ok(indicators, self.underlying): return None
-
-        close = _c(candles,"close"); open_ = _c(candles,"open")
-        vwap_v = indicators.get("vwap")
-        ema9   = indicators.get("ema9"); ema21 = indicators.get("ema21")
-        vol    = _c(candles, "volume")
-        if None in (close, open_, vwap_v): return None
-
-        narrow_cpr = self.cpr_width < self.pivot * 0.001 if self.pivot else False
-
-        # Volume must be above average — no low-volume CPR breakouts
-        vol_ok = _vol_surge(vol, indicators.get("avg_volume") or _avg_volume(candles), 1.2)
-
-        # Bullish: price above TC + VWAP above pivot + EMA9>EMA21 + volume surge
-        if (close > self.tc and vwap_v > self.pivot and close > open_
-                and (ema9 is None or ema21 is None or ema9 > ema21)
-                and vol_ok):
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"CPR bull: above TC={self.tc:.1f} VWAP={vwap_v:.1f} narrow={narrow_cpr}")
-
-        # Bearish: price below BC + VWAP below pivot + EMA9<EMA21 + volume surge
-        if (close < self.bc and vwap_v < self.pivot and close < open_
-                and (ema9 is None or ema21 is None or ema9 < ema21)
-                and vol_ok):
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"CPR bear: below BC={self.bc:.1f} VWAP={vwap_v:.1f} narrow={narrow_cpr}")
-
-        # CPR magnet: only on narrow CPR + volume + EMA agreement
-        if narrow_cpr and abs(close - self.pivot) / self.pivot < 0.001 and vol_ok:
-            if close > open_ and vwap_v > self.pivot and (ema9 is None or ema21 is None or ema9 > ema21):
-                return self._make_signal(Direction.BUY, close, indicators,
-                    f"CPR pivot bounce bull narrow_cpr=True")
-            if close < open_ and vwap_v < self.pivot and (ema9 is None or ema21 is None or ema9 < ema21):
-                return self._make_signal(Direction.SELL, close, indicators,
-                    f"CPR pivot bounce bear narrow_cpr=True")
-        return None
-
-
-# ─── 12. Gap + VWAP Fill ─────────────────────────────────────────────────────
-
-class GapVWAPFillStrategy(BaseStrategy):
-    """
-    Gap up/down open + VWAP fill tendency.
-    Gap up (open > prev_close * 1.003) + price starts fading below VWAP → SELL
-    Gap down (open < prev_close * 0.997) + price starts recovering above VWAP → BUY
-    Only valid in first 90 minutes.
-    """
-    name = StrategyName.GAP_VWAP_FILL.value; sl_pct = 0.15; target_pct = 0.30
-    _cooldown_minutes = 20
-
-    def __init__(self, underlying: str = "NIFTY"):
-        super().__init__(underlying)
-        self.prev_close: float = 0
-
-    def set_prev_close(self, prev_close: float):
-        self.prev_close = prev_close
-
-    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
-        if not self.prev_close or len(candles) < 5: return None
-        if not _is_between(_market_time(candles), dtime(9,15), dtime(10,45)): return None
-        if not _atr_ok(indicators, self.underlying): return None
-
-        # Safety: only use candles that are confirmed to be today's session.
-        # If the list contains yesterday's candles (fallback path in strategy_runner),
-        # candles[0] is not today's open and gap_pct would be wrong.
-        # Use the ctx clock's IST trading day — server may run UTC.
-        if not _is_today_ist(candles[0]):
+        if self._roll_day():
+            self._trades_today, self._last_exit_at = 0, None
+        bars = self._bars(candles)
+        if len(bars) < 40 or not self._new_bar(bars):
+            return None
+        if self.open_positions or self._trades_today >= self.MAX_TRADES:
+            return None
+        if self._last_exit_at is not None and \
+                (now_utc() - self._last_exit_at).total_seconds() < self.COOLDOWN_BARS * 60:
             return None
 
-        # Sort by timestamp so candles[0] is the earliest candle of the day
-        # regardless of the order they were stored in Redis.
-        sorted_candles = sorted(candles, key=lambda c: str(c.get("timestamp", "")))
-        day_open = _c(sorted_candles, "open", 0)   # first candle of day
-        close = _c(candles,"close"); open_ = _c(candles,"open")
-        vwap_v = indicators.get("vwap")
-        if None in (day_open, close, open_, vwap_v): return None
+        # Imported here, not at module top: regime_indicators imports
+        # app.strategies.indicators, whose package __init__ imports this module.
+        from app.services.trading.regime_indicators import compute_adx
 
-        gap_pct = (day_open - self.prev_close) / self.prev_close * 100
+        h, l, c, st = self._series(bars)
+        e5, e13 = ema(c, 5), ema(c, 13)
+        adx = compute_adx(h, l, c, 14)
+        t = len(bars) - 1
+        if adx is None or adx <= self.ADX_MIN or np.isnan(st.supertrend[t]) \
+                or np.isnan(e5[t - 5]) or np.isnan(e13[t - 5]):
+            return None
+        d = st.direction
+        look = range(t - 2 * self.CROSS_WINDOW, t + 1)
 
-        # Gap down + price recovering above VWAP = fill trade BUY
-        if gap_pct < -0.3 and close > vwap_v and close > open_:
-            return self._make_signal(Direction.BUY, close, indicators,
-                f"Gap DOWN {gap_pct:.2f}% filling — price reclaimed VWAP={vwap_v:.1f}")
+        for side, sgn, direction in (("BUY", 1, Direction.BUY), ("SELL", -1, Direction.SELL)):
+            if d[t] != sgn or not (sgn * (e5[t] - e13[t]) > 0):
+                continue
+            flip = self._last_event(look, lambda i: d[i] == sgn and d[i - 1] == -sgn
+                                    and not np.isnan(st.supertrend[i - 1]))
+            cross = self._last_event(look, lambda i: sgn * (e5[i] - e13[i]) > 0
+                                     and sgn * (e5[i - 1] - e13[i - 1]) <= 0)
+            if flip is None or cross is None or abs(flip - cross) > self.CROSS_WINDOW:
+                continue
+            if max(flip, cross) != t:      # fire on the confirmation candle only
+                continue
+            close, stop = float(c[t]), float(st.supertrend[t])
+            plan = ExitPlan(strategy=self.name, side=side, spot_entry=close, spot_stop=stop,
+                            premium_target_pts=self.PREMIUM_TARGET_PTS,
+                            time_stop_minutes=self.TIME_STOP_MINUTES)
+            return self._plan_signal(
+                direction, close, indicators,
+                f"ST flip {'up' if sgn > 0 else 'down'} (bar {flip - t}) + EMA5/13 cross "
+                f"(bar {cross - t}) ADX={adx:.1f} st={stop:.1f}", plan)
+        return None
 
-        # Gap up + price fading below VWAP = fill trade SELL
-        if gap_pct > 0.3 and close < vwap_v and close < open_:
-            return self._make_signal(Direction.SELL, close, indicators,
-                f"Gap UP {gap_pct:.2f}% fading — price lost VWAP={vwap_v:.1f}")
+    def candle_exit(self, plan, candles, indicators) -> Optional[str]:
+        bars = self._bars(candles)
+        if len(bars) < 40:
+            return None
+        new = _new_bars(plan, bars)
+        if not new:
+            return None
+        _, _, _, st = self._series(bars)
+        for i in new:
+            if np.isnan(st.supertrend[i]):
+                continue
+            if int(st.direction[i]) != plan.sign:
+                return xp.ST_FLIP
+            xp.tighten_stop(plan, round(float(st.supertrend[i]), 2))   # trail on the ST line
+        return None
+
+
+# ─── 4. 09:15 candle breakout (5-min) ────────────────────────────────────────
+
+class FirstCandleBreakoutStrategy(_PlanStrategy):
+    """The 09:15-09:20 candle's high/low ± 10 pts, broken on a 5-min close
+    between 09:20 and 10:00. Stop: the other side of that candle, at most
+    MAX_STOP_PTS from entry. One trade per direction a day.
+
+    Exit (TRAIL_EXIT, since 30 Oct 2026): no fixed target; the stop trails the
+    best price since entry minus 2 × the 5-min ATR(14) at the signal (an ATR
+    chandelier, on every 1-min close), held to the session square-off.
+    Research on the same entries, net of option costs, per year
+    (docs/STRATEGY_PERFORMANCE_REPORT.md, exit variants): 1.5 × range target
+    and 14:45 exit -0.147 / +0.003 / -0.196 R; chandelier +0.019 / +0.039 /
+    -0.070 R. Less bad in every year; not shown to be profitable.
+    TRAIL_EXIT = False restores the target and the 14:45 exit."""
+    name = StrategyName.FIRST_CANDLE_BREAKOUT.value
+    sl_pct = 0.25
+    target_pct = 0.50
+    BAR_MINUTES = 5
+    BUFFER_PTS = 10.0
+    TARGET_RANGE_MULT = 1.5
+    MAX_STOP_PTS = 50.0         # the 09:15 candle is ~76 pts (median, real data): cap the stop
+    LAST_BAR_END = dtime(10, 0)
+    # Ready at the 09:25 close (09:15-09:24 = 10 candles: the 09:15 bar and the
+    # first breakout bar). Under the old global 20-candle wait the 09:25 and
+    # 09:30 closes were never evaluated (11 of 20 breakout days broke first).
+    MIN_TODAY_CANDLES = 10
+    EXIT_AT = "14:45"
+    TRAIL_EXIT = True
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._taken: set = set()
+
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._taken = {Direction.SELL if (p.option_type or "").upper() == "PE" else Direction.BUY
+                       for p in positions}
+
+    def on_position_opened(self, signal: SignalEvent) -> None:
+        self._taken.add(signal.direction)
+
+    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
+        if self._roll_day():
+            self._taken = set()
+        bars = resample(candles, self.BAR_MINUTES)       # today only
+        if len(bars) < 2 or not self._new_bar(bars) or self.open_positions:
+            return None
+        first, last = bars[0], bars[-1]
+        if _t(first["start"]) != dtime(9, 15) or _t(last["end"]) > self.LAST_BAR_END:
+            return None
+        hi, lo = first["high"], first["low"]
+        rng = hi - lo
+        c = last["close"]
+        if rng <= 0:
+            return None
+        if c > hi + self.BUFFER_PTS and Direction.BUY not in self._taken:
+            plan = self._exit_plan("BUY", c, round(max(lo, c - self.MAX_STOP_PTS), 2),
+                                   round(c + self.TARGET_RANGE_MULT * rng, 2), last)
+            return self._plan_signal(Direction.BUY, c, indicators,
+                                     f"09:15 candle {lo:.1f}-{hi:.1f} broken up: close={c:.1f}", plan)
+        if c < lo - self.BUFFER_PTS and Direction.SELL not in self._taken:
+            plan = self._exit_plan("SELL", c, round(min(hi, c + self.MAX_STOP_PTS), 2),
+                                   round(c - self.TARGET_RANGE_MULT * rng, 2), last)
+            return self._plan_signal(Direction.SELL, c, indicators,
+                                     f"09:15 candle {lo:.1f}-{hi:.1f} broken down: close={c:.1f}", plan)
+        return None
+
+    def _exit_plan(self, side: str, c: float, stop: float, target: float, bar: dict) -> ExitPlan:
+        if not self.TRAIL_EXIT:
+            return ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=stop,
+                            spot_target=target, exit_at=self.EXIT_AT)
+        b5 = resample(self.history or [], 5)
+        a = atr(np.array([b["high"] for b in b5]), np.array([b["low"] for b in b5]),
+                np.array([b["close"] for b in b5]), 14) if len(b5) >= 15 else np.array([np.nan])
+        trail_atr = float(a[-1]) if np.isfinite(a[-1]) and a[-1] > 0 else abs(c - stop)
+        # 1-min bar exits start with the candle after the signal bar
+        return ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=stop,
+                        trail_atr=round(trail_atr, 2), trail_extreme=c,
+                        last_bar_start=(bar["end"] - timedelta(minutes=1)).isoformat())
+
+    def candle_exit(self, plan, candles, indicators) -> Optional[str]:
+        """ATR chandelier: every completed 1-min candle not yet seen."""
+        if not plan.trail_atr:
+            return None
+        bars = resample(candles, 1)
+        for i in _new_bars(plan, bars):
+            xp.chandelier_update(plan, bars[i]["high"], bars[i]["low"])
+        return None
+
+
+# ─── 5. 15-min EMA trend + RSI pullback ──────────────────────────────────────
+
+class EMARSIPullback15mStrategy(_PlanStrategy):
+    """15-min EMA 9 > 21 (21 < 9 for PE); RSI pulls back into 40-50 (50-60);
+    the next candle(s) close back across EMA 9 between 09:30 and 13:00. Stop:
+    the pullback candle's low (high).
+
+    Exit (TRAIL_EXIT, since 30 Oct 2026): no T1/T2; on every completed 5-min
+    bar the stop trails the 5-min Supertrend(10, 3) line (only tightening) and
+    a bar with the Supertrend against the trade exits at its close; held to the
+    session square-off. Research on the same entries, net of option costs, per
+    year: T1/T2/14:45 -0.311 / -0.045 / -0.083 R; Supertrend trail -0.147 /
+    +0.171 / +0.083 R. Better in every year; the first year still lost.
+    TRAIL_EXIT = False restores T1 1R (stop to entry), T2 2R and the 14:45 exit."""
+    name = StrategyName.EMA_RSI_PULLBACK_15M.value
+    sl_pct = 0.20
+    target_pct = 0.40
+    BAR_MINUTES = 15
+    RSI_LONG, RSI_SHORT = (40.0, 50.0), (50.0, 60.0)
+    TOUCH_LOOKBACK = 3            # the RSI touch may be up to 3 bars before the trigger
+    WINDOW = (dtime(9, 30), dtime(13, 0))
+    EXIT_AT = "14:45"
+    TRAIL_EXIT = True
+    TRAIL_BAR_MINUTES, ST_PERIOD, ST_MULT = 5, 10, 3.0
+
+    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
+        bars = self._bars(candles)                        # multi-day history
+        if len(bars) < 30 or not self._new_bar(bars) or self.open_positions:
+            return None
+        last = bars[-1]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        cl = np.array([b["close"] for b in bars])
+        e9, e21, r = ema(cl, 9), ema(cl, 21), rsi(cl, 14)
+        t = len(bars) - 1
+        if np.isnan(e21[t]) or np.isnan(r[t - 1]):
+            return None
+        c = last["close"]
+        touches = range(max(1, t - self.TOUCH_LOOKBACK), t)
+        for side, sgn, direction, band in (("BUY", 1, Direction.BUY, self.RSI_LONG),
+                                           ("SELL", -1, Direction.SELL, self.RSI_SHORT)):
+            if not sgn * (e9[t] - e21[t]) > 0:
+                continue
+            hit = [i for i in touches if band[0] <= r[i] <= band[1]]
+            if not hit:
+                continue
+            crossed = sgn * (c - e9[t]) > 0 and sgn * (bars[t - 1]["close"] - e9[t - 1]) <= 0
+            if not crossed:
+                continue
+            k = hit[-1]
+            stop = bars[k]["low"] if sgn > 0 else bars[k]["high"]
+            risk = sgn * (c - stop)
+            if risk <= 0:
+                continue
+            if self.TRAIL_EXIT:
+                # 5-min bar exits start with the bar after the 15-min signal bar
+                plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2),
+                                last_bar_start=(last["end"] - timedelta(
+                                    minutes=self.TRAIL_BAR_MINUTES)).isoformat())
+            else:
+                plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2),
+                                spot_t1=round(c + sgn * risk, 2),
+                                spot_target=round(c + sgn * 2 * risk, 2), exit_at=self.EXIT_AT)
+            return self._plan_signal(direction, c, indicators,
+                                     f"15m EMA9/21 trend, RSI {r[k]:.1f} pullback, close {c:.1f} "
+                                     f"across EMA9 {e9[t]:.1f}", plan)
+        return None
+
+    def candle_exit(self, plan, candles, indicators) -> Optional[str]:
+        """Supertrend(10, 3) trail on completed 5-min bars. A plan with T1 /
+        target / exit_at (made with TRAIL_EXIT off) keeps those exits only."""
+        if plan.spot_t1 is not None or plan.spot_target is not None or plan.exit_at:
+            return None
+        bars = resample(self.history or candles, self.TRAIL_BAR_MINUTES)
+        if len(bars) < self.ST_PERIOD + 5:
+            return None
+        new = _new_bars(plan, bars)
+        if not new:
+            return None
+        st = supertrend(np.array([b["high"] for b in bars]), np.array([b["low"] for b in bars]),
+                        np.array([b["close"] for b in bars]), self.ST_PERIOD, self.ST_MULT)
+        for i in new:
+            if np.isnan(st.supertrend[i]):
+                continue
+            if int(st.direction[i]) != plan.sign:
+                return xp.ST_FLIP
+            xp.tighten_stop(plan, round(float(st.supertrend[i]), 2))
+        return None
+
+
+# ─── 6. Pivot point bounce (3-min) ───────────────────────────────────────────
+
+class PivotBounceStrategy(_PlanStrategy):
+    """Previous trading session's floor pivots: PP = (H+L+C)/3, R1 = 2PP-L, S1 = 2PP-H.
+    CE: a 3-min candle dips to S1 or PP from above and closes bullish above it.
+    PE: a candle pokes up to R1 or PP from below and closes bearish below it.
+    09:30-14:00. Stop 15 pts beyond the level; target the next pivot."""
+    name = StrategyName.PIVOT_BOUNCE.value
+    sl_pct = 0.15
+    target_pct = 0.30
+    BAR_MINUTES = 3
+    STOP_PTS = 15.0
+    WINDOW = (dtime(9, 30), dtime(14, 0))
+    EXIT_AT = "14:45"
+
+    # The runner resolves the previous session's H/L/C once a day
+    # (app.services.market_data.prev_session) and hands it over with
+    # set_prev_session; the rolling candle cache is never read for it.
+    NEEDS_PREV_SESSION = True
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._used: set = set()
+        self._levels_day = None            # trading day the levels below were resolved for
+        self._prev = None                  # prev_session.PrevSession, or None
+        self._prev_reason: Optional[str] = "previous-session levels not resolved yet"
+
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._used = set()
+
+    def set_prev_session(self, for_day, levels, reason: Optional[str] = None) -> None:
+        """Levels (a PrevSession, or None with *reason*) for trading day *for_day*."""
+        self._levels_day, self._prev = for_day, levels
+        self._prev_reason = None if levels is not None else (reason or "no previous-session levels")
+
+    def prev_session_problem(self) -> Optional[str]:
+        """Why the strategy cannot trade today for want of levels, or None."""
+        if self._levels_day != trading_day():
+            return "previous-session levels not resolved for today"
+        return self._prev_reason
+
+    def pivots(self) -> Optional[dict]:
+        """PP/R1/S1 from the previous trading session's high, low and close."""
+        if self.prev_session_problem() is not None:
+            return None
+        h, l, cl = self._prev.high, self._prev.low, self._prev.close
+        pp = (h + l + cl) / 3
+        return {"S1": round(2 * pp - h, 2), "PP": round(pp, 2), "R1": round(2 * pp - l, 2)}
+
+    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
+        if self._roll_day():
+            self._used = set()
+        bars = resample(candles, self.BAR_MINUTES)       # today only
+        if len(bars) < 3 or not self._new_bar(bars) or self.open_positions:
+            return None
+        last, prev = bars[-1], bars[-2]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        pv = self.pivots()
+        if pv is None:
+            return None
+        o, h, l, c = last["open"], last["high"], last["low"], last["close"]
+        ladder = [("S1", pv["S1"]), ("PP", pv["PP"]), ("R1", pv["R1"])]
+        for i, (lvl_name, lvl) in enumerate(ladder[:2]):                 # CE at S1 / PP
+            key = ("BUY", lvl_name)
+            if (key not in self._used and prev["close"] > lvl and l <= lvl < c and c > o):
+                target = ladder[i + 1][1]
+                plan = ExitPlan(strategy=self.name, side="BUY", spot_entry=c,
+                                spot_stop=round(lvl - self.STOP_PTS, 2), spot_target=target,
+                                exit_at=self.EXIT_AT)
+                sig = self._plan_signal(Direction.BUY, c, indicators,
+                                        f"bounce at {lvl_name} {lvl:.1f}, close {c:.1f}", plan)
+                if sig is not None:
+                    self._used.add(key)
+                return sig
+        for i, (lvl_name, lvl) in ((2, ladder[2]), (1, ladder[1])):        # PE at R1 / PP
+            key = ("SELL", lvl_name)
+            if (key not in self._used and prev["close"] < lvl and h >= lvl > c and c < o):
+                target = ladder[i - 1][1]
+                plan = ExitPlan(strategy=self.name, side="SELL", spot_entry=c,
+                                spot_stop=round(lvl + self.STOP_PTS, 2), spot_target=target,
+                                exit_at=self.EXIT_AT)
+                sig = self._plan_signal(Direction.SELL, c, indicators,
+                                        f"rejection at {lvl_name} {lvl:.1f}, close {c:.1f}", plan)
+                if sig is not None:
+                    self._used.add(key)
+                return sig
+        return None
+
+
+# ─── 7. 5-min momentum burst ─────────────────────────────────────────────────
+
+class MomentumBurstStrategy(_PlanStrategy):
+    """Three consecutive green 5-min candles, each closing above the previous
+    candle's high, the last above EMA 20, with 5-min ATR(14) > 15 pts (mirror
+    for PE). 09:30-13:30. Stop: the third candle's low (high). Target: 1.5 ×
+    ATR from entry. Fires on the first such candle of a burst only."""
+    name = StrategyName.MOMENTUM_BURST.value
+    sl_pct = 0.20
+    target_pct = 0.40
+    BAR_MINUTES = 5
+    ATR_MIN = 15.0
+    TARGET_ATR_MULT = 1.5
+    WINDOW = (dtime(9, 30), dtime(13, 30))
+    EXIT_AT = "14:30"
+
+    @staticmethod
+    def _burst(bars, t, sgn) -> bool:
+        for i in (t - 2, t - 1, t):
+            b, p = bars[i], bars[i - 1]
+            if sgn > 0 and not (b["close"] > b["open"] and b["close"] > p["high"]):
+                return False
+            if sgn < 0 and not (b["close"] < b["open"] and b["close"] < p["low"]):
+                return False
+        return True
+
+    async def evaluate(self, candles, indicators) -> Optional[SignalEvent]:
+        bars = self._bars(candles)                        # multi-day history (EMA / ATR warm-up)
+        if len(bars) < 25 or not self._new_bar(bars) or self.open_positions:
+            return None
+        last = bars[-1]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        today = [i for i, b in enumerate(bars) if b["start"].date() == trading_day()]
+        t = len(bars) - 1
+        if len(today) < 4:                                # the 3 candles + the one before, today
+            return None
+        cl = np.array([b["close"] for b in bars])
+        hi = np.array([b["high"] for b in bars])
+        lo = np.array([b["low"] for b in bars])
+        e20 = ema(cl, 20)
+        a = atr(hi, lo, cl, 14)
+        if np.isnan(e20[t]) or np.isnan(a[t]) or a[t] <= self.ATR_MIN:
+            return None
+        c = last["close"]
+        for side, sgn, direction in (("BUY", 1, Direction.BUY), ("SELL", -1, Direction.SELL)):
+            if not (self._burst(bars, t, sgn) and sgn * (c - e20[t]) > 0):
+                continue
+            if self._burst(bars, t - 1, sgn):            # already a burst a bar ago: not fresh
+                continue
+            stop = last["low"] if sgn > 0 else last["high"]
+            plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2),
+                            spot_target=round(c + sgn * self.TARGET_ATR_MULT * float(a[t]), 2),
+                            exit_at=self.EXIT_AT)
+            return self._plan_signal(direction, c, indicators,
+                                     f"3-candle burst {'up' if sgn > 0 else 'down'}, close {c:.1f}, "
+                                     f"EMA20 {e20[t]:.1f}, ATR {a[t]:.1f}", plan)
+        return None
+
+
+# ─── Once-a-day 5-min strategies (docs/NEW_STRATEGY_PREREGISTRATION.md) ──────
+
+SIDES = (("BUY", 1, Direction.BUY), ("SELL", -1, Direction.SELL))
+
+
+def _arr(bars, key):
+    return np.array([b[key] for b in bars], dtype=float)
+
+
+class _OncePerDay(_PlanStrategy):
+    BAR_MINUTES = 5
+    sl_pct = 0.35                 # premium hard stop; the spot plan stop normally comes first
+    target_pct = 0.70
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._traded_day = None
+
+    def on_position_opened(self, signal) -> None:
+        self._traded_day = trading_day()
+
+    def restore_day(self, positions: list) -> None:
+        super().restore_day(positions)
+        self._traded_day = trading_day() if positions else None
+
+    def _ready(self, candles) -> Optional[list[dict]]:
+        bars = self._bars(candles)
+        if not bars or not self._new_bar(bars) or self.open_positions \
+                or self._traded_day == trading_day():
+            return None
+        return bars
+
+
+class _Trail5(_OncePerDay):
+    ST_PERIOD, ST_MULT = 10, 3.0
+
+    def candle_exit(self, plan, candles, indicators) -> Optional[str]:
+        bars = self._bars(candles)
+        if len(bars) < self.ST_PERIOD + 5:
+            return None
+        new = _new_bars(plan, bars)
+        if not new:
+            return None
+        st = supertrend(_arr(bars, "high"), _arr(bars, "low"), _arr(bars, "close"),
+                        self.ST_PERIOD, self.ST_MULT)
+        for i in new:
+            if np.isnan(st.supertrend[i]):
+                continue
+            if int(st.direction[i]) == plan.sign:
+                plan.breakeven_done = True                 # trail armed
+                xp.tighten_stop(plan, round(float(st.supertrend[i]), 2))
+            elif plan.breakeven_done:
+                return xp.ST_FLIP
+        return None
+
+
+class CPRVWAP(_Trail5):
+    name = StrategyName.CPR_VWAP.value
+    MAX_WIDTH_PCT = 0.20
+    WINDOW = (dtime(9, 30), dtime(13, 0))
+    NEEDS_PREV_SESSION = True
+
+    def __init__(self, underlying: str = "NIFTY"):
+        super().__init__(underlying)
+        self._levels_day, self._prev = None, None
+
+    def set_prev_session(self, for_day, levels, reason: Optional[str] = None) -> None:
+        self._levels_day, self._prev = for_day, levels
+
+    def prev_session_problem(self) -> Optional[str]:
+        if self._levels_day != trading_day() or self._prev is None:
+            return "previous-session levels not resolved for today"
+        return None
+
+    async def evaluate(self, candles, indicators):
+        bars = resample(candles, 5)                        # today only
+        if len(bars) < 3 or not self._new_bar(bars) or self.open_positions \
+                or self._traded_day == trading_day() or self.prev_session_problem():
+            return None
+        last = bars[-1]
+        if not _in_windows(_t(last["end"]), (self.WINDOW,)):
+            return None
+        h, l, c0 = float(self._prev.high), float(self._prev.low), float(self._prev.close)
+        p = (h + l + c0) / 3
+        bc = (h + l) / 2
+        tc = 2 * p - bc
+        top, bottom = max(tc, bc), min(tc, bc)
+        if (top - bottom) / p * 100 >= self.MAX_WIDTH_PCT:
+            return None
+        vw = _session_vwap_at(candles).get(last["end"])
+        if vw is None:
+            return None
+        c = last["close"]
+        for side, sgn, direction in SIDES:
+            level, stop = (top, bottom) if sgn > 0 else (bottom, top)
+            if sgn * (c - level) > 0 and sgn * (c - vw) > 0:
+                # the day's first break only, whichever side and whatever the
+                # gates then do with it: the tested rule. A refused call (puts
+                # only) must not leave the day open for a later put.
+                self._traded_day = trading_day()
+                plan = ExitPlan(strategy=self.name, side=side, spot_entry=c, spot_stop=round(stop, 2))
+                return self._plan_signal(direction, c, indicators,
+                                         f"narrow CPR {bottom:.1f}-{top:.1f} broken {side} with VWAP "
+                                         f"{vw:.1f}, close {c:.1f}", plan)
         return None
 
 
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
 def build_strategies(underlying: str = "NIFTY") -> list[BaseStrategy]:
-    """Instantiate all 12 strategies for a given underlying."""
+    """Instantiate the strategies for *underlying* (NIFTY only — the rules are in NIFTY points)."""
+    if underlying not in SUPPORTED_UNDERLYINGS:
+        return []
     return [
-        ORBVWAPStrategy(underlying),
-        VWAPPullbackStrategy(underlying),
-        EMAVWAPStrategy(underlying),
-        SupertrendVWAPStrategy(underlying),
-        PDHPDLStrategy(underlying),
-        VWAPReversalStrategy(underlying),
-        BollingerBreakoutStrategy(underlying),
-        RSIVWAPStrategy(underlying),
-        OISpikeStrategy(underlying),
-        IVCrushStrategy(underlying),
-        CPRVWAPStrategy(underlying),
-        GapVWAPFillStrategy(underlying),
+        VWAPEMAPullbackStrategy(underlying),
+        ORBBreakoutStrategy(underlying),
+        SupertrendEMAStrategy(underlying),
+        FirstCandleBreakoutStrategy(underlying),
+        EMARSIPullback15mStrategy(underlying),
+        PivotBounceStrategy(underlying),
+        MomentumBurstStrategy(underlying),
+        CPRVWAP(underlying),
     ]
 
 

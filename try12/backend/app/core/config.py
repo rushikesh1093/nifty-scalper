@@ -65,9 +65,38 @@ class Settings(BaseSettings):
     NIFTY_TOKEN: str = "26000"          # NSE Nifty 50 spot token
     BANKNIFTY_TOKEN: str = "26009"      # NSE BankNifty spot token
     VIX_TOKEN: str = "26017"            # India VIX token on NSE
+
+    # Expiry-day iron fly paper trading (app/services/trading/iron_fly.py): a
+    # separate paper book; False stops it opening new spreads.
+    IRON_FLY_PAPER_ENABLED: bool = True
     INSTRUMENT_DUMP_URL: str = (
         "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     )
+
+    # Tick retention (app/services/market_data/tick_retention.py): ticks older
+    # than this many days are backed up to TICK_BACKUP_DIR as .csv.gz, then
+    # deleted, daily at TICK_CLEANUP_TIME_IST. A LOW DISK warning is logged
+    # below LOW_DISK_WARN_GB free.
+    TICK_RETENTION_DAYS: int = 30
+    TICK_BACKUP_DIR: str = "backups/ticks"
+    TICK_CLEANUP_TIME_IST: str = "16:05"
+    # Option archive (app/research/option_archive.py): before each retention
+    # pass, every recorded day not yet archived is added to this SQLite file as
+    # per-minute option quotes (bid/ask, OI, volume) - the permanent history the
+    # research needs; ticks themselves are deleted after TICK_RETENTION_DAYS.
+    # Run in a separate process. Empty path disables it.
+    OPTION_ARCHIVE_PATH: str = "backups/options_archive.db"
+    # ~1.3 GB of ticks a trading day: 10 GB is about a week's warning.
+    LOW_DISK_WARN_GB: float = 10.0
+
+    # Logs (app/core/logging.py): rotating backend.log and alerts.log in
+    # LOG_DIR; empty disables the files. Alerts (app/core/alerts.py) also go to
+    # Telegram when both ALERT_TELEGRAM_* are set.
+    LOG_DIR: str = "logs"
+    LOG_MAX_MB: int = 20
+    LOG_BACKUPS: int = 10
+    ALERT_TELEGRAM_BOT_TOKEN: Optional[str] = None
+    ALERT_TELEGRAM_CHAT_ID: Optional[str] = None
 
     # Candle intervals supported
     SUPPORTED_INTERVALS: list = ["ONE_MINUTE", "THREE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE"]

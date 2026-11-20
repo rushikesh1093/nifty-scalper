@@ -11,20 +11,23 @@ from sqlalchemy import func, select
 from tests.helpers import IST, make_signal, run, seed_config
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
+N_STRATEGIES = 8                       # app.strategies.names.ALL_STRATEGY_NAMES
 NO_TRADE = APP / "services" / "trading" / "no_trade.py"
 
 SECTION12 = {
     "CYCLE": {"OUTSIDE_SESSION_WINDOW", "AFTER_ENTRY_CUTOFF", "INSUFFICIENT_CANDLES",
-              "ATR_BELOW_FLOOR", "VIX_ABOVE_MAX", "VIX_BELOW_MIN", "NO_PREV_DAY_SNAPSHOT",
+              "ATR_BELOW_FLOOR", "VIX_ABOVE_MAX", "VIX_BELOW_MIN",
               "REGIME_UNAVAILABLE", "REGIME_NO_TRADE", "TRANSITION_COOLDOWN",
               "FEED_UNAVAILABLE"},
     "STRATEGY_GATE": {"STRATEGY_USER_DISABLED", "STRATEGY_REGIME_DISABLED",
-                      "STRATEGY_DAILY_HALT", "EXPIRY_DAY_SL_TOO_TIGHT", "STRATEGY_COOLDOWN"},
+                      "STRATEGY_DAILY_HALT", "EXPIRY_DAY_SL_TOO_TIGHT", "STRATEGY_COOLDOWN",
+                      "PREV_SESSION_UNAVAILABLE"},
     "SIGNAL_GATE": {"AGGREGATOR_SAME_DIRECTION", "AGGREGATOR_CONFLICT",
                     "REGIME_DIRECTION_MISMATCH", "REGIME_STATE_UNAVAILABLE", "RR_INSUFFICIENT"},
     "RISK_GATE": {"NOT_PAPER_MODE", "KILL_SWITCH", "DAILY_LOSS_CAP", "LOSING_STREAK_HALT",
                   "POST_LOSS_COOLDOWN", "DAILY_TRADE_CAP", "MAX_OPEN_POSITIONS", "EXPOSURE_CAP",
-                  "REGIME_MULTIPLIER_ZERO", "CONFIG_INVALID"},
+                  "REGIME_MULTIPLIER_ZERO", "CONFIG_INVALID", "EVIDENCE_BLOCKED", "LOW_VOL_SKIP",
+                  "DIRECTION_POLICY"},
     "SELECTION": {"NO_SUITABLE_EXPIRY", "NO_INSTRUMENTS", "TICK_UNAVAILABLE",
                   "QUOTE_UNAVAILABLE", "QUOTE_STALE", "OI_UNAVAILABLE", "VOLUME_UNAVAILABLE",
                   "LIQUIDITY_TOO_LOW", "VOLUME_INSUFFICIENT", "SPREAD_TOO_WIDE",
@@ -33,7 +36,7 @@ SECTION12 = {
                   "ATR_VS_SL_DISTANCE"},
     "SIZING": {"KELLY_NO_EDGE", "SIZED_TO_ZERO", "LOT_UNAFFORDABLE", "INSUFFICIENT_CAPITAL",
                "INITIAL_RISK_NON_POSITIVE", "COSTS_EXCEED_EDGE"},
-    "ENTRY": {"CAPITAL_RACE_LOST", "DAILY_TRADE_CAP_RACE", "HALT_ENGAGED_MID_ENTRY",
+    "ENTRY": {"DUPLICATE_OPEN_POSITION", "CAPITAL_RACE_LOST", "DAILY_TRADE_CAP_RACE", "HALT_ENGAGED_MID_ENTRY",
               "UNEXPECTED_ENTRY_ERROR"},
     "DEGRADATION": {"PERF_WRITE_FAILED", "MTM_DEGRADED", "FALLBACK_FILL", "DATA_GAP",
                     "DETECTOR_ERROR", "REGIME_MULTIPLIER_ERROR"},
@@ -173,13 +176,13 @@ def test_two_same_direction_signals_in_one_candle_write_one_row(runtime_ctx, sql
         return True
 
     monkeypatch.setattr(SignalBus, "_handlers", [_opened])
-    a = make_signal(strategy="ORB_VWAP")
-    b = make_signal(strategy="VWAP_PULLBACK")
+    a = make_signal(strategy="ORB_BREAKOUT")
+    b = make_signal(strategy="VWAP_EMA_PULLBACK")
     assert run(SignalBus.publish(a)) is True
     assert run(SignalBus.publish(b)) is False
     rows = run(_rows(sqlite_db))
     assert [(r.stage, r.code, r.strategy_name) for r in rows] == \
-        [("SIGNAL_GATE", "AGGREGATOR_SAME_DIRECTION", "VWAP_PULLBACK")]
+        [("SIGNAL_GATE", "AGGREGATOR_SAME_DIRECTION", "VWAP_EMA_PULLBACK")]
     assert rows[0].underlying == "NIFTY" and rows[0].run_id == "PAPER"
 
 
@@ -201,6 +204,7 @@ def test_publish_returns_false_when_the_recorder_fails(monkeypatch, caplog):
 
 # ── orchestrator returns the code ────────────────────────────────────────────
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_should_allow_signal_returns_a_code(runtime_ctx):
     from app.services.trading.no_trade import ReasonCode
     from app.services.trading.regime_persistence import RegimeState
@@ -246,7 +250,7 @@ def _candle(i, start):
 
 @pytest.fixture
 def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
-    """A runner over 12 stub strategies with every CYCLE gate open."""
+    """A runner over one stub per strategy (N_STRATEGIES) with every CYCLE gate open."""
     from dataclasses import replace
 
     from app.core.config import settings
@@ -261,7 +265,7 @@ def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
     stubs = [_Stub(n) for n in ALL_STRATEGY_NAMES]
     runner._strategies["NIFTY"] = stubs
 
-    async def _merge(underlying, candles, indicators, is_expiry_day, flags):
+    async def _merge(underlying, candles, indicators, is_expiry_day, flags, history=None):
         return {n: flags.get(n, True) for n in ALL_STRATEGY_NAMES}, None
 
     monkeypatch.setattr(runner, "_detect_and_merge_regime", _merge)
@@ -272,7 +276,8 @@ def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
         """Put candles 0..i in Redis and move the clock to candle i's close."""
         fake_redis.kv[f"ohlc:{settings.NIFTY_TOKEN}:ONE_MINUTE"] = \
             [_candle(k, start) for k in range(i + 1)]
-        runtime_ctx.clock.set((start + timedelta(minutes=i)).replace(tzinfo=IST))
+        # the bar is closed one minute after it opens: the runner never reads a forming bar
+        runtime_ctx.clock.set((start + timedelta(minutes=i + 1)).replace(tzinfo=IST))
 
     with using(rc):
         yield runner, stubs, _feed
@@ -281,7 +286,7 @@ def quiet_runner(runtime_ctx, sqlite_db, fake_redis, monkeypatch):
 def test_quiet_session_cycle_stats_is_positive_evidence(quiet_runner, sqlite_db):
     """R12.8b: nothing blocks and nothing emits — cycle_stats alone says so."""
     runner, stubs, feed = quiet_runner
-    n = 350                                        # 09:15 .. 15:04, the entry window
+    n = 349                                        # bars 09:15 .. 15:03: each closes before the 15:05 cutoff
     for i in range(n):
         feed(i)
         run(runner.run_cycle("NIFTY"))
@@ -289,17 +294,16 @@ def test_quiet_session_cycle_stats_is_positive_evidence(quiet_runner, sqlite_db)
     (cs,) = run(_cycle_stats(sqlite_db))
     assert (cs.run_id, cs.underlying, str(cs.trading_day)) == ("PAPER", "NIFTY", "2026-09-01")
     assert cs.candles_evaluated == n
-    assert cs.strategies_evaluated == 12 * n
+    assert cs.strategies_evaluated == N_STRATEGIES * n
     assert cs.signals_emitted == 0
     assert cs.rejections_recorded == 0
     assert cs.first_cycle_at is not None and cs.last_cycle_at > cs.first_cycle_at
     assert all(s.calls == n for s in stubs)
     rejections = [r for r in run(_rows(sqlite_db)) if r.stage != "DEGRADATION"]
     assert rejections == []
-    # no spot LTP in Redis: OI/IV context missing every candle, one DATA_GAP row per day
-    assert cs.oi_iv_context_missing == n
-    gaps = run(_rows(sqlite_db, code="DATA_GAP"))
-    assert len(gaps) == 1 and gaps[0].context.get("what") == "oi_iv_context"
+    # the three-strategy runner reads no OI/IV context (7840af9): nothing is missing
+    assert cs.oi_iv_context_missing == 0
+    assert run(_rows(sqlite_db, code="DATA_GAP")) == []
 
 
 def test_cycle_gate_writes_one_row_per_candle_not_per_strategy(quiet_runner, sqlite_db, monkeypatch):
@@ -363,22 +367,22 @@ def test_skip_loop_records_user_and_regime_disables_once(quiet_runner, sqlite_db
 
     runner, stubs, feed = quiet_runner
 
-    async def _merge(underlying, candles, indicators, is_expiry_day, flags):
+    async def _merge(underlying, candles, indicators, is_expiry_day, flags, history=None):
         merged = {n: flags.get(n, True) for n in ALL_STRATEGY_NAMES}
-        merged["IV_CRUSH"] = False                     # regime says no
+        merged["PIVOT_BOUNCE"] = False                 # regime says no
         return merged, None
 
     monkeypatch.setattr(runner, "_detect_and_merge_regime", _merge)
-    with using(replace(ctx(), user_flags=FrozenUserFlags({"OI_SPIKE": False}))):
+    with using(replace(ctx(), user_flags=FrozenUserFlags({"MOMENTUM_BURST": False}))):
         for i in range(3):
             feed(i)
             run(runner.run_cycle("NIFTY"))
     rows = [(r.stage, r.code, r.strategy_name) for r in run(_rows(sqlite_db))
             if r.stage == "STRATEGY_GATE"]
-    assert sorted(rows) == [("STRATEGY_GATE", "STRATEGY_REGIME_DISABLED", "IV_CRUSH"),
-                            ("STRATEGY_GATE", "STRATEGY_USER_DISABLED", "OI_SPIKE")]
+    assert sorted(rows) == [("STRATEGY_GATE", "STRATEGY_REGIME_DISABLED", "PIVOT_BOUNCE"),
+                            ("STRATEGY_GATE", "STRATEGY_USER_DISABLED", "MOMENTUM_BURST")]
     (cs,) = run(_cycle_stats(sqlite_db))
-    assert cs.strategies_evaluated == 3 * 10 and cs.rejections_recorded == 2
+    assert cs.strategies_evaluated == 3 * (N_STRATEGIES - 2) and cs.rejections_recorded == 2
 
 
 def test_cycle_stats_write_failure_never_aborts_the_cycle(quiet_runner, monkeypatch, caplog):
@@ -409,7 +413,7 @@ def test_signals_emitted_counts_published_signals(quiet_runner, sqlite_db, monke
     monkeypatch.setattr(SignalBus, "_handlers", [_rejected])
 
     async def _emit(candles, indicators):
-        await SignalBus.publish(make_signal(strategy="ORB_VWAP"))
+        await SignalBus.publish(make_signal(strategy="ORB_BREAKOUT"))
 
     stubs[0].on_candle = _emit
     feed(0)
@@ -451,11 +455,12 @@ def test_a_strategy_in_its_own_cooldown_is_recorded_once_per_episode(
     assert rows == [("STRATEGY_COOLDOWN", stubs[0].name)]
     assert stubs[0].calls == 1                      # evaluated only once the cooldown ended
     (cs,) = run(_cycle_stats(sqlite_db))
-    assert cs.strategies_evaluated == 4 * 12 - 3
+    assert cs.strategies_evaluated == 4 * N_STRATEGIES - 3
 
 
 # ── R12.8a: every gate type fires; the rows alone explain the empty book ────
 
+@pytest.mark.usefixtures("v1_regime")    # tests the pre-31-Oct regime map
 def test_r12_8a_every_gate_type_fires_and_the_rows_account_for_no_trades(
         quiet_runner, sqlite_db, runtime_ctx, monkeypatch):
     """A synthetic session with zero trades. Each stage-level gate fires at least
@@ -484,11 +489,11 @@ def test_r12_8a_every_gate_type_fires_and_the_rows_account_for_no_trades(
     async def _emit(candles, indicators):
         d = script.get(current["i"])
         if d is not None:
-            await SignalBus.publish(make_signal(strategy="VWAP_PULLBACK", direction=d))
+            await SignalBus.publish(make_signal(strategy="VWAP_EMA_PULLBACK", direction=d))
 
-    emitter = next(s for s in stubs if s.name == "VWAP_PULLBACK")
+    emitter = next(s for s in stubs if s.name == "VWAP_EMA_PULLBACK")
     emitter.on_candle = _emit
-    with using(replace(ctx(), user_flags=FrozenUserFlags({"ORB_VWAP": False}))):
+    with using(replace(ctx(), user_flags=FrozenUserFlags({"ORB_BREAKOUT": False}))):
         for i in range(6):
             current["i"] = i
             if i == 5:

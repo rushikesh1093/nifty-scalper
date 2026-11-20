@@ -5,6 +5,7 @@ import { SpotTicker }       from "@/components/market/SpotTicker";
 import { OptionChainTable } from "@/components/market/OptionChainTable";
 import { OIBarChart }       from "@/components/market/OIBarChart";
 import { InfoPanel }        from "@/components/market/InfoPanel";
+import { DataHealthPanel }  from "@/components/market/DataHealthPanel";
 import { CandleChart }      from "@/components/charts/CandleChart";
 import { LevelsPanel }      from "@/components/charts/LevelsPanel";
 import { Panel }            from "@/components/ui/Panel";
@@ -69,6 +70,7 @@ export default function TerminalPage() {
         <aside aria-label="Instrument details" className="min-w-0 space-y-4">
           <InfoPanel />
           <ChainStats />
+          <DataHealthPanel />
         </aside>
       </div>
     </div>

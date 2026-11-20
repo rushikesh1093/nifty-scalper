@@ -26,7 +26,8 @@ from app.api.routes.analytics import router as analytics_router
 from app.api.routes.backtest import router as backtest_router
 from app.services.backtest import jobs as backtest_jobs
 
-setup_logging("DEBUG" if settings.DEBUG else "INFO")
+setup_logging("DEBUG" if settings.DEBUG else "INFO", settings.LOG_DIR,
+              settings.LOG_MAX_MB, settings.LOG_BACKUPS)
 logger = logging.getLogger(__name__)
 
 
@@ -113,26 +114,22 @@ async def lifespan(app: FastAPI):
     try:
         await strategy_runner.start()
         await study_collector.start()
+        from app.services.market_data.tick_retention import tick_retention
+        await tick_retention.start()
+        from app.services.trading.iron_fly import IRON_FLY_BOOKS
+        for book in IRON_FLY_BOOKS.values():
+            await book.start()
     except Exception as exc:
         logger.error("Strategy runner startup error: %s", exc, exc_info=True)
 
-    # ── Proactive JWT token refresh every 6 hours ─────────────────────────────
-    # AngelOne sessions expire after 8 hours. Without a refresh task the token
-    # will expire mid-session (e.g. app started at 8 AM → token dies at 4 PM).
-    # We refresh every 6 hours so there is always a 2-hour safety margin.
-    async def _token_refresh_loop():
-        import asyncio as _asyncio
-        while True:
-            await _asyncio.sleep(6 * 3600)   # 6 hours
-            try:
-                from app.services.broker.angel_client import angel_client as _ac
-                await _ac.ensure_logged_in()
-                logger.info("Proactive JWT token refresh completed.")
-            except Exception as _e:
-                logger.error("Proactive JWT token refresh failed: %s", _e)
-
+    # ── AngelOne session keeper ───────────────────────────────────────────────
+    # Checks the session every 5 min and renews it once it is 6 h old, so it never
+    # passes the 7 h validity limit (the old loop slept 6 h before its first check
+    # and then only acted on an already-expired session). It renews; it never
+    # makes the first login (market_manager.startup and the feed do that).
     import asyncio as _asyncio
-    _token_refresh_task = _asyncio.create_task(_token_refresh_loop())
+    from app.services.broker.angel_client import angel_client as _ac
+    _token_refresh_task = _asyncio.create_task(_ac.run_session_keeper())
 
     # ── Admin key posture (design §17.4, §20.1) ───────────────────────────────
     from app.api.guards import ADMIN_ONLY_ENDPOINTS, admin_key_configured
@@ -173,6 +170,11 @@ async def lifespan(app: FastAPI):
     from app.services.market_data.study_collector import study_collector
     await strategy_runner.stop()
     await study_collector.stop()
+    from app.services.market_data.tick_retention import tick_retention
+    await tick_retention.stop()
+    from app.services.trading.iron_fly import IRON_FLY_BOOKS
+    for book in IRON_FLY_BOOKS.values():
+        await book.stop()
     await market_manager.shutdown()
     await redis_cache.disconnect()
     app.state.runtime_context = None    # nothing may run against a shut-down context
@@ -244,10 +246,45 @@ async def health():
     except Exception:
         subs = 0
     status = "ok" if (redis_ok and feed_up and session_valid) else "degraded"
+    # Free space on the drive the backend runs from: a full disk stops Postgres
+    # (the ticks table grows ~1 GB a trading day). Reported, never fatal.
+    from app.services.market_data.tick_retention import free_disk_gb
+    from pathlib import Path
+    disk_free = free_disk_gb(Path("."))
+    low_disk = disk_free is not None and disk_free < settings.LOW_DISK_WARN_GB
+    if low_disk:
+        from app.core.alerts import alert
+        alert("low_disk", f"Low disk: {disk_free:.1f} GB free (warning below "
+                          f"{settings.LOW_DISK_WARN_GB:.0f} GB)", throttle_s=3600)
+    # Today's session-readiness check (startup / 09:00), as last run; never fatal.
+    # GET /api/v1/trading/signals/diagnostics has the live, refreshed version.
+    readiness: dict = {}
+    try:
+        from datetime import datetime
+        from app.services.market_data.timestamps import IST
+        from app.services.trading.strategy_runner import strategy_runner
+        for u in ("NIFTY", "BANKNIFTY"):
+            rep = strategy_runner.session_readiness(u, datetime.now(IST))
+            if rep is not None:
+                readiness[u] = {"ok": rep.ok, "checked_at": rep.checked_at.isoformat(),
+                                "warnings": [w["code"] for w in rep.warnings]}
+    except Exception:
+        readiness = {}
     return {
         "status":          status,
         "redis":           "ok" if redis_ok else "down",
         "feed_connected":  feed_up,
         "session_valid":   session_valid,
         "subscriptions":   subs,
+        "disk_free_gb":    disk_free,
+        "low_disk":        low_disk,
+        "readiness":       readiness,
     }
+
+
+@app.get("/alerts")
+async def alerts(limit: int = 50):
+    """The most recent operator alerts, newest first (in memory since the last
+    start; logs/alerts.log keeps them all)."""
+    from app.core.alerts import recent
+    return {"alerts": recent(max(1, min(limit, 100)))}

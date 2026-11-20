@@ -35,6 +35,7 @@ from sqlalchemy.exc import DBAPIError
 from app.db.models.paper_trade import PaperPosition, StrategyPerf
 from app.runtime.context import ctx, now_ist, params, trading_day
 from app.services.trading import fills, no_trade, risk_state
+from app.strategies.base import Direction
 from app.services.trading.no_trade import ReasonCode, Stage
 from app.services.trading.session_times import is_after_entry_cutoff
 
@@ -202,9 +203,15 @@ async def fraction_decision(db, strategy: str) -> FractionDecision:
 
 def sizing_decision(*, fraction: FractionDecision, regime_multiplier: float,
                     expected_entry_fill: float, lot_size: int, available_capital: float,
-                    open_exposure: float) -> SizingDecision:
+                    open_exposure: float,
+                    initial_risk: Optional[float] = None) -> SizingDecision:
     """Phase two: lots from the fill and lot size. The regime multiplier is
-    applied here exactly once, to the deployed amount."""
+    applied here exactly once, to the deployed amount. *initial_risk* is the
+    premium points lost per contract if the premium stop is hit; with it the
+    lots are also capped so that loss stays within max_risk_per_trade_pct of
+    capital (clamp ``max_risk_per_trade``). The loss counted per lot is the
+    stop distance plus that lot's round-trip brokerage and charges
+    (fills.expected_round_trip_cost): a stopped trade pays both."""
     cfg = ctx().cfg
     clamps = list(fraction.clamps)
     trade_amount = round_to_500(fraction.base_amount * regime_multiplier)
@@ -222,6 +229,10 @@ def sizing_decision(*, fraction: FractionDecision, regime_multiplier: float,
             clamps.append(name)
 
     _clamp(cfg.max_lots_per_trade, "max_lots_per_trade")
+    if initial_risk is not None and initial_risk > 0 and lot_size > 0:
+        risk_budget = params().max_risk_per_trade_pct / 100.0 * cfg.capital
+        cost_per_lot_rt = fills.expected_round_trip_cost(expected_entry_fill, lot_size, 1, params())
+        _clamp(int(risk_budget // (initial_risk * lot_size + cost_per_lot_rt)), "max_risk_per_trade")
     if cost_per_lot > 0:
         _clamp(int(max(available_capital, 0.0) // cost_per_lot), "available_capital")
         headroom = cfg.open_exposure_cap_pct / 100.0 * cfg.capital - open_exposure
@@ -244,6 +255,18 @@ def sizing_decision(*, fraction: FractionDecision, regime_multiplier: float,
 
 # ── phase one: checks 0-11b ──────────────────────────────────────────────────
 
+async def _group_trades_today(db, run_id: str, underlying: str, group) -> Optional[str]:
+    """The first strategy of *group* with a position entered today, else None."""
+    from app.services.trading.session_times import trading_day_bounds_utc
+    start, end = trading_day_bounds_utc(trading_day())
+    row = (await db.execute(select(PaperPosition.strategy_name).where(
+        PaperPosition.run_id == run_id, PaperPosition.underlying == underlying,
+        PaperPosition.strategy_name.in_(list(group)),
+        PaperPosition.entry_time >= start, PaperPosition.entry_time < end,
+    ).limit(1))).scalar_one_or_none()
+    return row
+
+
 async def evaluate_pre_selection(db, signal, regime_state) -> GateDecision:
     try:
         return await _pre_selection(db, signal, regime_state)
@@ -251,6 +274,64 @@ async def evaluate_pre_selection(db, signal, regime_state) -> GateDecision:
         logger.error("[RiskGate] risk state unreadable — entry refused: %s", exc, exc_info=True)
         return _no(Stage.RISK_GATE, ReasonCode.CONFIG_INVALID, "risk state unreadable",
                    error=f"{type(exc).__name__}: {exc}")
+
+
+def daily_trade_cap(cfg) -> int:
+    """Positions allowed a day: the operator's max_trades_per_day, and never more
+    than params().max_option_buys_per_day (every paper position here is a bought
+    option; the iron fly keeps its own book). 0 there = no extra cap."""
+    extra = params().max_option_buys_per_day
+    return min(cfg.max_trades_per_day, extra) if extra and extra > 0 else cfg.max_trades_per_day
+
+
+# (run_id, trading_day) -> {strategy: status}: the forward evidence, computed
+# at most once a day per run (strategy_evidence over the run's closed trades)
+_evidence_cache: dict[tuple, dict] = {}
+
+
+async def _evidence_statuses(db) -> dict:
+    key = (ctx().run_id, trading_day())
+    if key not in _evidence_cache:
+        from app.services.metrics import strategy_evidence, strategy_report
+        try:
+            log = await strategy_report.load_closed(db, ctx().run_id)
+            res = strategy_evidence.evaluate(log)
+            _evidence_cache.clear()
+            _evidence_cache[key] = {k: v["status"] for k, v in res.items()}
+        except Exception as exc:                  # evidence is advisory: never block on its failure
+            logger.warning("[RiskGate] strategy evidence unavailable: %s", exc)
+            return {}
+    return _evidence_cache[key]
+
+
+async def _evidence_refusal(db, signal, p_) -> Optional[GateDecision]:
+    """Refuse a signal from a strategy the evidence says loses: listed in
+    evidence_blocked_strategies, or DISABLED_FOR_RESEARCH on its own paper
+    trades (evidence_auto_block), or listed in low_vol_skip_strategies while
+    regime v2 reads LOW volatility. None = no objection."""
+    name = signal.strategy_name
+    if name in p_.pe_only_strategies and signal.direction == Direction.BUY:
+        return _no(Stage.RISK_GATE, ReasonCode.DIRECTION_POLICY,
+                   f"{name} trades puts only (pe_only_strategies): call buying lost in "
+                   f"14 of 15 strategy-years", direction="BUY")
+    if name in p_.evidence_blocked_strategies:
+        return _no(Stage.RISK_GATE, ReasonCode.EVIDENCE_BLOCKED,
+                   f"{name} is blocked by research evidence (evidence_blocked_strategies)",
+                   source="research")
+    if p_.evidence_auto_block:
+        status = (await _evidence_statuses(db)).get(name)
+        if status == "DISABLED_FOR_RESEARCH":
+            return _no(Stage.RISK_GATE, ReasonCode.EVIDENCE_BLOCKED,
+                       f"{name}'s own paper trades show negative expectancy "
+                       f"(/analytics/strategy-evidence)", source="paper", status=status)
+    if name in p_.low_vol_skip_strategies:
+        from app.services.trading.strategy_orchestrator import strategy_orchestrator
+        v2 = strategy_orchestrator.current_regime_v2(signal.underlying)
+        if v2 is not None and getattr(v2, "vol", None) == "LOW":
+            return _no(Stage.RISK_GATE, ReasonCode.LOW_VOL_SKIP,
+                       f"{name} skips entries in LOW volatility (regime v2, ATR percentile "
+                       f"{v2.atr_percentile})", atr_percentile=v2.atr_percentile)
+    return None
 
 
 async def _pre_selection(db, signal, regime_state) -> GateDecision:
@@ -281,6 +362,20 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
     if halted:
         return _no(Stage.RISK_GATE, ReasonCode.KILL_SWITCH, f"Kill switch active: {why}")
 
+    # 2a. evidence gates (docs/EVIDENCE_GATES.md)
+    refused = await _evidence_refusal(db, signal, p_)
+    if refused is not None:
+        return refused
+
+    # 2b. entry blackout windows (lunch chop)
+    now_t = _ist_time()
+    for start, end in p_.entry_blackout_windows:
+        sh, sm = (int(x) for x in start.split(":")[:2])
+        eh, em = (int(x) for x in end.split(":")[:2])
+        if (sh, sm) <= (now_t.hour, now_t.minute) < (eh, em):
+            return _no(Stage.RISK_GATE, ReasonCode.AFTER_ENTRY_CUTOFF,
+                       f"Entry blackout {start}-{end} IST", blackout=f"{start}-{end}")
+
     # 3. entry cutoff
     if is_after_entry_cutoff(_ist_time(), cfg.square_off_time, cfg.entry_cutoff_buffer_min):
         return _no(Stage.RISK_GATE, ReasonCode.AFTER_ENTRY_CUTOFF,
@@ -307,6 +402,13 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
                    f"{streak.consecutive_losses} consecutive losses — trading halted for the day",
                    consecutive_losses=streak.consecutive_losses,
                    position_ids=streak.triggering_position_ids)
+    for group in p_.exclusive_strategy_groups:
+        if signal.strategy_name in group:
+            taken = await _group_trades_today(db, rc.run_id, signal.underlying, group)
+            if taken:
+                return _no(Stage.RISK_GATE, ReasonCode.STRATEGY_DAILY_HALT,
+                           f"one trade a day across {'/'.join(group)}: {taken} already traded today",
+                           strategy=signal.strategy_name, group=list(group), taken=taken)
     if signal.strategy_name in streak.halted_strategies:
         return _no(Stage.RISK_GATE, ReasonCode.STRATEGY_DAILY_HALT,
                    f"{signal.strategy_name} disabled for the day after "
@@ -322,10 +424,12 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
 
     # 8. derived daily trade count
     count = await risk_state.derived_trade_count(db, rc.run_id, day)
-    if count >= cfg.max_trades_per_day:
+    cap = daily_trade_cap(cfg)
+    if count >= cap:
         return _no(Stage.RISK_GATE, ReasonCode.DAILY_TRADE_CAP,
-                   f"Daily trade limit ({cfg.max_trades_per_day}) reached.",
-                   derived_count=count, max_trades_per_day=cfg.max_trades_per_day)
+                   f"Daily trade limit ({cap}) reached.",
+                   derived_count=count, max_trades_per_day=cfg.max_trades_per_day,
+                   max_option_buys_per_day=p_.max_option_buys_per_day)
 
     # 9. open positions
     open_n = await risk_state.open_position_count(db, rc.run_id)
@@ -334,6 +438,16 @@ async def _pre_selection(db, signal, regime_state) -> GateDecision:
                    f"Max open positions ({cfg.max_open_positions}) reached. "
                    f"Wait for a position to close.",
                    open_positions=open_n, max_open_positions=cfg.max_open_positions)
+
+    # 9b. one bet per direction
+    side = "CE" if signal.direction.value == "BUY" else "PE"
+    same_side = await risk_state.open_direction_count(db, rc.run_id, signal.underlying, side)
+    if same_side >= p_.max_open_per_direction:
+        return _no(Stage.RISK_GATE, ReasonCode.MAX_OPEN_POSITIONS,
+                   f"Already {same_side} open {side} position(s) on {signal.underlying} "
+                   f"(max {p_.max_open_per_direction} per direction)",
+                   direction=side, open_same_direction=same_side,
+                   max_open_per_direction=p_.max_open_per_direction)
 
     # 10. aggregate open exposure
     used = await risk_state.open_capital_used(db, rc.run_id)
@@ -389,7 +503,9 @@ async def evaluate_sizing(db, signal, candidate, *, fraction: FractionDecision,
         candidate.ltp, getattr(candidate, "bid", 0), getattr(candidate, "ask", 0), age, p_)
 
     # initial risk must be positive (R6.5), checked before any capital is touched
-    sl, tgt, rr, stretched = fills.entry_levels(fill, signal.sl_pct, signal.target_pct, p_.min_rr)
+    eff_sl = fills.plan_sl_pct(fill, signal.sl_pct, getattr(signal, "exit_plan", None),
+                               getattr(candidate, "delta_est", None), p_)
+    sl, tgt, rr, stretched = fills.entry_levels(fill, eff_sl, signal.target_pct, p_.min_rr)
     initial_risk = round(fill - sl, 2)
     if signal.sl_pct <= 0 or initial_risk <= 0:
         return _no(Stage.SIZING, ReasonCode.INITIAL_RISK_NON_POSITIVE,
@@ -399,9 +515,11 @@ async def evaluate_sizing(db, signal, candidate, *, fraction: FractionDecision,
     sizing = sizing_decision(
         fraction=fraction, regime_multiplier=regime_multiplier, expected_entry_fill=fill,
         lot_size=candidate.lot_size, available_capital=rc.cfg.capital - used,
-        open_exposure=used)
+        open_exposure=used, initial_risk=initial_risk)
     ctx_dict = dict(open_capital_used=used, binding_clamp=sizing.binding_clamp,
                     trade_amount=sizing.trade_amount, lots=sizing.lots,
+                    initial_risk_per_lot=round(initial_risk * candidate.lot_size, 2),
+                    max_risk_rupees=round(p_.max_risk_per_trade_pct / 100.0 * rc.cfg.capital, 2),
                     expected_entry_fill=fill, fill_source=fill_source,
                     cost_per_lot=round(fill * candidate.lot_size, 2))
     if sizing.reject is not None:
@@ -447,6 +565,7 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                 advisory_used: float, insert: Callable[[Any], Awaitable[Any]],
                 duplicate_token: Optional[str] = None,
                 duplicate_symbol: Optional[str] = None,
+                direction_key: Optional[tuple[str, str]] = None,
                 lock_timeout_s: float = LOCK_TIMEOUT_S) -> GateDecision:
     """One transaction: lock → 13a (derived count) → 13b (derived capital) →
     insert → commit. Every early return happens before the insert, with nothing
@@ -474,15 +593,19 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                 sqlite_lock = None
                 return _lock_timeout(started, None)
 
-        duplicate_query = select(PaperPosition.id).where(
-            PaperPosition.run_id == run_id,
-            PaperPosition.is_open.is_(True),
-        )
-        if duplicate_token is not None:
-            duplicate_query = duplicate_query.where(PaperPosition.token == duplicate_token)
-        elif duplicate_symbol:
-            duplicate_query = duplicate_query.where(PaperPosition.symbol == duplicate_symbol)
-        duplicate_exists = (await db.execute(duplicate_query.limit(1))).scalar_one_or_none()
+        # Only a named contract can be a duplicate: with neither given, the
+        # query used to match ANY open position and refuse every entry.
+        duplicate_exists = None
+        if duplicate_token is not None or duplicate_symbol:
+            duplicate_query = select(PaperPosition.id).where(
+                PaperPosition.run_id == run_id,
+                PaperPosition.is_open.is_(True),
+            )
+            if duplicate_token is not None:
+                duplicate_query = duplicate_query.where(PaperPosition.token == duplicate_token)
+            else:
+                duplicate_query = duplicate_query.where(PaperPosition.symbol == duplicate_symbol)
+            duplicate_exists = (await db.execute(duplicate_query.limit(1))).scalar_one_or_none()
         if duplicate_exists is not None:
             await db.rollback()
             return _no(
@@ -491,11 +614,23 @@ async def enter(db, *, run_id: str, trading_day: date, capital_used: float,
                 duplicate_position_id=duplicate_exists,
             )
 
+        if direction_key is not None:                                                   # 9b again,
+            und, side = direction_key                                                   # under the lock
+            same_side = await risk_state.open_direction_count(db, run_id, und, side)
+            if same_side >= params().max_open_per_direction:
+                await db.rollback()
+                return _no(Stage.ENTRY, ReasonCode.MAX_OPEN_POSITIONS,
+                           f"Already {same_side} open {side} position(s) on {und} "
+                           f"(max {params().max_open_per_direction} per direction) while "
+                           f"this signal was in selection",
+                           direction=side, open_same_direction=same_side)
+
         count = await risk_state.derived_trade_count(db, run_id, trading_day)          # 13a
-        if count >= cfg.max_trades_per_day:
+        cap = daily_trade_cap(cfg)
+        if count >= cap:
             await db.rollback()
             return _no(Stage.RISK_GATE, ReasonCode.DAILY_TRADE_CAP,
-                       f"Daily trade limit ({cfg.max_trades_per_day}) reached while this "
+                       f"Daily trade limit ({cap}) reached while this "
                        f"signal was in selection",
                        derived_count=count, max_trades_per_day=cfg.max_trades_per_day)
         locked_used = await risk_state.open_capital_used(db, run_id)                   # 13b

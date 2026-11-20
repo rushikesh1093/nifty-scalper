@@ -1,0 +1,212 @@
+{
+ "commit": "04b03ef164933f98ccd13b18123b39b0a0b06f5b",
+ "dirty": false,
+ "dataset": {
+  "file": "nifty_history.db",
+  "sha256": "100c05802bb7d1b09925086f4052bf53fe7d81268fdded24972b37e9569cbee7",
+  "first_day": "2023-10-23",
+  "last_day": "2026-10-23",
+  "sessions": 728
+ },
+ "options_dataset": {
+  "file": "live_options.db",
+  "sha256": "d7ad4a642788de58cd73821f038590a1a25b44991d52ddd9056bf2c9d578c6a8"
+ },
+ "date_range": [
+  "2023-10-23",
+  "2026-10-23"
+ ],
+ "config_hash": "a13f3a5df58630ab03334ae606456a3f5bcfaab6692adf98e142829f5278028c",
+ "config": {
+  "thresholds": {
+   "design_end": "2024-09-30",
+   "fcb_body_min": 0.744,
+   "fcb_close_loc_min": 0.907,
+   "orb_disp_min": 0.398,
+   "orb_relvol_min": 1.266,
+   "pv_sweep_min": 2.85,
+   "method": "median of the baseline signals' trigger-bar feature, DESIGN window only"
+  },
+  "cost_models": {
+   "ZERO": {
+    "name": "ZERO",
+    "fixed_pts": 0.0,
+    "decay_pts_per_hour": 0.0,
+    "expiry_decay_pts_per_hour": 0.0
+   },
+   "MEASURED": {
+    "name": "MEASURED",
+    "fixed_pts": 2.6,
+    "decay_pts_per_hour": 1.5,
+    "expiry_decay_pts_per_hour": 1.5
+   },
+   "HARSH": {
+    "name": "HARSH",
+    "fixed_pts": 4.0,
+    "decay_pts_per_hour": 4.0,
+    "expiry_decay_pts_per_hour": 4.0
+   }
+  },
+  "specs": [
+   [
+    "FCB_BASE",
+    "FIRST_CANDLE_BREAKOUT",
+    "FirstCandleBreakoutStrategy",
+    {}
+   ],
+   [
+    "ORB_BASE",
+    "ORB_BREAKOUT",
+    "ORBBreakoutStrategy",
+    {}
+   ],
+   [
+    "ST_BASE",
+    "SUPERTREND_EMA",
+    "SupertrendEMAStrategy",
+    {}
+   ],
+   [
+    "ER_BASE",
+    "EMA_RSI_PULLBACK_15M",
+    "EMARSIPullback15mStrategy",
+    {}
+   ],
+   [
+    "PV_BASE",
+    "PIVOT_BOUNCE",
+    "PivotBounceStrategy",
+    {}
+   ],
+   [
+    "FCB_STRONG",
+    "FIRST_CANDLE_BREAKOUT",
+    "FCBStrong",
+    {
+     "body_min": 0.744,
+     "close_loc_min": 0.907
+    }
+   ],
+   [
+    "FCB_RETEST",
+    "FIRST_CANDLE_BREAKOUT",
+    "FCBRetest",
+    {}
+   ],
+   [
+    "ORB_DISPLACEMENT",
+    "ORB_BREAKOUT",
+    "ORBFilter",
+    {
+     "variant": "ORB_DISPLACEMENT",
+     "threshold": 0.398
+    }
+   ],
+   [
+    "ORB_VOLUME",
+    "ORB_BREAKOUT",
+    "ORBFilter",
+    {
+     "variant": "ORB_VOLUME",
+     "threshold": 1.266
+    }
+   ],
+   [
+    "ORB_VWAP",
+    "ORB_BREAKOUT",
+    "ORBFilter",
+    {
+     "variant": "ORB_VWAP"
+    }
+   ],
+   [
+    "ORB_RETEST",
+    "ORB_BREAKOUT",
+    "ORBRetest",
+    {}
+   ],
+   [
+    "ST_EMA921",
+    "SUPERTREND_EMA",
+    "STVariant",
+    {
+     "variant": "ST_EMA921"
+    }
+   ],
+   [
+    "ST_PULLBACK",
+    "SUPERTREND_EMA",
+    "STVariant",
+    {
+     "variant": "ST_PULLBACK"
+    }
+   ],
+   [
+    "ST_STRUCTURE",
+    "SUPERTREND_EMA",
+    "STVariant",
+    {
+     "variant": "ST_STRUCTURE"
+    }
+   ],
+   [
+    "ER_3M",
+    "EMA_RSI_PULLBACK_15M",
+    "ER3m",
+    {
+     "variant": "ER_3M"
+    }
+   ],
+   [
+    "ER_3M_CONFIRM",
+    "EMA_RSI_PULLBACK_15M",
+    "ER3m",
+    {
+     "variant": "ER_3M_CONFIRM"
+    }
+   ],
+   [
+    "PV_SWEEP_CLOSE",
+    "PIVOT_BOUNCE",
+    "PivotSweep",
+    {
+     "variant": "PV_SWEEP_CLOSE",
+     "sweep_min": 2.85
+    }
+   ],
+   [
+    "PV_SWEEP_CONFIRM",
+    "PIVOT_BOUNCE",
+    "PivotSweep",
+    {
+     "variant": "PV_SWEEP_CONFIRM",
+     "sweep_min": 2.85
+    }
+   ]
+  ],
+  "exit_variants": [
+   "LIVE",
+   "A_FIXED_2R",
+   "B_BE1R_2R",
+   "C_BE1R_ATR_TRAIL",
+   "D_SWING_TRAIL",
+   "E_ATR_CHANDELIER",
+   "F_ST5_TRAIL"
+  ],
+  "criteria": {
+   "min_trades": 100,
+   "preferred_trades": 200,
+   "min_sessions": 60,
+   "min_profit_factor": 1.2,
+   "max_drawdown_r": -25.0,
+   "min_positive_fold_share": 0.5,
+   "require_ci_lower_above": 0.0
+  },
+  "design_months": 12
+ },
+ "execution_model_version": "spot-pessimistic-path-v1",
+ "cost_model_version": "spot-points-v2 (ZERO/MEASURED/HARSH)",
+ "bootstrap_seed": 20261030,
+ "python": "3.12.4",
+ "runtime_s": 86.6
+}

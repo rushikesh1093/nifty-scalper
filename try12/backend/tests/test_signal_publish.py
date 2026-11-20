@@ -29,7 +29,7 @@ class _Session:
 
 
 def _signal():
-    return SignalEvent(strategy_name="VWAP_PULLBACK", underlying="BANKNIFTY", direction=Direction.SELL,
+    return SignalEvent(strategy_name="VWAP_EMA_PULLBACK", underlying="BANKNIFTY", direction=Direction.SELL,
                        spot_price=55099.45, signal_time=datetime(2026, 10, 6, 8, 0, 51, tzinfo=timezone.utc),
                        vwap=55102.4, indicators={})
 
@@ -70,7 +70,7 @@ async def test_publishes_eight_field_payload_on_paper_channel(wired):
     channel, payload = calls[0]
     assert channel == "paper_trade"
     assert payload == {
-        "event": "SIGNAL_RECORDED", "signal_id": 4242, "strategy": "VWAP_PULLBACK", "underlying": "BANKNIFTY",
+        "event": "SIGNAL_RECORDED", "signal_id": 4242, "strategy": "VWAP_EMA_PULLBACK", "underlying": "BANKNIFTY",
         "direction": "SELL", "status": "SKIPPED", "time": "2026-10-06T08:00:51+00:00",
         "skip_reason": "momentum failed",
     }

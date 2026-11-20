@@ -26,6 +26,16 @@ C = "BEAR_TREND_NORMAL_VOL"
 X = "EXPIRY_DAY"
 
 
+@pytest.fixture(autouse=True)
+def _cooldown_on():
+    """These tests specify the cooldown when it is ON (3 candles, the value it
+    had before it was turned off by default on 23 Oct)."""
+    from app.runtime.context import ctx, using
+    from tests.helpers import with_params
+    with using(with_params(ctx(), transition_cooldown_candles=3)):
+        yield
+
+
 def _ind():
     return RegimeIndicators(
         adx=25, atr=5, atr_percentile=50, vwap=100, price=101, vwap_cross_count=0,
@@ -116,13 +126,10 @@ class _StaticRegimeConfig:
 
 
 def _with_cooldown(n):
-    from dataclasses import replace
-
     from app.runtime.context import ctx, using
-    from app.services.trading.regime_config import RegimeConfig
+    from tests.helpers import with_params
 
-    return using(replace(ctx(), regime_config=_StaticRegimeConfig(
-        RegimeConfig(TRANSITION_COOLDOWN_CANDLES=n))))
+    return using(with_params(ctx(), transition_cooldown_candles=n))
 
 
 def test_cooldown_seven_still_detects_the_flip_and_blocks_seven(monkeypatch):
@@ -190,7 +197,8 @@ def test_same_day_history_is_rehydrated(runtime_ctx, fake_redis, monkeypatch):
     now = runtime_ctx.clock.now_utc()
     seeded = [_state(A, now - timedelta(minutes=i)) for i in range(3, 0, -1)]
     fake_redis.kv["regime:NIFTY:history"] = [_state_to_dict(s) for s in seeded]
-    out = _drive(monkeypatch, [B] * 5, persistence=RegimePersistence())
+    with _with_cooldown(3):                              # runtime_ctx rebinds the default (off)
+        out = _drive(monkeypatch, [B] * 5, persistence=RegimePersistence())
     assert [r for r, _, _ in out] == [T, T, T, B, B]     # restart mid-session: flip still seen
 
 

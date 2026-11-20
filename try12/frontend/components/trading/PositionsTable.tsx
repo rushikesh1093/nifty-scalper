@@ -20,7 +20,23 @@ import type { Position } from "@/types/trading";
 
 const EXIT_INTENT: Record<string, BadgeIntent> = {
   TARGET: "positive", SL: "negative", EOD: "neutral", MANUAL: "info", TIMEOUT: "warning",
+  SPOT_SL: "negative", TIME_EXIT: "warning", SESSION_EXIT: "neutral", VWAP_EXIT: "warning",
+  EMA9_TRAIL: "info", ST_FLIP: "warning", OPPOSITE_SIGNAL: "info",
 };
+// Exit reasons as the exit plans name them (backend exit_plan.py); "_STALE" means the
+// exit filled off the last price it had, not a fresh quote.
+const EXIT_LABEL: Record<string, string> = {
+  TARGET: "Target", SL: "Premium stop", SPOT_SL: "Spot stop", EOD: "End of day", MANUAL: "Manual",
+  TIMEOUT: "Timeout", TIME_EXIT: "Time stop", SESSION_EXIT: "Square-off time", VWAP_EXIT: "VWAP exit",
+  EMA9_TRAIL: "EMA-9 trail", ST_FLIP: "Supertrend flip", OPPOSITE_SIGNAL: "Opposite signal",
+};
+function exitText(reason: string | null | undefined): { base: string; label: string } {
+  const raw = reason ?? "";
+  const stale = raw.endsWith("_STALE");
+  const base = stale ? raw.slice(0, -"_STALE".length) : raw;
+  const label = EXIT_LABEL[base] ?? base.replace(/_/g, " ");
+  return { base, label: stale ? `${label} (stale price)` : label };
+}
 const STRATEGY_LABEL: Record<string, string> = Object.fromEntries(STRATEGY_META.map((s) => [s.key, s.label]));
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const failText = (e: unknown) => (e instanceof ApiError && e.detail ? e.detail : errorMessage(e));
@@ -63,7 +79,8 @@ function PositionRow({ p, closed, onClose, closing }: { p: Position; closed: boo
       {closed && <td className="num"><PriceText value={num(p.exit)} /></td>}
       {closed && (
         <td>
-          <Badge intent={EXIT_INTENT[p.exit_reason ?? ""] ?? "neutral"} status={p.exit_reason ?? undefined}>{p.exit_reason || "—"}</Badge>
+          <Badge intent={EXIT_INTENT[exitText(p.exit_reason).base] ?? "neutral"} status={p.exit_reason ?? undefined}
+                 title={p.exit_reason ?? undefined}>{p.exit_reason ? exitText(p.exit_reason).label : "—"}</Badge>
         </td>
       )}
       <td className="num">
